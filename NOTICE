@@ -18,3 +18,9 @@ _classify_text function from src/amane/net/errors.py at the same source revision
 Changes: function renamed, enum outputs replaced with strings, empty-response
 check added. network_checks.py follows the upstream connectivity architecture
 but is implemented for Velvet's transport and configuration.
+
+Additional adapters (2026-11-02): scrapers/airav.py, fc2club.py, fc2ppvdb.py,
+freejavbt.py and xcity.py are adapted from the corresponding files under
+src/amane/crawlers/sites/ at the revision above. Imports use the Velvet host;
+parsing logic is retained. sources.json records source IDs and public profile
+URLs from that revision. No upstream credentials or user configuration is bundled.

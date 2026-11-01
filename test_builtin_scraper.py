@@ -131,6 +131,24 @@ class BuiltinTests(unittest.TestCase):
         client.html = '<html>not found</html>'
         self.assertIsNone(asyncio.run(types['javbus'](client)._scrape('https://example.invalid/ABC-123')))
 
+    def test_additional_source_parsers_and_identity(self):
+        types=source_types()
+        fixtures={
+            'fc2club': ('https://example.invalid/html/FC2-123.html','<div class="show-top-grids"><h3>Synthetic</h3></div>','FC2-123'),
+            'fc2ppvdb': ('https://example.invalid/articles/123','<h2 class="title">Synthetic</h2>','FC2-123'),
+            'freejavbt': ('https://example.invalid/ABC-123','<h1>ABC-123 Synthetic</h1>','ABC-123'),
+            'airav': ('https://example.invalid/video','<li>番号<span>ABC-123</span></li><div class="video-title"><h1>ABC-123 Synthetic</h1></div>','ABC-123'),
+            'xcity': ('https://example.invalid/titles/1','<h1>Synthetic</h1><span class="kopin">ABC-123</span>','ABC-123'),
+        }
+        class Client:
+            async def get_html(self,*args,**kwargs):return self.html
+        for name,(url,html,number) in fixtures.items():
+            with self.subTest(source=name):
+                client=Client();client.html=html
+                result=asyncio.run(types[name](client)._scrape(url))
+                self.assertIsNotNone(result)
+                self.assertEqual(result.values['number'],number)
+
 
 if __name__ == '__main__':
     unittest.main()

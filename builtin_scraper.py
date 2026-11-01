@@ -17,9 +17,14 @@ def source_types():
         from scrapers.jav321 import Jav321Crawler
         from scrapers.javbus import JavBusCrawler
         from scrapers.fc2 import FC2Crawler
+        from scrapers.fc2club import FC2ClubCrawler
+        from scrapers.fc2ppvdb import FC2PPVDBCrawler
+        from scrapers.freejavbt import FreejavbtCrawler
+        from scrapers.airav import AiravCrawler
+        from scrapers.xcity import XCityCrawler
     except ImportError:
         raise ValueError('内置刮削需要安装依赖：python -m pip install -r requirements.txt') from None
-    return {'javbus': JavBusCrawler, 'jav321': Jav321Crawler, 'fc2': FC2Crawler}
+    return {'javbus': JavBusCrawler, 'jav321': Jav321Crawler, 'fc2': FC2Crawler, 'fc2club': FC2ClubCrawler, 'fc2ppvdb': FC2PPVDBCrawler, 'freejavbt': FreejavbtCrawler, 'airav': AiravCrawler, 'xcity': XCityCrawler}
 
 
 def validate_code(code):
@@ -152,7 +157,8 @@ class Engine:
         types = source_types()
         cfg = self.config()
         enabled = cfg.get('scrape_sources', ['javbus', 'jav321', 'fc2'])
-        priority = [s for s in enabled if (s == 'fc2') == bool(re.fullmatch(r'FC2-(?:PPV-)?\d+', code))]
+        route = {'fc2','fc2club','fc2ppvdb','freejavbt','airav'} if re.fullmatch(r'FC2-(?:PPV-)?\d+', code) else {'javbus','jav321','freejavbt','airav','xcity'}
+        priority = [s for s in enabled if s in route]
         client = HttpClient(cfg.get('scrape_proxy', ''))
         snapshots, outcomes = {}, []
         for source in priority:

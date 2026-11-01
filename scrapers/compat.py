@@ -14,6 +14,15 @@ class SiteName:
     JAV321 = 'jav321'
     JAVBUS = 'javbus'
     FC2 = 'fc2'
+    FC2CLUB = 'fc2club'
+    FC2PPVDB = 'fc2ppvdb'
+    FREEJAVBT = 'freejavbt'
+    AIRAV = 'airav'
+    XCITY = 'xcity'
+
+
+class ActorGender:
+    UNKNOWN = 'unknown'
 
 
 @dataclass
@@ -39,16 +48,20 @@ class MediaMetadata:
         self.values = values
 
 
-def film_actors(names):
+def film_actors(names, gender=None):
     return list(dict.fromkeys(names))
 
 
-def extract_text(html, xpath):
-    return (html.xpath(xpath).get() or '').strip()
+def extract_text(html, *xpaths):
+    return next((value for xpath in xpaths if (value := (html.xpath(xpath).get() or '').strip())), '')
 
 
-def extract_all_texts(html, xpath):
-    return list(dict.fromkeys(v.strip() for v in html.xpath(xpath).getall() if v.strip()))
+def extract_all_texts(html, *xpaths):
+    for xpath in xpaths:
+        values = list(dict.fromkeys(v.strip() for v in html.xpath(xpath).getall() if v.strip()))
+        if values:
+            return values
+    return []
 
 
 def fold_number(value):
@@ -58,7 +71,25 @@ def fold_number(value):
 
 def number_variants(number):
     # Deliberately conservative: never drop a numeric prefix without identity review.
-    return (number.strip(),)
+    article_id = fc2_article_id(number)
+    return tuple(dict.fromkeys((number.strip(), 'FC2-'+article_id, 'FC2-PPV-'+article_id))) if article_id else (number.strip(),)
+
+
+def fc2_article_id(number):
+    match = re.fullmatch(r'FC2[-_ ]?(?:PPV[-_ ]?)?(\d+)', number, re.I)
+    return match[1] if match else None
+
+
+def fc2_number(article_id, ppv=False):
+    return ('FC2-PPV-' if ppv else 'FC2-') + article_id
+
+
+def is_same_number(left, right):
+    return bool(left and right) and fold_number(left) == fold_number(right)
+
+
+def leading_token(text):
+    return text.strip().split()[0] if text.strip() else ''
 
 
 def select_number_index(found, query):
@@ -113,6 +144,11 @@ class HttpClient:
 
 
 class Crawler:
+    @staticmethod
+    def _parse_runtime(text):
+        match = re.search(r'\d+', text or '')
+        return int(match[0]) if match else None
+
     def __init__(self, client):
         profile = self.profile()
         self.client = client

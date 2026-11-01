@@ -16,7 +16,7 @@ STATUS={'running':False,'message':'准备就绪','processed':0,'errors':0}
 NAS=os.environ.get('VELVET_SERVER','0')=='1'
 BIND=os.environ.get('VELVET_BIND','0.0.0.0' if NAS else '127.0.0.1')
 USER=os.environ.get('VELVET_USER','admin'); PASSWORD=os.environ.get('VELVET_PASSWORD','')
-DEFAULT={'interval':300,'online':False,'provider':'','api_key':'','amane_url':'http://127.0.0.1:18000','amane_token':'','tag_aliases':{},'auto_scrape':True,'scrape_engine':'external','scrape_proxy':'','scrape_sources':['javbus','jav321','fc2'],'scrape_field_priority':{}}
+DEFAULT={'interval':300,'online':False,'provider':'','api_key':'','amane_url':'http://127.0.0.1:18000','amane_token':'','tag_aliases':{},'auto_scrape':True,'scrape_engine':'external','scrape_proxy':'','scrape_sources':['javbus','jav321','fc2','fc2club','fc2ppvdb','freejavbt','airav','xcity'],'scrape_field_priority':{}}
 class Connection(sqlite3.Connection):
  def __enter__(self):
   DB_MUTEX.acquire()
@@ -47,8 +47,10 @@ with db() as c:
 
 from media_libraries import MediaLibraries
 from network_checks import NetworkChecks
+from source_catalog import SourceCatalog,NATIVE_SOURCES
 LIBRARIES=MediaLibraries(db)
-NETWORK=NetworkChecks(config,lambda:amane_request('metadata?limit=1'))
+SOURCES=SourceCatalog(lambda path:external_amane_request(path),config)
+NETWORK=NetworkChecks(config,lambda:external_amane_request('metadata?limit=1'),external_probe=lambda ids:external_amane_request('network/check',{'source_ids':ids} if ids else {}),external_sources=lambda:list(dict.fromkeys(s for route in SOURCES.snapshot()['upstream']['routes'].values() for s in route)))
 
 def binary(name):
  found=shutil.which(name)
@@ -280,9 +282,12 @@ def amane_base():
  return base
 def amane_request(path,data=None):
  if config().get('scrape_engine')=='builtin':return builtin_engine().request(path,data)
+ return external_amane_request(path,data)
+
+def external_amane_request(path,data=None):
  req=Request(amane_base()+'/api/'+path,headers=amane_headers(),data=json.dumps(data).encode() if data is not None else None)
  try:
-  with urlopen(req,timeout=25) as r:return json.load(r)
+  with urlopen(req,timeout=90 if path=='network/check' else 25) as r:return json.load(r)
  except HTTPError as e:
   if e.code in (401,403):raise ValueError('Amane 认证失败，请检查 Token') from None
   raise ValueError('Amane 接口错误 HTTP '+str(e.code)) from None
@@ -583,7 +588,9 @@ class Handler(BaseHTTPRequestHandler):
   try:
    if path=='/':return self.send((ROOT/'index.html').read_bytes(),'text/html; charset=utf-8')
    if path=='/management.js':return self.send((ROOT/'management.js').read_bytes(),'text/javascript; charset=utf-8')
+   if path=='/management.css':return self.send((ROOT/'management.css').read_bytes(),'text/css; charset=utf-8')
    if path=='/api/network':return self.send(NETWORK.status())
+   if path=='/api/source-catalog':return self.send(SOURCES.snapshot(refresh=parse_qs(urlparse(self.path).query).get('refresh')==['1']))
    if path=='/api/libraries':return self.send({'items':LIBRARIES.list()})
    if path=='/api/library-files':
     query=parse_qs(urlparse(self.path).query)
@@ -666,9 +673,9 @@ class Handler(BaseHTTPRequestHandler):
     return self.send({'ok':True})
    elif path=='/api/scraping-options':
     sources=a.get('sources');priority=a.get('field_priority',{})
-    if not isinstance(sources,list) or not sources or len(sources)>3 or any(not isinstance(s,str) or s not in ('javbus','jav321','fc2') for s in sources) or len(set(sources))!=len(sources):raise ValueError('请选择至少一个有效来源')
+    if not isinstance(sources,list) or not sources or len(sources)>len(NATIVE_SOURCES) or any(not isinstance(s,str) or s not in NATIVE_SOURCES for s in sources) or len(set(sources))!=len(sources):raise ValueError('请选择至少一个有效内置来源')
     allowed={'title','actors','tags','studio','release','plot','poster_urls','thumb_urls','runtime','series','directors','publisher'}
-    if not isinstance(priority,dict) or any(k not in allowed or not isinstance(v,list) or len(v)>3 or any(s not in sources for s in v) for k,v in priority.items()):raise ValueError('字段优先级应为字段到已启用来源列表的对象')
+    if not isinstance(priority,dict) or any(k not in allowed or not isinstance(v,list) or len(v)>len(NATIVE_SOURCES) or any(s not in sources for s in v) for k,v in priority.items()):raise ValueError('字段优先级应为字段到已启用来源列表的对象')
     cfg=config();cfg.update(scrape_sources=sources,scrape_field_priority=priority)
     (DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8')
     return self.send({'ok':True})
