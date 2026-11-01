@@ -35,3 +35,6 @@ Thumbs.db
 !/CONTRIBUTING.md
 !/SECURITY.md
 # Public documentation lives in docs/.
+
+# Reproducible source release artifacts
+/dist/

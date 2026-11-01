@@ -40,6 +40,10 @@ class LibraryTests(unittest.TestCase):
     def req(path,data=None,headers=None):
      h={'Host':'127.0.0.1:8765'};h.update(headers or {});return urlopen(Request(base+path,data=json.dumps(data).encode() if data is not None else None,headers=h))
     with req('/api/library') as r:self.assertEqual(len(json.load(r)['videos']),1)
+    for path,(filename,kind) in app.UI_ASSETS.items():
+     with self.subTest(asset=path),req(path) as r:
+      self.assertEqual(r.headers.get_content_type(),kind)
+      self.assertEqual(r.read(),(app.ROOT/filename).read_bytes())
     with req('/api/actor-edit',{'name':'Actor','rating':4,'favorite':1},{'X-Velvet-Token':app.TOKEN}) as r:self.assertTrue(json.load(r)['ok'])
     with req('/api/actors') as r:
      actor=next(x for x in json.load(r)['actors'] if x['name']=='Actor');self.assertEqual(actor['rating'],4);self.assertEqual(actor['favorite'],1)

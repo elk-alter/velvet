@@ -10,10 +10,10 @@ AI 辅助开发 · 本地优先 · 元数据自动整理 · 影片 / 版本 / �
 
 ![Status](https://img.shields.io/badge/status-early%20alpha-f0b44c)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab)
-![Runtime](https://img.shields.io/badge/runtime-standard%20library-4f8b6b)
+![Engine](https://img.shields.io/badge/engine-built--in%20%2B%20optional%20service-4f8b6b)
 ![Primary platform](https://img.shields.io/badge/primary-Windows-007aff)
 
-[快速开始](#快速开始) · [功能边界](#当前能做什么) · [需求与路线图](docs/REQUIREMENTS.md) · [架构](docs/ARCHITECTURE.md) · [参与开发](CONTRIBUTING.md)
+[快速开始](#快速开始) · [完整功能](docs/FEATURES.md) · [需求与路线图](docs/REQUIREMENTS.md) · [架构](docs/ARCHITECTURE.md) · [参与开发](CONTRIBUTING.md)
 
 </div>
 
@@ -23,7 +23,7 @@ AI 辅助开发 · 本地优先 · 元数据自动整理 · 影片 / 版本 / �
 
 Velvet 想把这段体验整理好：**以影片为浏览入口，以版本为播放选择，以文件为实际载体**。先用封面、截图和清晰的属性挑选，再播放合适的那一份。原视频保留原位，整理的是关系和资料。
 
-这是一个由 AI 辅助开发、由真实使用需求驱动的早期实验项目。目前发布的是 **`0.1.0-alpha.1` 初始测试版**，不是成熟媒体服务器，也不应仅凭功能入口或测试通过就推断全部场景已经完善。
+这是一个由 AI 辅助开发、由真实使用需求驱动的早期实验项目。目前发布的是 **`0.1.0-alpha.2` 公开测试版**，不是成熟媒体服务器，也不应仅凭功能入口或测试通过就推断全部场景已经完善。
 
 ## 有什么特色
 
@@ -55,17 +55,19 @@ AI 参与需求讨论、实现、文档与测试编写；产品规则仍由用�
 
 |功能|本版状态与限制|
 |---|---|
-|本地导入|系统目录选择、递归扫描、缺失标记；批量导入、离线目录处理仍需完善|
-|浏览与挑选|搜索、组合标签、演员与厂商、时长/画质等筛选；页码和浏览状态恢复已有原型|
-|元数据|NFO 读取、可选 Amane API、自动队列与失败状态；识别准确性依赖文件命名和资料源|
-|图片与预览|FFmpeg 六帧截图、悬停轮播、封面/海报缓存；选图、重采样和黑帧优化待做|
-|人物|演员汇总、评分、收藏和本地参演作品；头像、别名治理待做|
-|播放|HTTP Range、浏览器续播、分段接续、系统播放器入口；不支持所有编码，无转码|
-|重复对比|完整 SHA-256 校验、同片版本候选、优先保留选择；不具备感知视频指纹，不自动删文件|
-|资料保护|字段锁、关系撤销、数据库及配置备份/恢复；恢复应先停止后台任务|
-|部署|Windows 为主要验证环境；附跨平台启动与 Docker 文件，macOS/Linux/NAS 实机仍待验证|
+|媒体库|目录选择/浏览、单库扫描、自动化策略、排除及离线保护；批量导入和异常恢复待完善|
+|刮削|10 个独立内置适配器、自动持久队列、来源/字段择优、站点凭据、七天来源缓存；另可接 Amane|
+|来源诊断|24 项来源目录（不等于 24 项原生实现）、网络检测和失败原因；可用性依赖网络与账号|
+|浏览筛选|搜索、组合标签、演员/厂商、媒体属性和资料状态；分类页及分类收藏；动态片单待做|
+|图片详情|六帧截图、封面/海报、持久剧照队列、单项重试和放大画廊；卡片不自动轮播|
+|演员|精确头像匹配/缓存、资料、评分收藏、参演影片；人工别名治理待做|
+|影片结构|影片/版本/分段、默认版本、手动关系修正和撤销；命名推断需人工核对|
+|播放|Range 直放、续播、分段接续、系统播放器入口；无转码及字幕/音轨选择|
+|重复对比|完整 SHA-256、同片版本候选和保留偏好；不自动删文件，无感知指纹|
+|管理与保护|三管理入口、地址/历史恢复、字段锁、备份校验和恢复；完整恢复演练待补|
+|部署|Windows 为主要验证环境，附跨平台 Python/Docker 配置；NAS 和其它平台实机待验收|
 
-更严格的逐项状态、未完成需求与验收缺口见 **[需求审计表](docs/REQUIREMENTS.md)**。
+完整入口与边界见 [功能清单](docs/FEATURES.md)；未完成需求与验收缺口见 **[需求审计表](docs/REQUIREMENTS.md)**。
 
 ## 快速开始
 
@@ -91,9 +93,9 @@ python app.py --no-browser
 
 ### 连接元数据服务
 
-可在设置中连接独立运行的 **[Amane](https://github.com/sqzw-x/amane)**。默认本机地址为 `http://127.0.0.1:18000`；Windows 下可读取其默认 Token 文件，也支持显式填写连接信息。
+在“刮削中心 → 执行与网络”可连接独立运行的 **[Amane](https://github.com/sqzw-x/amane)**。默认本机地址为 `http://127.0.0.1:18000`；Windows 下可读取其默认 Token 文件，也支持显式填写连接信息。
 
-项目现提供第一批移植自 Amane 的内置采集器，安装 `python -m pip install -r requirements.txt` 后，在资料源设置选择“内置刮削”；原有外部模式继续可用。内置引擎的范围、代理、测试与限制见 [内置刮削](docs/BUILTIN-SCRAPING.md)。
+项目提供 10 个移植自 Amane 的内置采集适配器，安装 `python -m pip install -r requirements.txt` 后，在“刮削中心 → 执行与网络”选择“Velvet 内置”；原有外部模式继续可用。内置引擎的范围、代理、测试与限制见 [内置刮削](docs/BUILTIN-SCRAPING.md)。
 
 外部模式下，Amane 不是本项目打包的依赖。Velvet 通过公共 API 读取资料和缓存图片，不调用原视频整理；自动任务仍受来源可访问性、编号识别和网络情况影响。详见 [使用与配置](docs/USAGE.md)。网络检测、来源开关、字段择优和媒体库配置见 [管理功能说明](docs/NETWORK-AND-LIBRARIES.md)。新增独立管理页面及完整来源目录，执行方式和依赖见 [来源与界面](docs/SOURCES-AND-UI.md)。单一刮削入口、演员头像、分类与海报浏览见 [浏览更新](docs/BROWSING-UPDATE.md)。站点配置、独立剧照队列与详情画廊见 [独立刮削与剧照](docs/INDEPENDENT-SCRAPING.md)。
 
@@ -127,7 +129,7 @@ python -m unittest discover -s . -p "test_*.py"
 
 现有测试覆盖部分模型、关系撤销、偏好、备份恢复、队列与 HTTP 流程。浏览器交互也做过演示数据和本机服务检查；**这些不是全编码、全平台、长时间运行或大规模片库的完整验收**。仓库提供 [跨平台 CI 配置示例](docs/ci.example.yml)，计划在 Windows、macOS、Linux 上运行后端测试；当前尚未启用自动工作流，测试结果也不等于这些平台已实机可用。
 
-版本采用 `0.1.0-alpha.1` 起始的预发布编号。首版保留当前实验实现，后续优先补可靠性和交互一致性，而不是继续堆叠入口。参见 [CHANGELOG](CHANGELOG.md) 和 [路线图](docs/ROADMAP.md)。
+当前版本为 `0.1.0-alpha.2`，从 `0.1.0-alpha.1` 建立公开预发布基线。下一轮优先刮削恢复、待匹配工作台与数据一致性，再推进标签治理、大库和部署。参见 [CHANGELOG](CHANGELOG.md) 和 [路线图](docs/ROADMAP.md)。
 
 ## 反馈与贡献
 
@@ -135,4 +137,8 @@ python -m unittest discover -s . -p "test_*.py"
 
 公开可见不意味着所有能力已生产可用。项目以 [GPL-3.0](LICENSE) 发布；移植组件与修改说明见 [NOTICE](NOTICE)。
 
-管理区的页面职责与导航方式见 [管理区导航](docs/MANAGEMENT-NAVIGATION.md)。
+## 文档导航
+
+- [完整功能清单](docs/FEATURES.md) · [需求与验收](docs/REQUIREMENTS.md) · [迭代路线图](docs/ROADMAP.md)
+- [使用与配置](docs/USAGE.md) · [管理区导航](docs/MANAGEMENT-NAVIGATION.md) · [部署与升级](docs/DEPLOYMENT.md)
+- [架构](docs/ARCHITECTURE.md) · [发布流程](docs/RELEASING.md) · [本版说明](docs/RELEASE-0.1.0-alpha.2.md)

@@ -7,7 +7,16 @@ from urllib.request import Request,urlopen
 from urllib.parse import urlparse,quote,parse_qs
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 ROOT=Path(__file__).resolve().parent
-APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip() if (ROOT/'VERSION').exists() else '0.1.0-alpha.1'
+APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip()
+UI_ASSETS={
+ '/':('index.html','text/html'),
+ '/management.js':('management.js','text/javascript'),
+ '/manager_routes.js':('manager_routes.js','text/javascript'),
+ '/management.css':('management.css','text/css'),
+ '/browse.js':('browse.js','text/javascript'),
+ '/film_detail.js':('film_detail.js','text/javascript'),
+ '/browse.css':('browse.css','text/css'),
+}
 DATA=Path(os.environ.get('VELVET_DATA',str(ROOT/'data'))).resolve();DATA.mkdir(parents=True,exist_ok=True)
 DB_MUTEX=threading.RLock()
 SCAN_CANCEL=threading.Event();SYNC_CANCEL=threading.Event();DUP_CANCEL=threading.Event();RESTORING=threading.Event()
@@ -620,13 +629,9 @@ class Handler(BaseHTTPRequestHandler):
   if not NAS and self.headers.get('Host') not in ('127.0.0.1:8765','localhost:8765'):return self.send({},status=403)
   path=urlparse(self.path).path
   try:
-   if path=='/':return self.send((ROOT/'index.html').read_bytes(),'text/html; charset=utf-8')
-   if path=='/management.js':return self.send((ROOT/'management.js').read_bytes(),'text/javascript; charset=utf-8')
-   if path=='/manager_routes.js':return self.send((ROOT/'manager_routes.js').read_bytes(),'text/javascript; charset=utf-8')
-   if path=='/management.css':return self.send((ROOT/'management.css').read_bytes(),'text/css; charset=utf-8')
-   if path=='/browse.js':return self.send((ROOT/'browse.js').read_bytes(),'text/javascript; charset=utf-8')
-   if path=='/film_detail.js':return self.send((ROOT/'film_detail.js').read_bytes(),'text/javascript; charset=utf-8')
-   if path=='/browse.css':return self.send((ROOT/'browse.css').read_bytes(),'text/css; charset=utf-8')
+   if path in UI_ASSETS:
+    filename,kind=UI_ASSETS[path]
+    return self.send((ROOT/filename).read_bytes(),kind+'; charset=utf-8')
    if path=='/api/network':return self.send(NETWORK.status())
    if path=='/api/scrape-sites':
     options=config().get('scrape_site_config',{})
