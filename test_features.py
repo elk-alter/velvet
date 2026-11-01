@@ -17,6 +17,7 @@ class FeatureTests(unittest.TestCase):
   (self.root/'b.mp4').write_bytes(b'54321');self.assertFalse(any(g['kind']=='exact' for g in self.app.duplicate_groups()))
   self.assertTrue((self.root/'a.mp4').exists());self.assertTrue((self.root/'b.mp4').exists())
  def test_auto_queue_dedup_and_limit(self):
+  with self.app.db() as conn:conn.execute('INSERT INTO folders(path) VALUES(?)',(str(self.root),))
   self.add('a.mp4',b'a','ABC-1');self.add('b.mp4',b'b','ABC-1');self.add('c.mp4',b'c','DEF-2');self.add('d.mp4',b'd','GHI-3');calls=[]
   def request(path,data=None):calls.append(data['number']);return {'id':100+len(calls),'status':'queued'}
   self.app.amane_request=request;self.app.auto_scrape_tick();self.assertEqual(len(calls),2);self.assertEqual(len(set(calls)),2)

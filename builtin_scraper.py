@@ -28,13 +28,17 @@ def validate_code(code):
     return code.upper()
 
 
-def merge_results(code, snapshots, priority):
+def merge_results(code, snapshots, priority, field_priority=None):
     result = {'number': code, 'field_sources': {}, 'raw': snapshots}
-    for source in priority:
-        for key, value in snapshots.get(source, {}).items():
-            if value and key not in ('number',) and not result.get(key):
+    keys = {key for values in snapshots.values() for key in values} - {'number'}
+    for key in keys:
+        chain = list(dict.fromkeys((field_priority or {}).get(key, []) + priority))
+        for source in chain:
+            value = snapshots.get(source, {}).get(key)
+            if source in priority and value:
                 result[key] = value
                 result['field_sources'][key] = source
+                break
     result['poster_url'] = next(iter(result.get('poster_urls') or []), '')
     result['thumb_url'] = next(iter(result.get('thumb_urls') or []), '')
     return result
@@ -147,7 +151,8 @@ class Engine:
     async def fetch_async(self, code):
         types = source_types()
         cfg = self.config()
-        priority = ['fc2'] if re.fullmatch(r'FC2-(?:PPV-)?\d+', code) else ['javbus', 'jav321']
+        enabled = cfg.get('scrape_sources', ['javbus', 'jav321', 'fc2'])
+        priority = [s for s in enabled if (s == 'fc2') == bool(re.fullmatch(r'FC2-(?:PPV-)?\d+', code))]
         client = HttpClient(cfg.get('scrape_proxy', ''))
         snapshots, outcomes = {}, []
         for source in priority:
@@ -164,11 +169,13 @@ class Engine:
                 outcomes.append({'site': source, 'outcome': 'success'})
             except Exception as exc:
                 status = getattr(exc, 'http_status', None)
-                reason = 'not_found' if status == 404 else 'rate_limited' if status == 429 else 'network'
+                reason = getattr(exc, 'reason', 'unexpected')
                 outcomes.append({'site': source, 'outcome': 'failed', 'reason': reason})
             # Bound source request rate; never parallelize an entire library at once.
             await asyncio.sleep(1)
-        return merge_results(code, snapshots, priority), outcomes
+        if not priority:
+            outcomes.append({'site': 'configuration', 'outcome': 'failed', 'reason': 'no_enabled_source'})
+        return merge_results(code, snapshots, priority, cfg.get('scrape_field_priority')), outcomes
 
     def cache_artwork(self, url, target, referer=''):
         try:

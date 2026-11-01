@@ -1,6 +1,9 @@
 """Small Python 3.10 host for the attributed Amane source adapters."""
 import asyncio
 import re
+import socket
+import ssl
+from .block import classify_block
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, ProxyHandler
@@ -64,12 +67,13 @@ def select_number_index(found, query):
 
 
 class RequestError(ValueError):
-    def __init__(self, message, http_status=None):
+    def __init__(self, message, http_status=None, reason=None):
         super().__init__(message)
         self.http_status = http_status
+        self.reason = reason or ('not_found' if http_status == 404 else 'rate_limited' if http_status == 429 else 'server_error' if http_status and http_status >= 500 else 'http_error' if http_status else 'network')
 
 
-def fetch_bytes(url, proxy='', headers=None, limit=8_000_000):
+def fetch_bytes(url, proxy='', headers=None, limit=8_000_000, with_status=False):
     parsed = urlparse(url)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.username:
         raise RequestError('来源资源必须使用 HTTPS')
@@ -79,11 +83,17 @@ def fetch_bytes(url, proxy='', headers=None, limit=8_000_000):
             payload = response.read(limit + 1)
             if len(payload) > limit:
                 raise RequestError('来源响应超过大小限制')
-            return payload, response.headers.get('Content-Type', '')
+            result = (payload, response.headers.get('Content-Type', ''))
+            return (*result, response.status) if with_status else result
     except HTTPError as exc:
-        raise RequestError('来源 HTTP ' + str(exc.code), exc.code) from None
-    except (URLError, OSError):
-        raise RequestError('来源网络连接失败或超时') from None
+        reason = classify_block(exc.read(100_000).decode('utf-8', errors='replace'))
+        raise RequestError('来源 HTTP ' + str(exc.code), exc.code, reason if reason != 'empty_response' else None) from None
+    except (TimeoutError, socket.timeout):
+        raise RequestError('来源请求超时', reason='timeout') from None
+    except (URLError, OSError) as exc:
+        underlying = exc.reason if isinstance(exc, URLError) else exc
+        reason = 'timeout' if isinstance(underlying, (TimeoutError, socket.timeout)) else 'dns' if isinstance(underlying, socket.gaierror) else 'tls' if isinstance(underlying, ssl.SSLError) else 'network'
+        raise RequestError('来源网络连接失败', reason=reason) from None
 
 
 class HttpClient:
@@ -95,7 +105,11 @@ class HttpClient:
         if cookies:
             request_headers['Cookie'] = '; '.join(k + '=' + v for k, v in cookies.items())
         body, _ = await asyncio.to_thread(fetch_bytes, url, self.proxy, request_headers)
-        return body.decode('utf-8', errors='replace')
+        text = body.decode('utf-8', errors='replace')
+        reason = classify_block(text)
+        if reason:
+            raise RequestError('来源页面无法用于刮削', reason=reason)
+        return text
 
 
 class Crawler:

@@ -12,3 +12,9 @@ Velvet host. Site extraction code retained. Host, queue, transport and integrati
 are implemented separately in scrapers/compat.py and builtin_scraper.py.
 
 The rest of Amane, its branding, UI, dependencies and binaries are not bundled.
+
+Additional adapted component (2026-11-02): scrapers/block.py contains the
+_classify_text function from src/amane/net/errors.py at the same source revision.
+Changes: function renamed, enum outputs replaced with strings, empty-response
+check added. network_checks.py follows the upstream connectivity architecture
+but is implemented for Velvet's transport and configuration.

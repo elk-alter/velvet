@@ -4,7 +4,7 @@ import base64,hmac,hashlib,socket,datetime
 from urllib.error import HTTPError
 from pathlib import Path
 from urllib.request import Request,urlopen
-from urllib.parse import urlparse,quote
+from urllib.parse import urlparse,quote,parse_qs
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 ROOT=Path(__file__).resolve().parent
 APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip() if (ROOT/'VERSION').exists() else '0.1.0-alpha.1'
@@ -16,7 +16,7 @@ STATUS={'running':False,'message':'准备就绪','processed':0,'errors':0}
 NAS=os.environ.get('VELVET_SERVER','0')=='1'
 BIND=os.environ.get('VELVET_BIND','0.0.0.0' if NAS else '127.0.0.1')
 USER=os.environ.get('VELVET_USER','admin'); PASSWORD=os.environ.get('VELVET_PASSWORD','')
-DEFAULT={'interval':300,'online':False,'provider':'','api_key':'','amane_url':'http://127.0.0.1:18000','amane_token':'','tag_aliases':{},'auto_scrape':True,'scrape_engine':'external','scrape_proxy':''}
+DEFAULT={'interval':300,'online':False,'provider':'','api_key':'','amane_url':'http://127.0.0.1:18000','amane_token':'','tag_aliases':{},'auto_scrape':True,'scrape_engine':'external','scrape_proxy':'','scrape_sources':['javbus','jav321','fc2'],'scrape_field_priority':{}}
 class Connection(sqlite3.Connection):
  def __enter__(self):
   DB_MUTEX.acquire()
@@ -44,6 +44,11 @@ with db() as c:
  job_fields={r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}
  if 'retry_kind' not in job_fields:c.execute("ALTER TABLE scrape_jobs ADD COLUMN retry_kind TEXT DEFAULT ''")
  if 'video_id' not in job_fields:c.execute('ALTER TABLE scrape_jobs ADD COLUMN video_id INTEGER')
+
+from media_libraries import MediaLibraries
+from network_checks import NetworkChecks
+LIBRARIES=MediaLibraries(db)
+NETWORK=NetworkChecks(config,lambda:amane_request('metadata?limit=1'))
 
 def binary(name):
  found=shutil.which(name)
@@ -173,16 +178,20 @@ def retag_all():
    tags,reasons=classify(dict(row));c.execute('UPDATE videos SET auto_tags=?,tag_reasons=? WHERE id=?',(tags,reasons,row['id']))
  return len(rows)
 
-def scan(force=False):
+def scan(force=False,folder_path=None,automatic=False):
  if RESTORING.is_set() or not LOCK.acquire(False):return
  SCAN_CANCEL.clear()
  STATUS.update(running=True,message='扫描目录…',processed=0,errors=0)
  try:
-  with db() as c:folders=[r[0] for r in c.execute('SELECT path FROM folders')]
-  for folder in folders:
-   if not Path(folder).is_dir():continue
+  policies=LIBRARIES.policies()
+  for policy in policies:
+   folder=policy['path']
+   if folder_path and folder!=folder_path:continue
+   if automatic and policy['automation']=='off':continue
+   if not Path(folder).is_dir():LIBRARIES.finish(folder,'目录离线或不可访问，保留现有记录');continue
    seen=set()
-   for base,dirs,files in os.walk(folder):
+   walk_errors=[]
+   for base,dirs,files in os.walk(folder,onerror=lambda error:walk_errors.append('目录读取失败')):
     for name in files:
      if SCAN_CANCEL.is_set():STATUS['message']='扫描已取消（已完成项目保留）';return
      p=Path(base)/name
@@ -190,6 +199,8 @@ def scan(force=False):
      seen.add(str(p))
      try:
       stat=p.stat()
+      if LIBRARIES.owner(p,policies)!=folder:continue
+      if not LIBRARIES.included(p,policy,stat.st_size) or time.time()-stat.st_mtime<policy['settle_seconds']:continue
       with db() as c:
        old=c.execute('SELECT * FROM videos WHERE path=?',(str(p),)).fetchone()
        c.execute('INSERT INTO videos(path,title,size,mtime) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,missing=0',(str(p),p.stem,stat.st_size,stat.st_mtime))
@@ -239,7 +250,8 @@ def scan(force=False):
     for row in c.execute('SELECT id,path FROM videos').fetchall():
      try:inside=Path(row['path']).is_relative_to(Path(folder))
      except ValueError:inside=False
-     if inside and row['path'] not in seen:c.execute('UPDATE videos SET missing=1 WHERE id=?',(row['id'],))
+     if inside and LIBRARIES.owner(row['path'],policies)==folder and row['path'] not in seen and not walk_errors and Path(folder).is_dir():c.execute('UPDATE videos SET missing=1 WHERE id=?',(row['id'],))
+   LIBRARIES.finish(folder,'部分目录读取失败，未更新缺失标记' if walk_errors else '')
   STATUS['message']='扫描完成'
  finally:STATUS['running']=False;LOCK.release()
 AMANE_STATUS={'connected':False,'synced':0,'message':'等待连接','last_sync':0}
@@ -393,7 +405,7 @@ def poll_scrapes():
   for out in result.get('outcomes',[]):
    if out.get('outcome')=='failed':details.append(str(out.get('site',''))+': '+str(out.get('reason','unknown')))
   reasons=[x.get('reason') for x in result.get('outcomes',[]) if x.get('outcome')=='failed']
-  retry='retryable' if any(x in ('network','timeout','rate_limited','server_error') for x in reasons) else 'needs_review' if remote['status']=='failed' else ''
+  retry='retryable' if any(x in ('network','timeout','dns','rate_limited','server_error') for x in reasons) else 'needs_review' if remote['status']=='failed' else ''
   with db() as c:c.execute('UPDATE scrape_jobs SET status=?,error=?,details=?,updated=?,retry_kind=? WHERE id=?',(remote['status'],remote.get('error') or '', '; '.join(details),time.time(),retry,job['id']))
 
 AUTO_STATUS={'enabled':True,'message':'等待自动刮削','submitted':0}
@@ -402,9 +414,14 @@ def auto_scrape_tick():
  if not enabled:AUTO_STATUS['message']='自动刮削已暂停';return
  with db() as c:
   active=c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]
-  rows=c.execute("SELECT id,UPPER(code) AS code FROM videos WHERE missing=0 AND amane_id=0 AND code!='' ORDER BY id").fetchall()
+  rows=c.execute("SELECT id,path,size,mtime,UPPER(code) AS code FROM videos WHERE missing=0 AND amane_id=0 AND code!='' ORDER BY id").fetchall()
+  policies=LIBRARIES.policies()
   candidates=[];seen=set()
   for row in rows:
+   owner=LIBRARIES.owner(row['path'],policies)
+   policy=next((p for p in policies if p['path']==owner),None)
+   if policy and (policy['automation']!='scrape' or not Path(policy['path']).is_dir() or not LIBRARIES.included(row['path'],policy,row['size'] or 0) or time.time()-(row['mtime'] or 0)<policy['settle_seconds']):continue
+   if not policy:continue
    code=row['code']
    if code in seen:continue
    seen.add(code)
@@ -510,7 +527,7 @@ def watcher():
  while True:
   try:
    if not RESTORING.is_set():
-    scan()
+    scan(automatic=True)
     if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
   except Exception as e:STATUS['message']='扫描失败：'+str(e)
   time.sleep(max(30,int(config()['interval'])))
@@ -565,6 +582,12 @@ class Handler(BaseHTTPRequestHandler):
   path=urlparse(self.path).path
   try:
    if path=='/':return self.send((ROOT/'index.html').read_bytes(),'text/html; charset=utf-8')
+   if path=='/management.js':return self.send((ROOT/'management.js').read_bytes(),'text/javascript; charset=utf-8')
+   if path=='/api/network':return self.send(NETWORK.status())
+   if path=='/api/libraries':return self.send({'items':LIBRARIES.list()})
+   if path=='/api/library-files':
+    query=parse_qs(urlparse(self.path).query)
+    return self.send(LIBRARIES.files(query.get('path',[''])[0],query.get('status',['all'])[0],query.get('search',[''])[0],int(query.get('offset',['0'])[0]),int(query.get('limit',['30'])[0])))
    if path=='/api/hierarchy':return self.send({'movies':CORE.hierarchy()})
    if path=='/api/backups':return self.send({'backups':CORE.backups()})
    if path.startswith('/api/field-diff/'):
@@ -630,15 +653,37 @@ class Handler(BaseHTTPRequestHandler):
    length=int(self.headers.get('Content-Length',0))
    if length>100000:raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
-   if path=='/api/pick-folder':
+   if path=='/api/network/check':return self.send({'ok':True,'started':NETWORK.start(a.get('source_ids'))})
+   elif path=='/api/libraries':
+    library_path=LIBRARIES.save(a)
+    if a.get('scan'):threading.Thread(target=scan,kwargs={'folder_path':library_path},daemon=True).start()
+    return self.send({'ok':True})
+   elif path=='/api/library-scan':
+    library_path=str(Path(a['path']).resolve())
+    if library_path not in [p['path'] for p in LIBRARIES.policies()]:raise ValueError('媒体库不存在')
+    if LOCK.locked():return self.send({'ok':True,'busy':True})
+    threading.Thread(target=scan,kwargs={'folder_path':library_path},daemon=True).start()
+    return self.send({'ok':True})
+   elif path=='/api/scraping-options':
+    sources=a.get('sources');priority=a.get('field_priority',{})
+    if not isinstance(sources,list) or not sources or len(sources)>3 or any(not isinstance(s,str) or s not in ('javbus','jav321','fc2') for s in sources) or len(set(sources))!=len(sources):raise ValueError('请选择至少一个有效来源')
+    allowed={'title','actors','tags','studio','release','plot','poster_urls','thumb_urls','runtime','series','directors','publisher'}
+    if not isinstance(priority,dict) or any(k not in allowed or not isinstance(v,list) or len(v)>3 or any(s not in sources for s in v) for k,v in priority.items()):raise ValueError('字段优先级应为字段到已启用来源列表的对象')
+    cfg=config();cfg.update(scrape_sources=sources,scrape_field_priority=priority)
+    (DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8')
+    return self.send({'ok':True})
+   elif path=='/api/pick-folder':
     return self.send({'path':choose_folder()})
    elif path=='/api/folder':
     p=Path(a['path']).expanduser().resolve()
     if not p.is_dir():raise ValueError('目录不存在')
-    with db() as c:c.execute('INSERT OR IGNORE INTO folders VALUES(?)',(str(p),))
+    if str(p) not in [policy['path'] for policy in LIBRARIES.policies()]:LIBRARIES.save({'path':str(p)})
     threading.Thread(target=scan,daemon=True).start()
    elif path=='/api/remove-folder':
-    with db() as c:c.execute('DELETE FROM folders WHERE path=?',(a['path'],))
+    LIBRARIES.policies()
+    with db() as c:
+     c.execute('DELETE FROM folders WHERE path=?',(a['path'],))
+     c.execute('DELETE FROM library_settings WHERE path=?',(a['path'],))
    elif path=='/api/scan':
     if LOCK.locked():return self.send({'ok':True,'busy':True})
     threading.Thread(target=scan,args=(bool(a.get('force')),),daemon=True).start()
