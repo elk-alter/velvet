@@ -134,3 +134,5 @@ python -m unittest discover -s . -p "test_*.py"
 欢迎提交可复现问题、小范围修复和需求讨论。请使用虚构文件名与脱敏日志，避免在 Issue 中附带私人媒体、演员偏好或连接凭证。贡献流程见 [CONTRIBUTING](CONTRIBUTING.md)，安全反馈见 [SECURITY](SECURITY.md)。
 
 公开可见不意味着所有能力已生产可用。项目以 [GPL-3.0](LICENSE) 发布；移植组件与修改说明见 [NOTICE](NOTICE)。
+
+管理区的页面职责与导航方式见 [管理区导航](docs/MANAGEMENT-NAVIGATION.md)。

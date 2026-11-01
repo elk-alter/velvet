@@ -622,6 +622,7 @@ class Handler(BaseHTTPRequestHandler):
   try:
    if path=='/':return self.send((ROOT/'index.html').read_bytes(),'text/html; charset=utf-8')
    if path=='/management.js':return self.send((ROOT/'management.js').read_bytes(),'text/javascript; charset=utf-8')
+   if path=='/manager_routes.js':return self.send((ROOT/'manager_routes.js').read_bytes(),'text/javascript; charset=utf-8')
    if path=='/management.css':return self.send((ROOT/'management.css').read_bytes(),'text/css; charset=utf-8')
    if path=='/browse.js':return self.send((ROOT/'browse.js').read_bytes(),'text/javascript; charset=utf-8')
    if path=='/film_detail.js':return self.send((ROOT/'film_detail.js').read_bytes(),'text/javascript; charset=utf-8')
