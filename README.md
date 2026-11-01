@@ -69,7 +69,7 @@ AI 参与需求讨论、实现、文档与测试编写；产品规则仍由用�
 
 ## 快速开始
 
-需要 **Python 3.10+**。运行时使用 Python 标准库，无需安装 Python 第三方依赖。
+需要 **Python 3.10+**。基础运行与外部元数据服务模式使用 Python 标准库；启用内置刮削需要先安装 `requirements.txt`。
 
 ```bash
 git clone https://github.com/elk-alter/velvet.git
@@ -93,7 +93,9 @@ python app.py --no-browser
 
 可在设置中连接独立运行的 **[Amane](https://github.com/sqzw-x/amane)**。默认本机地址为 `http://127.0.0.1:18000`；Windows 下可读取其默认 Token 文件，也支持显式填写连接信息。
 
-Amane 不是本项目打包的依赖。Velvet 通过公共 API 读取资料和缓存图片，不调用原视频整理；自动任务仍受来源可访问性、编号识别和网络情况影响。详见 [使用与配置](docs/USAGE.md)。
+项目现提供第一批移植自 Amane 的内置采集器，安装 `python -m pip install -r requirements.txt` 后，在资料源设置选择“内置刮削”；原有外部模式继续可用。内置引擎的范围、代理、测试与限制见 [内置刮削](docs/BUILTIN-SCRAPING.md)。
+
+外部模式下，Amane 不是本项目打包的依赖。Velvet 通过公共 API 读取资料和缓存图片，不调用原视频整理；自动任务仍受来源可访问性、编号识别和网络情况影响。详见 [使用与配置](docs/USAGE.md)。
 
 ### 数据在哪里
 
@@ -131,4 +133,4 @@ python -m unittest discover -s . -p "test_*.py"
 
 欢迎提交可复现问题、小范围修复和需求讨论。请使用虚构文件名与脱敏日志，避免在 Issue 中附带私人媒体、演员偏好或连接凭证。贡献流程见 [CONTRIBUTING](CONTRIBUTING.md)，安全反馈见 [SECURITY](SECURITY.md)。
 
-公开可见不意味着所有能力已生产可用。项目当前未附开源许可证；代码使用与分发授权将在作者确定许可后另行说明。
+公开可见不意味着所有能力已生产可用。项目以 [GPL-3.0](LICENSE) 发布；移植组件与修改说明见 [NOTICE](NOTICE)。

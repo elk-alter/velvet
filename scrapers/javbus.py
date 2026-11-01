@@ -1,0 +1,136 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Adapted from sqzw-x/amane @ 99369d2 (2026-11-02).
+# Changes: imports redirected to Velvet compatibility layer; parsing retained.
+from .compat import (SiteName, Crawler, CrawlerProfile, FetchOptions, MediaMetadata,
+    SearchQuery, film_actors, extract_text, extract_all_texts, number_variants,
+    select_number_index, RequestError)
+import re
+from urllib.parse import urljoin
+
+from parsel import Selector
+
+
+
+class JavBusCrawler(Crawler):
+    @classmethod
+    def profile(cls) -> CrawlerProfile:
+        return CrawlerProfile(
+            name=SiteName.JAVBUS,
+            base_url="https://www.javbus.com",
+            cookies={"dv": "1"},
+            headers={"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6"},
+            same_origin_referer=True,
+        )
+
+    async def _search(self, query: SearchQuery, options: FetchOptions | None = None) -> str | None:
+        """站内地址与检索词只写去掉开头数字段的番号, 因此按 ``number_variants`` 逐个形态尝试."""
+        last_error: RequestError | None = None
+        for number in number_variants(query.number):
+            try:
+                url = await self._search_number(number, query.number)
+            except RequestError as exc:
+                last_error = exc
+                continue
+            if url is not None:
+                return url
+        if last_error is not None:
+            raise last_error
+        return None
+
+    async def _search_number(self, number: str, query_number: str) -> str | None:
+        # 先尝试直接访问详情页.
+        direct_url = f"{self.base_url}/{number}"
+        try:
+            text = await self.client.get_html(direct_url, cookies=self.cookies, headers=self.headers)
+        except RequestError:
+            text = None
+        if text and "movie-box" in text:
+            html = Selector(text=text)
+            title = extract_text(html, "//h3/text()")
+            if title:
+                return direct_url
+
+        # 未命中则回退搜索. 站内检索为模糊匹配, 会返回番号相近的条目, 因此逐条比对结果 <date> 中的
+        # 番号, 不取首条.
+        search_url = f"{self.base_url}/search/{number}&type=&parent=ce"
+        try:
+            text = await self.client.get_html(search_url, cookies=self.cookies, headers=self.headers)
+        except RequestError as exc:
+            # 检索词一条也匹配不上时站点直接 404, 与直达 404 同义, 判无此番号; 其余失败照旧上报.
+            if exc.http_status != 404:
+                raise
+            return None
+        html = Selector(text=text)
+        candidates = [
+            (urljoin(self.base_url, href), found)
+            for item in html.xpath("//a[@class='movie-box']")
+            if (href := item.xpath("./@href").get())
+            and (found := extract_text(item, "div[@class='photo-info']//date[1]/text()"))
+        ]
+        index = select_number_index([found for _, found in candidates], query_number)
+        return candidates[index][0] if index is not None else None
+
+    async def _scrape(self, url: str, options: FetchOptions | None = None) -> MediaMetadata | None:
+        text = await self.client.get_html(url, cookies=self.cookies, headers=self.headers)
+        html = Selector(text=text)
+
+        title = extract_text(html, "//h3/text()")
+        if not title:
+            return None
+
+        number = extract_text(
+            html, '//span[@class="header"][contains(text(), "識別碼:")]/following-sibling::span/text()'
+        )
+        if not number:
+            return None
+
+        actors = extract_all_texts(html, '//div[@class="star-name"]/a/text()')
+
+        cover = extract_text(html, '//a[@class="bigImage"]/@href')
+        thumb_url = urljoin(url, cover) if cover else None
+
+        # poster: /cover/ -> /thumb/, _b.jpg -> .jpg
+        poster_url = None
+        if cover:
+            poster = cover.replace("/cover/", "/thumb/").replace("_b.jpg", ".jpg")
+            poster_url = urljoin(url, poster)
+
+        release_raw = extract_text(html, '//span[@class="header"][contains(text(), "發行日期:")]/parent::p/text()')
+        release = release_raw.strip() if release_raw else None
+
+        runtime_raw = extract_text(html, '//span[@class="header"][contains(text(), "長度:")]/parent::p/text()')
+        runtime = self._parse_runtime(runtime_raw)
+
+        studio = extract_text(html, '//a[contains(@href, "/studio/")]/text()')
+        publisher = extract_text(html, '//a[contains(@href, "/label/")]/text()')
+        director = extract_text(html, '//a[contains(@href, "/director/")]/text()')
+        directors = [director] if director else []
+        series = extract_text(html, '//a[contains(@href, "/series/")]/text()')
+        tags = extract_all_texts(html, '//span[@class="genre"]/label/a[contains(@href, "/genre/")]/text()')
+        extrafanart = extract_all_texts(html, "//div[@id='sample-waterfall']/a/@href")
+        extrafanart = [urljoin(url, u) for u in extrafanart]
+
+        return MediaMetadata(
+            number=number,
+            title=title,
+            actors=film_actors(actors),
+            studio=studio or None,
+            publisher=publisher or None,
+            release=release,
+            runtime=runtime,
+            tags=tags,
+            series=series or None,
+            directors=directors,
+            poster_urls=[poster_url] if poster_url else [],
+            thumb_urls=[thumb_url] if thumb_url else [],
+            extrafanart=extrafanart,
+            source_url=url,
+            external_id=url,
+        )
+
+    @staticmethod
+    def _parse_runtime(text: str) -> int | None:
+        if not text:
+            return None
+        match = re.search(r"(\d+)", text)
+        return int(match.group(1)) if match else None

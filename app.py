@@ -16,7 +16,7 @@ STATUS={'running':False,'message':'准备就绪','processed':0,'errors':0}
 NAS=os.environ.get('VELVET_SERVER','0')=='1'
 BIND=os.environ.get('VELVET_BIND','0.0.0.0' if NAS else '127.0.0.1')
 USER=os.environ.get('VELVET_USER','admin'); PASSWORD=os.environ.get('VELVET_PASSWORD','')
-DEFAULT={'interval':300,'online':False,'provider':'','api_key':'','amane_url':'http://127.0.0.1:18000','amane_token':'','tag_aliases':{},'auto_scrape':True}
+DEFAULT={'interval':300,'online':False,'provider':'','api_key':'','amane_url':'http://127.0.0.1:18000','amane_token':'','tag_aliases':{},'auto_scrape':True,'scrape_engine':'external','scrape_proxy':''}
 class Connection(sqlite3.Connection):
  def __enter__(self):
   DB_MUTEX.acquire()
@@ -245,6 +245,15 @@ def scan(force=False):
 AMANE_STATUS={'connected':False,'synced':0,'message':'等待连接','last_sync':0}
 AMANE_LOCK=threading.Lock()
 SUBMIT_LOCK=threading.Lock()
+BUILTIN_LOCK=threading.Lock()
+BUILTIN_ENGINES={}
+
+def builtin_engine():
+ from builtin_scraper import Engine
+ with BUILTIN_LOCK:
+  key=str(DATA)
+  if key not in BUILTIN_ENGINES:BUILTIN_ENGINES[key]=Engine(DATA,config)
+  return BUILTIN_ENGINES[key]
 def amane_headers():
  cfg=config();token=cfg.get('amane_token','')
  if not token:
@@ -258,6 +267,7 @@ def amane_base():
  if parsed.scheme=='http' and parsed.hostname not in ('127.0.0.1','localhost','::1'):raise ValueError('远程 Amane 请使用 HTTPS')
  return base
 def amane_request(path,data=None):
+ if config().get('scrape_engine')=='builtin':return builtin_engine().request(path,data)
  req=Request(amane_base()+'/api/'+path,headers=amane_headers(),data=json.dumps(data).encode() if data is not None else None)
  try:
   with urlopen(req,timeout=25) as r:return json.load(r)
@@ -272,6 +282,13 @@ def cache_artwork(url,vid,art='poster'):
  target=DATA/f'{vid}-{art}.jpg'
  with db() as c:old=c.execute('SELECT '+art+'_origin FROM videos WHERE id=?',(vid,)).fetchone()
  if old and old[0]==url and target.exists():return True
+ if config().get('scrape_engine')=='builtin':
+  with db() as c:snapshot=c.execute('SELECT amane_snapshot FROM videos WHERE id=?',(vid,)).fetchone()
+  referer=json.loads(snapshot[0] or '{}').get('source_url','') if snapshot else ''
+  ok=builtin_engine().cache_artwork(url,target,referer)
+  if ok:
+   with db() as c:c.execute('UPDATE videos SET '+art+'_origin=? WHERE id=?',(url,vid))
+  return ok
  parsed=urlparse(url)
  digest=parsed.path.rsplit('/',1)[-1] if parsed.path.startswith('/api/resources/') and re.fullmatch(r'[a-f0-9]{16}',parsed.path.rsplit('/',1)[-1]) else hashlib.sha256(url.encode()).hexdigest()[:16]
  req=Request(amane_base()+'/api/resources/'+digest,headers=amane_headers())
@@ -663,6 +680,7 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/backup-validate':
     CORE.validate_backup(a['name']);return self.send({'ok':True})
    elif path=='/api/restore':
+    if any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values()):raise ValueError('请等待内置刮削任务停止后再恢复备份')
     if a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
     locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK];acquired=[]
     RESTORING.set()
@@ -737,7 +755,19 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/unlock':
     with db() as c:c.execute('UPDATE videos SET locked_fields=?,manual=0 WHERE id=?',('[]',int(a['id'])))
    elif path=='/api/amane-settings':
-    cfg=config();cfg['amane_url']=str(a.get('url','')).rstrip('/')
+    cfg=config();engine=a.get('engine',cfg.get('scrape_engine','external'))
+    if engine not in ('builtin','external'):raise ValueError('未知刮削引擎')
+    if engine!=cfg.get('scrape_engine','external'):
+     with db() as c:
+      if c.execute("SELECT 1 FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone():raise ValueError('请先完成或取消当前刮削任务，再切换引擎')
+     if engine=='builtin':
+      from builtin_scraper import source_types
+      source_types()
+    proxy=str(a.get('proxy',cfg.get('scrape_proxy',''))).strip()
+    if proxy:
+     proxy_url=urlparse(proxy)
+     if proxy_url.scheme not in ('http','https') or not proxy_url.hostname or proxy_url.username:raise ValueError('请填写无用户名密码的 HTTP 代理地址')
+    cfg['scrape_engine']=engine;cfg['scrape_proxy']=proxy;cfg['amane_url']=str(a.get('url',cfg['amane_url'])).rstrip('/')
     parsed=urlparse(cfg['amane_url'])
     if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username:raise ValueError('服务地址无效')
     if parsed.scheme=='http' and parsed.hostname not in ('127.0.0.1','localhost','::1'):raise ValueError('远程连接需要 HTTPS')

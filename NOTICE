@@ -1,0 +1,14 @@
+Velvet is distributed under the GNU General Public License version 3.
+See LICENSE for the full license text.
+
+Adapted components: scrapers/jav321.py, scrapers/javbus.py, scrapers/fc2.py
+Upstream: Amane, https://github.com/sqzw-x/amane
+Copyright: the Amane contributors (upstream does not state a year or holder in these files).
+Source revision: 99369d2a862af2eb9a6f95a3d8e668057b7e49d0
+Original paths: src/amane/crawlers/sites/{jav321,javbus,fc2}.py
+Upstream license: GPL-3.0; source license text retained in LICENSE.
+Changes dated 2026-11-02: imports redirected to a Python 3.10-compatible
+Velvet host. Site extraction code retained. Host, queue, transport and integration
+are implemented separately in scrapers/compat.py and builtin_scraper.py.
+
+The rest of Amane, its branding, UI, dependencies and binaries are not bundled.

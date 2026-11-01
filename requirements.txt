@@ -1,0 +1,2 @@
+# Optional for builtin metadata scraping. External Amane mode needs no pip dependencies.
+parsel>=1.9,<2

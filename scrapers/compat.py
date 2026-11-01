@@ -1,0 +1,111 @@
+"""Small Python 3.10 host for the attributed Amane source adapters."""
+import asyncio
+import re
+from dataclasses import dataclass
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, build_opener, ProxyHandler
+from urllib.parse import urlparse
+
+
+class SiteName:
+    JAV321 = 'jav321'
+    JAVBUS = 'javbus'
+    FC2 = 'fc2'
+
+
+@dataclass
+class CrawlerProfile:
+    name: str
+    base_url: str
+    cookies: dict = None
+    headers: dict = None
+    same_origin_referer: bool = False
+
+
+@dataclass
+class SearchQuery:
+    number: str
+
+
+class FetchOptions:
+    pass
+
+
+class MediaMetadata:
+    def __init__(self, **values):
+        self.values = values
+
+
+def film_actors(names):
+    return list(dict.fromkeys(names))
+
+
+def extract_text(html, xpath):
+    return (html.xpath(xpath).get() or '').strip()
+
+
+def extract_all_texts(html, xpath):
+    return list(dict.fromkeys(v.strip() for v in html.xpath(xpath).getall() if v.strip()))
+
+
+def fold_number(value):
+    folded = re.sub(r'[-\s]', '', value).casefold()
+    return re.sub(r'^fc2(?:ppv)?(?=\d+$)', 'fc2', folded)
+
+
+def number_variants(number):
+    # Deliberately conservative: never drop a numeric prefix without identity review.
+    return (number.strip(),)
+
+
+def select_number_index(found, query):
+    matches = [i for i, value in enumerate(found) if fold_number(value) == fold_number(query)]
+    return matches[0] if len(matches) == 1 else None
+
+
+class RequestError(ValueError):
+    def __init__(self, message, http_status=None):
+        super().__init__(message)
+        self.http_status = http_status
+
+
+def fetch_bytes(url, proxy='', headers=None, limit=8_000_000):
+    parsed = urlparse(url)
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username:
+        raise RequestError('来源资源必须使用 HTTPS')
+    opener = build_opener(ProxyHandler({'http': proxy, 'https': proxy} if proxy else {}))
+    try:
+        with opener.open(Request(url, headers=headers or {}), timeout=20) as response:
+            payload = response.read(limit + 1)
+            if len(payload) > limit:
+                raise RequestError('来源响应超过大小限制')
+            return payload, response.headers.get('Content-Type', '')
+    except HTTPError as exc:
+        raise RequestError('来源 HTTP ' + str(exc.code), exc.code) from None
+    except (URLError, OSError):
+        raise RequestError('来源网络连接失败或超时') from None
+
+
+class HttpClient:
+    def __init__(self, proxy=''):
+        self.proxy = proxy
+
+    async def get_html(self, url, cookies=None, headers=None):
+        request_headers = {'User-Agent': 'Mozilla/5.0', **(headers or {})}
+        if cookies:
+            request_headers['Cookie'] = '; '.join(k + '=' + v for k, v in cookies.items())
+        body, _ = await asyncio.to_thread(fetch_bytes, url, self.proxy, request_headers)
+        return body.decode('utf-8', errors='replace')
+
+
+class Crawler:
+    def __init__(self, client):
+        profile = self.profile()
+        self.client = client
+        self.base_url = profile.base_url
+        self.cookies = profile.cookies or {}
+        self.headers = profile.headers or {}
+
+    async def fetch(self, query):
+        url = await self._search(query)
+        return await self._scrape(url) if url else None
