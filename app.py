@@ -16,6 +16,7 @@ UI_ASSETS={
  '/browse.js':('browse.js','text/javascript'),
  '/film_detail.js':('film_detail.js','text/javascript'),
  '/browse.css':('browse.css','text/css'),
+ '/file_review.js':('file_review.js','text/javascript'),
 }
 DATA=Path(os.environ.get('VELVET_DATA',str(ROOT/'data'))).resolve();DATA.mkdir(parents=True,exist_ok=True)
 DB_MUTEX=threading.RLock()
@@ -125,6 +126,8 @@ def presentation(row):
 sys.path.insert(0,str(ROOT))
 from library_core import LibraryCore
 CORE=LibraryCore(db,DATA,presentation)
+from file_review import FileReview
+REVIEW=FileReview(db,binary,DATA)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
@@ -632,6 +635,8 @@ class Handler(BaseHTTPRequestHandler):
    if path in UI_ASSETS:
     filename,kind=UI_ASSETS[path]
     return self.send((ROOT/filename).read_bytes(),kind+'; charset=utf-8')
+   if path=='/api/file-review':
+    with db() as c:return self.send(REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],CORE.hierarchy()))
    if path=='/api/network':return self.send(NETWORK.status())
    if path=='/api/scrape-sites':
     options=config().get('scrape_site_config',{})
@@ -665,7 +670,7 @@ class Handler(BaseHTTPRequestHandler):
      for job in jobs:
       row=c.execute('SELECT * FROM videos WHERE UPPER(code)=? LIMIT 1',(job['code'].upper(),)).fetchone()
       job['completeness']='awaiting_sync' if job['status']=='done' and row and not row['amane_id'] else 'partial' if job['status']=='done' and row and (not row['actors'] or not row['studio'] or not row['source_tags']) else ''
-    return self.send({'jobs':jobs,'status':AMANE_STATUS,'auto':AUTO_STATUS,'work':WORK_STATUS,'duplicates':DUP_STATUS})
+    return self.send({'jobs':jobs,'status':AMANE_STATUS,'auto':AUTO_STATUS,'work':WORK_STATUS,'duplicates':DUP_STATUS,'file_review':{'running':REVIEW.lock.locked()}})
    if path=='/api/tag-rules':
     try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
     except (OSError,ValueError):rules=[]
@@ -677,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
    if path=='/api/library':
     cfg=config();cfg['has_key']=bool(cfg['api_key']);cfg['api_key']='';cfg['has_amane_token']=bool(cfg['amane_token']);cfg['amane_token']='';cfg.pop('scrape_site_config',None)
     movies=CORE.hierarchy()
-    with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')],'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN})
+    with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')],'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN,'review':REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],movies)})
    if path.startswith('/thumb/'):
     name=path.split('/')[-1]
     if not re.fullmatch(r'\d+(?:-(?:[1-5]|poster|cover|still-(?:[1-9]|1[0-2])))?\.jpg',name):return self.send({},status=404)
@@ -717,7 +722,19 @@ class Handler(BaseHTTPRequestHandler):
    length=int(self.headers.get('Content-Length',0))
    if length>100000:raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
-   if path=='/api/scrape-sites':
+   if path.startswith('/api/file-review/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
+   if path=='/api/file-review/mark':
+    REVIEW.mark(a.get('ids'),a.get('flag'),a.get('enabled',True),a.get('decision'),a.get('note'));return self.send({'ok':True})
+   elif path=='/api/file-review/check':
+    if RESTORING.is_set():raise ValueError('恢复中，请稍后检查')
+    REVIEW.enqueue(a.get('ids'),a.get('mode','quick'));return self.send({'ok':True})
+   elif path=='/api/file-review/target':
+    REVIEW.target(a.get('height'));return self.send({'ok':True})
+   elif path=='/api/file-review/cancel':
+    REVIEW.stop();return self.send({'ok':True})
+   elif path=='/api/file-review/resume':
+    REVIEW.resume();return self.send({'ok':True})
+   elif path=='/api/scrape-sites':
     source=a.get('source')
     if source not in NATIVE_SOURCES:raise ValueError('未知内置来源')
     timeout=a.get('timeout',20);retries=a.get('retries',1);base=str(a.get('base_url','')).strip().rstrip('/');cookie=a.get('cookie','')
@@ -820,7 +837,7 @@ class Handler(BaseHTTPRequestHandler):
     if PEOPLE.state['running']:raise ValueError('请等待演员资料与头像同步完成后再恢复备份')
     if any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values()):raise ValueError('请等待内置刮削任务停止后再恢复备份')
     if a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
-    locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK];acquired=[]
+    locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK,REVIEW.lock];acquired=[]
     RESTORING.set()
     try:
      for lock in locks:
@@ -828,7 +845,8 @@ class Handler(BaseHTTPRequestHandler):
       acquired.append(lock)
      with db() as c:
       if c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]:raise ValueError('仍有刮削任务，请先在任务中心取消并等待结束后恢复')
-     with DB_MUTEX:rollback=CORE.restore(a['name'])
+     with DB_MUTEX:
+      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True)
     finally:
      for lock in reversed(acquired):lock.release()
      RESTORING.clear()
@@ -967,6 +985,7 @@ if __name__=='__main__':
  if NAS and len(PASSWORD)<12:raise SystemExit('NAS 模式必须设置至少 12 位 VELVET_PASSWORD')
  server=LocalServer((BIND,8765),Handler)
  if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
+ REVIEW.resume()
  threading.Thread(target=watcher,daemon=True).start()
  threading.Thread(target=amane_watcher,daemon=True).start()
  print('Velvet: http://127.0.0.1:8765  Ctrl+C 退出')

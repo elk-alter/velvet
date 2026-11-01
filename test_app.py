@@ -49,6 +49,12 @@ class LibraryTests(unittest.TestCase):
      actor=next(x for x in json.load(r)['actors'] if x['name']=='Actor');self.assertEqual(actor['rating'],4);self.assertEqual(actor['favorite'],1)
     with req('/api/actor-edit',{'name':'Actor','favorite':0},{'X-Velvet-Token':app.TOKEN}) as r:self.assertTrue(json.load(r)['ok'])
     with req('/api/actors') as r:self.assertEqual(next(x for x in json.load(r)['actors'] if x['name']=='Actor')['rating'],4)
+    with req('/api/file-review/mark',{'ids':[vid],'flag':'watermark','note':'fixture'},{'X-Velvet-Token':app.TOKEN}) as r:self.assertTrue(json.load(r)['ok'])
+    with req('/api/file-review') as r:self.assertTrue(json.load(r)['files'][str(vid)]['needs_update'])
+    with req('/api/file-review/mark',{'ids':[vid],'decision':'accepted'},{'X-Velvet-Token':app.TOKEN}) as r:self.assertTrue(json.load(r)['ok'])
+    with req('/api/file-review') as r:self.assertFalse(json.load(r)['files'][str(vid)]['needs_update'])
+    with self.assertRaises(HTTPError):req('/api/file-review/mark',{'ids':[vid],'flag':'damaged'})
+
     with self.assertRaises(HTTPError):req('/api/actor-edit',{'name':'Actor','rating':6},{'X-Velvet-Token':app.TOKEN})
 
     with req('/media/'+str(vid),headers={'Range':'bytes=2-5'}) as r:self.assertEqual(r.status,206);self.assertEqual(r.read(),b'2345')

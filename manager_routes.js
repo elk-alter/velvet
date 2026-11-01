@@ -3,18 +3,18 @@ let managerRouteEpoch=0,managerController=null,managerDirty=false,managerRenderi
 const managerNavigationState={route:null,params:{},browseReturn:null};window.managerNavigationState=managerNavigationState;
 const managerRenderers={libraries:showMediaLibraries,tasks:showTaskCenter,sources:showScrapingOptions,priorities:showNativeOptions,sites:showSiteSettings,network:showNetwork,connection:showScrapeConnection,files:showLibraryFiles,edit:editMediaLibrary};
 const managerRouteInfo={
- libraries:{group:'libraries',title:'媒体库'},'library-files':{group:'libraries',title:'媒体库文件',parent:'libraries'},'library-edit':{group:'libraries',title:'配置媒体库',parent:'libraries'},'library-new':{group:'libraries',title:'添加媒体库',parent:'libraries'},duplicates:{group:'libraries',title:'重复检查'},
+ libraries:{group:'libraries',title:'媒体库'},'library-files':{group:'libraries',title:'媒体库文件',parent:'libraries'},'library-edit':{group:'libraries',title:'配置媒体库',parent:'libraries'},'library-new':{group:'libraries',title:'添加媒体库',parent:'libraries'},duplicates:{group:'libraries',title:'重复检查'},review:{group:'libraries',title:'待处理与文件质量'},
  tasks:{group:'scrape',title:'刮削任务'},sources:{group:'scrape',title:'来源目录'},priorities:{group:'scrape',title:'来源顺序与字段择优',parent:'sources'},sites:{group:'scrape',title:'站点凭据'},connection:{group:'scrape',title:'执行与网络'},network:{group:'scrape',title:'网络检测'},
  general:{group:'settings',title:'常规设置'},rules:{group:'settings',title:'分类规则'},backups:{group:'settings',title:'备份与恢复'}
 };
 const managerGroupNames={libraries:'媒体库',scrape:'刮削中心',settings:'设置'};
-const managerTabs={libraries:[['libraries','媒体库'],['duplicates','重复检查']],scrape:[['tasks','任务'],['sources','来源与择优'],['sites','站点凭据'],['connection','执行与网络'],['network','网络检测']],settings:[['general','常规'],['rules','分类规则'],['backups','备份恢复']]};
+const managerTabs={libraries:[['libraries','媒体库'],['duplicates','重复检查'],['review','待处理与质量']],scrape:[['tasks','任务'],['sources','来源与择优'],['sites','站点凭据'],['connection','执行与网络'],['network','网络检测']],settings:[['general','常规'],['rules','分类规则'],['backups','备份恢复']]};
 const managerQueryKeys={path:'m_lib',source:'m_source',status:'m_status',search:'m_q',offset:'m_offset'};
 function managementLocation(){const url=new URL(location.href),raw=url.searchParams.get('manage');if(!raw)return null;const route=Object.hasOwn(managerRouteInfo,raw)?raw:'tasks';return {route,params:Object.fromEntries(Object.entries(managerQueryKeys).map(([key,param])=>[key,url.searchParams.get(param)||'']))}}
 function writeManagementLocation(route,params,replace=false){const url=new URL(location.href);url.searchParams.delete('manage');for(const key of Object.values(managerQueryKeys))url.searchParams.delete(key);if(route){url.searchParams.set('manage',route);for(const [key,param]of Object.entries(managerQueryKeys))if(params[key]!==undefined&&params[key]!==''&&params[key]!==null)url.searchParams.set(param,String(params[key]));}history[replace?'replaceState':'pushState']({velvetManager:route,browseReturn:managerNavigationState.browseReturn},'',url)}
 function sameManagerPage(route,params){return managerNavigationState.route===route&&Object.keys(managerQueryKeys).every(key=>String(managerNavigationState.params[key]||'')===String(params[key]||''))}
 function allowManagementLeave(){return !managerDirty||confirm('此页有未保存的修改。放弃修改并离开？')}
-function clearManagerTimers(){clearTimeout(managerTaskTimer);clearTimeout(managerNetworkTimer);clearTimeout(duplicatesTimer);managerController?.abort();}
+function clearManagerTimers(){clearTimeout(reviewTimer);clearTimeout(managerTaskTimer);clearTimeout(managerNetworkTimer);clearTimeout(duplicatesTimer);managerController?.abort();}
 async function managerFetch(url){const ticket=managerRouteEpoch;const response=await fetch(url,{signal:managerController?.signal});const read=response.json.bind(response);response.json=async()=>{const data=await read();if(ticket!==managerRouteEpoch)throw new DOMException('页面已切换','AbortError');return data};return response}
 async function managerGet(url){const response=await managerFetch(url);if(!response.ok)throw Error('读取失败，请检查服务后重试');return response.json()}
 function renderManagerShell(title,body,footer=''){
@@ -41,6 +41,7 @@ async function goManage(route,params={},options={}){
    if(route==='library-files'){const desired={...params};await managerRenderers.files(index);if(ticket!==managerRouteEpoch)return false;$('mlFileStatus').value=['all','matched','pending','missing','error'].includes(desired.status)?desired.status:'all';$('mlFileSearch').value=desired.search||'';await loadLibraryFiles(Math.max(0,Number(desired.offset)||0));}
    else managerRenderers.edit(route==='library-new'?-1:index);
   }else if(route==='duplicates'){await renderDuplicatesManager()}
+  else if(route==='review'){await renderReviewManager()}
   else if(route==='general'){await renderGeneralSettings()}
   else if(route==='rules'){await renderClassificationSettings()}
   else if(route==='backups'){await renderBackupSettings()}

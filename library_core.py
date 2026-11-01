@@ -102,7 +102,7 @@ class LibraryCore:
    with self.db() as source:
     with closing(sqlite3.connect(dbpath)) as dest:source.backup(dest)
    with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
-    z.write(dbpath,'library.db');z.writestr('manifest.json',json.dumps({'schema':1,'version':'0.1.0-alpha.1','created':time.time()}))
+    z.write(dbpath,'library.db');z.writestr('manifest.json',json.dumps({'schema':1,'version':Path(__file__).with_name('VERSION').read_text('utf-8-sig').strip(),'created':time.time()}))
     for file in ('settings.json','tag_rules.json'):
      p=self.data/file
      if p.exists():z.write(p,file)
