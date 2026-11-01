@@ -1,0 +1,37 @@
+# Private runtime state, credentials and media
+/data/
+/tools/
+/work/
+/.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite*
+*.log
+*.nfo
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.wmv
+*.m4v
+*.ts
+*.zip
+*.exe
+*.dll
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+.DS_Store
+Thumbs.db
+# Local conversation notes are not public project documentation.
+/*.md
+!/README.md
+!/CHANGELOG.md
+!/CONTRIBUTING.md
+!/SECURITY.md
+# Public documentation lives in docs/.

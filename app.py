@@ -1,0 +1,806 @@
+import os,json,sqlite3,threading,subprocess,shutil,time,webbrowser,sys,re,mimetypes,secrets
+import xml.etree.ElementTree as ET
+import base64,hmac,hashlib,socket,datetime
+from urllib.error import HTTPError
+from pathlib import Path
+from urllib.request import Request,urlopen
+from urllib.parse import urlparse,quote
+from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
+ROOT=Path(__file__).resolve().parent
+APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip() if (ROOT/'VERSION').exists() else '0.1.0-alpha.1'
+DATA=Path(os.environ.get('VELVET_DATA',str(ROOT/'data'))).resolve();DATA.mkdir(parents=True,exist_ok=True)
+DB_MUTEX=threading.RLock()
+SCAN_CANCEL=threading.Event();SYNC_CANCEL=threading.Event();DUP_CANCEL=threading.Event();RESTORING=threading.Event()
+DB=DATA/'library.db'; LOCK=threading.Lock(); TOKEN=secrets.token_urlsafe(32)
+STATUS={'running':False,'message':'准备就绪','processed':0,'errors':0}
+NAS=os.environ.get('VELVET_SERVER','0')=='1'
+BIND=os.environ.get('VELVET_BIND','0.0.0.0' if NAS else '127.0.0.1')
+USER=os.environ.get('VELVET_USER','admin'); PASSWORD=os.environ.get('VELVET_PASSWORD','')
+DEFAULT={'interval':300,'online':False,'provider':'','api_key':'','amane_url':'http://127.0.0.1:18000','amane_token':'','tag_aliases':{},'auto_scrape':True}
+class Connection(sqlite3.Connection):
+ def __enter__(self):
+  DB_MUTEX.acquire()
+  try:return super().__enter__()
+  except BaseException:DB_MUTEX.release();raise
+ def __exit__(self,*args):
+  try:return super().__exit__(*args)
+  finally:self.close();DB_MUTEX.release()
+def db():
+ c=sqlite3.connect(DB,timeout=30,factory=Connection);c.row_factory=sqlite3.Row;return c
+def config():
+ try:return DEFAULT|json.loads((DATA/'settings.json').read_text('utf-8'))
+ except (OSError,ValueError):return DEFAULT.copy()
+with db() as c:
+ c.execute('PRAGMA journal_mode=WAL')
+ c.execute('CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY,path TEXT UNIQUE,title TEXT,size INTEGER,mtime REAL,duration REAL DEFAULT 0,favorite INTEGER DEFAULT 0,tags TEXT DEFAULT "",error TEXT DEFAULT "")')
+ c.execute('CREATE TABLE IF NOT EXISTS folders(path TEXT PRIMARY KEY)')
+ c.execute('CREATE TABLE IF NOT EXISTS actor_preferences(name TEXT PRIMARY KEY,rating INTEGER DEFAULT 0,favorite INTEGER DEFAULT 0)')
+ c.execute('CREATE TABLE IF NOT EXISTS duplicate_choices(group_key TEXT PRIMARY KEY,preferred_id INTEGER)')
+ c.execute('CREATE TABLE IF NOT EXISTS scrape_jobs(id INTEGER PRIMARY KEY,code TEXT,remote_id INTEGER,status TEXT,error TEXT DEFAULT "",details TEXT DEFAULT "",created REAL,updated REAL)')
+ fields={r[1] for r in c.execute('PRAGMA table_info(videos)')}
+ for name,definition in {'code':'TEXT DEFAULT ""','actors':'TEXT DEFAULT ""','studio':'TEXT DEFAULT ""','date':'TEXT DEFAULT ""','plot':'TEXT DEFAULT ""','width':'INTEGER DEFAULT 0','height':'INTEGER DEFAULT 0','codec':'TEXT DEFAULT ""','missing':'INTEGER DEFAULT 0','watched':'INTEGER DEFAULT 0','rating':'INTEGER DEFAULT 0','source':'TEXT DEFAULT "filename"','scraped':'REAL DEFAULT 0','manual':'INTEGER DEFAULT 0','censor_override':'TEXT DEFAULT "auto"','file_hash':'TEXT DEFAULT ""','hash_stamp':'TEXT DEFAULT ""','locked_fields':'TEXT DEFAULT "[]"','amane_snapshot':'TEXT DEFAULT "{}"','cover_origin':'TEXT DEFAULT ""','poster_origin':'TEXT DEFAULT ""','source_tags':'TEXT DEFAULT ""','amane_id':'INTEGER DEFAULT 0','auto_tags':'TEXT DEFAULT ""','tag_reasons':'TEXT DEFAULT "{}"','metadata_stamp':'TEXT DEFAULT ""','position':'REAL DEFAULT 0'}.items():
+  if name not in fields:c.execute(f'ALTER TABLE videos ADD COLUMN {name} {definition}')
+with db() as c:
+ job_fields={r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}
+ if 'retry_kind' not in job_fields:c.execute("ALTER TABLE scrape_jobs ADD COLUMN retry_kind TEXT DEFAULT ''")
+ if 'video_id' not in job_fields:c.execute('ALTER TABLE scrape_jobs ADD COLUMN video_id INTEGER')
+
+def binary(name):
+ found=shutil.which(name)
+ if found:return found
+ filename=name+('.exe' if os.name=='nt' else '')
+ roots=[ROOT/'tools']
+ if os.name=='nt':
+  local=Path(os.environ.get('LOCALAPPDATA',''))
+  alias=local/'Microsoft'/'WinGet'/'Links'/filename
+  if alias.is_file():return str(alias)
+  packages=local/'Microsoft'/'WinGet'/'Packages'
+  if packages.exists():roots.extend(packages.glob('Gyan.FFmpeg*'))
+ for root in roots:
+  found=next((str(p) for p in root.glob('**/'+filename) if p.is_file()),None)
+  if found:return found
+ return None
+
+def run(args,timeout=90):
+ return subprocess.run(args,capture_output=True,timeout=timeout,creationflags=0x08000000 if os.name=='nt' else 0)
+def identify(stem):
+ m=re.search(r'(?i)(?<![a-z0-9])([a-z]{2,10})[-_ ](\d{2,7})(?!\d)',stem)
+ return (m[1]+'-'+m[2]).upper() if m else ''
+def censorship(row,metadata=None):
+ override=row.get('censor_override','auto')
+ if override in ('censored','uncensored','unknown'):return override,'手动指定'
+ p=Path(row['path']);text=p.stem+' '+p.parent.name
+ uncensored=bool(re.search(r'无码|無碼|无修正|無修正|无码破解|無碼破解|(?i:\buncensored\b)',text))
+ censored=bool(re.search(r'有码|有碼|(?i:\bcensored\b)',text))
+ if uncensored and censored:return 'unknown','文件名或目录标记冲突，请手动确认'
+ if uncensored:return 'uncensored','文件名/目录明确标记'
+ if censored:return 'censored','文件名/目录明确标记'
+ if metadata is None:
+  try:metadata=json.loads(row.get('amane_snapshot') or '{}')
+  except ValueError:metadata={}
+ kind=metadata.get('content_type')
+ if kind in ('censored','uncensored'):return kind,'Amane 内容类型（未验证实际画面）'
+ return 'unknown','缺少可靠资料，请手动确认'
+
+def presentation(row):
+ row=dict(row);p=Path(row['path'])
+ pattern=r'(?i)(?<![a-z0-9])(?:part|pt|cd|disc|disk)[ ._-]*(\d{1,2})(?![a-z0-9])|第\s*(\d{1,2})\s*(?:部分|段|集)'
+ match=re.search(pattern,p.stem)
+ row['part_index']=int(match[1] or match[2]) if match else 0
+ base=re.sub(pattern,' ',p.stem);base=re.sub(r'[ ._\-]+',' ',base).strip().casefold()
+ row['part_key']=str(p.parent).casefold()+'|'+base if match else ''
+ try:metadata=json.loads(row.get('amane_snapshot') or '{}')
+ except ValueError:metadata={}
+ named=bool(re.search(r'(?i)(?<![a-z])vr(?![a-z])|虚拟现实|虛擬實境',p.stem+' '+p.parent.name))
+ row['vr']=bool(metadata.get('vr')) or named
+ row['vr_source']='Amane' if metadata.get('vr') else '文件名/目录' if named else ''
+ row['censorship'],row['censorship_source']=censorship(row,metadata)
+ row['censorship_label']={'censored':'有码','uncensored':'无码','unknown':'未知'}[row['censorship']]
+ h=int(row.get('height') or 0)
+ row.pop('amane_snapshot',None)
+ row['resolution_label']='8K' if h>=4320 else '4K' if h>=2160 else '1440p' if h>=1440 else '1080p' if h>=1080 else '720p' if h>=720 else str(h)+'p' if h else '画质待解析'
+ return row
+
+sys.path.insert(0,str(ROOT))
+from library_core import LibraryCore
+CORE=LibraryCore(db,DATA,presentation)
+with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
+WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
+
+def read_metadata(p):
+ result={'code':identify(p.stem),'title':p.stem,'source':'filename'}
+ nfo=p.with_suffix('.nfo')
+ if nfo.is_file():
+  if nfo.stat().st_size>2_000_000:raise ValueError('NFO 过大')
+  tree=ET.fromstring(nfo.read_bytes())
+  for target,tag in [('title','title'),('studio','studio'),('date','premiered'),('plot','plot'),('code','id')]:
+   value=tree.findtext(tag)
+   if value:result[target]=value
+  result['code']=tree.findtext('num') or tree.findtext('id') or result['code']
+  result['actors']=', '.join(x.text for x in tree.findall('actor/name') if x.text)
+  result['tags']=', '.join(dict.fromkeys(x.text for x in tree.findall('tag')+tree.findall('genre') if x.text))
+  result['source']='nfo'
+ return result
+def remote_metadata(code):
+ cfg=config()
+ if not cfg['online'] or not cfg['provider'] or not code:return {}
+ url=cfg['provider'].replace('{code}',quote(code,safe=''))
+ if urlparse(url).scheme!='https':raise ValueError('资料接口必须使用 HTTPS')
+ headers={'Accept':'application/json','User-Agent':'Velvet/2'}
+ if cfg['api_key']:headers['Authorization']='Bearer '+cfg['api_key']
+ with urlopen(Request(url,headers=headers),timeout=15) as response:
+  payload=response.read(2_000_001)
+ if len(payload)>2_000_000:raise ValueError('接口响应过大')
+ result=json.loads(payload)
+ if not isinstance(result,dict) or str(result.get('code','')).upper()!=code.upper():raise ValueError('接口编号不一致，未自动采用')
+ clean={k:str(result[k])[:10000] for k in ['code','title','studio','date','plot'] if result.get(k)}
+ for k in ['actors','tags']:
+  if k in result:clean[k]=', '.join(map(str,result[k])) if isinstance(result[k],list) else str(result[k])
+ clean['source']='online';return clean
+
+def classify(row):
+ reasons={};aliases=config().get('tag_aliases',{})
+ def add(tag,why):
+  tag=str(tag).strip()[:80]
+  if tag:reasons.setdefault(tag,why)
+ for tag in re.split(r'[,，]',row.get('source_tags') or ''):
+  if tag.strip():add('题材/'+aliases.get(tag.strip(),tag.strip()),'Amane 资料分类')
+ status,why=censorship(row)
+ add('制式/'+{'censored':'有码','uncensored':'无码','unknown':'未知'}[status],why)
+ p=Path(row['path']);height=int(row.get('height') or 0);duration=float(row.get('duration') or 0)
+ if height:add('画质/'+('4K' if height>=2160 else '1080p' if height>=1080 else '720p' if height>=720 else '标清'),'媒体分辨率')
+ if duration:add('时长/'+('短片' if duration<1200 else '中片' if duration<3600 else '长片'),'媒体时长')
+ if row.get('codec'):add('编码/'+row['codec'].upper(),'视频编码')
+ if row.get('code'):add('资料/有编号','文件编号')
+ if row.get('source') in ('nfo','online','amane'):add('资料/已匹配','NFO 或联网匹配')
+ else:add('资料/待刮削','尚无 NFO 或联网匹配')
+ # Only explicit folder names and bracketed labels, never infer intimate traits from images.
+ if p.parent.name and p.parent.name.lower() not in {'videos','video','movies','media','downloads'}:add('目录/'+p.parent.name,'直接父目录')
+ for label in re.findall(r'\[([^\[\]]{1,40})\]|【([^【】]{1,40})】',p.stem):
+  value=label[0] or label[1]
+  if not re.search(r'(?i)\d{3,4}[xp]|fps|\d{3,4}p',value):add('文件标签/'+value,'文件名括号标签')
+ try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
+ except (OSError,ValueError):rules=[]
+ text=' '.join(str(row.get(k,'') or '') for k in ['title','path','tags','actors','studio']).casefold()
+ for rule in rules:
+  if isinstance(rule,dict) and rule.get('tag') and any(str(word).casefold() in text for word in rule.get('keywords',[]) if str(word).strip()):add(rule['tag'],'自定义关键词规则')
+ return ', '.join(reasons),json.dumps(reasons,ensure_ascii=False)
+
+def retag_all():
+ with db() as c:
+  rows=c.execute('SELECT * FROM videos').fetchall()
+  for row in rows:
+   tags,reasons=classify(dict(row));c.execute('UPDATE videos SET auto_tags=?,tag_reasons=? WHERE id=?',(tags,reasons,row['id']))
+ return len(rows)
+
+def scan(force=False):
+ if RESTORING.is_set() or not LOCK.acquire(False):return
+ SCAN_CANCEL.clear()
+ STATUS.update(running=True,message='扫描目录…',processed=0,errors=0)
+ try:
+  with db() as c:folders=[r[0] for r in c.execute('SELECT path FROM folders')]
+  for folder in folders:
+   if not Path(folder).is_dir():continue
+   seen=set()
+   for base,dirs,files in os.walk(folder):
+    for name in files:
+     if SCAN_CANCEL.is_set():STATUS['message']='扫描已取消（已完成项目保留）';return
+     p=Path(base)/name
+     if p.suffix.lower() not in {'.mp4','.mkv','.avi','.mov','.webm','.wmv','.m4v','.ts','.flv','.mpeg','.mpg'}:continue
+     seen.add(str(p))
+     try:
+      stat=p.stat()
+      with db() as c:
+       old=c.execute('SELECT * FROM videos WHERE path=?',(str(p),)).fetchone()
+       c.execute('INSERT INTO videos(path,title,size,mtime) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,missing=0',(str(p),p.stem,stat.st_size,stat.st_mtime))
+       vid=c.execute('SELECT id FROM videos WHERE path=?',(str(p),)).fetchone()[0]
+      unchanged=old and old['mtime']==stat.st_mtime and old['size']==stat.st_size
+      sidecar=p.with_suffix('.nfo');stamp=str(sidecar.stat().st_mtime_ns) if sidecar.exists() else ''
+      if unchanged and old['metadata_stamp']==stamp and not force and old['scraped'] and time.time()-old['scraped']<86400 and (not binary('ffmpeg') or (DATA/f'{vid}-5.jpg').exists()):continue
+      STATUS['message']='正在整理：'+p.name
+      err=[]
+      try:meta=read_metadata(p)
+      except Exception as e:
+       meta={'code':identify(p.stem),'title':p.stem,'source':'filename'};err.append('NFO 读取失败：'+str(e))
+      if meta['source']!='nfo':
+       try:meta.update(remote_metadata(meta['code']))
+       except Exception as e:err.append('联网匹配失败：'+str(e))
+      probe=binary('ffprobe');ff=binary('ffmpeg');duration=old['duration'] if old else 0
+      technical={}
+      if probe and (force or not unchanged or not duration):
+       r=run([probe,'-v','error','-show_format','-show_streams','-of','json',str(p)],45)
+       if r.returncode:raise ValueError('无法解析视频')
+       info=json.loads(r.stdout);duration=float(info.get('format',{}).get('duration',0));technical['duration']=duration
+       stream=next((s for s in info.get('streams',[]) if s.get('codec_type')=='video'),{})
+       technical.update(width=stream.get('width',0),height=stream.get('height',0),codec=stream.get('codec_name',''))
+      if ff:
+       for i in range(6):
+        target=DATA/(f'{vid}.jpg' if i==0 else f'{vid}-{i}.jpg')
+        if unchanged and not force and target.exists():continue
+        r=run([ff,'-y','-loglevel','error','-ss',str(duration*(i+1)/8),'-i',str(p),'-frames:v','1','-vf','scale=640:-2',str(target)])
+        if r.returncode:err.append('截图失败');break
+      else:err.append('缺少 FFmpeg：截图与媒体信息不可用')
+      # 本地同名海报和 Kodi 风格海报优先。
+      cover=next((x for x in [p.with_suffix('.jpg'),p.with_name(p.stem+'-poster.jpg'),p.parent/'poster.jpg'] if x.is_file()),None)
+      if cover and not (old and old['poster_origin']):shutil.copyfile(cover,DATA/f'{vid}-poster.jpg')
+      if old and (old['manual'] or old['source']=='amane'):meta={}
+      elif old:
+       protected=set(json.loads(old['locked_fields'] or '[]'));meta={k:v for k,v in meta.items() if k not in protected}
+      updates=meta|technical|{'scraped':time.time(),'metadata_stamp':stamp,'error':'; '.join(err)}
+      merged=(dict(old) if old else {'path':str(p)})|updates
+      tags,reasons=classify(merged);updates.update(auto_tags=tags,tag_reasons=reasons)
+      with db() as c:c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),vid])
+      STATUS['processed']+=1
+      if err:STATUS['errors']+=1
+     except Exception as e:
+      STATUS['errors']+=1
+      with db() as c:c.execute('UPDATE videos SET error=? WHERE path=?',(str(e)[:500],str(p)))
+   with db() as c:
+    for row in c.execute('SELECT id,path FROM videos').fetchall():
+     try:inside=Path(row['path']).is_relative_to(Path(folder))
+     except ValueError:inside=False
+     if inside and row['path'] not in seen:c.execute('UPDATE videos SET missing=1 WHERE id=?',(row['id'],))
+  STATUS['message']='扫描完成'
+ finally:STATUS['running']=False;LOCK.release()
+AMANE_STATUS={'connected':False,'synced':0,'message':'等待连接','last_sync':0}
+AMANE_LOCK=threading.Lock()
+SUBMIT_LOCK=threading.Lock()
+def amane_headers():
+ cfg=config();token=cfg.get('amane_token','')
+ if not token:
+  token_file=Path(os.environ.get('LOCALAPPDATA',''))/'Amane'/'token'
+  if not token_file.is_file():raise ValueError('请在设置中填写 Amane Token')
+  token=token_file.read_text('utf-8').strip()
+ return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}
+def amane_base():
+ base=config()['amane_url'].rstrip('/');parsed=urlparse(base)
+ if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username:raise ValueError('Amane 地址格式无效')
+ if parsed.scheme=='http' and parsed.hostname not in ('127.0.0.1','localhost','::1'):raise ValueError('远程 Amane 请使用 HTTPS')
+ return base
+def amane_request(path,data=None):
+ req=Request(amane_base()+'/api/'+path,headers=amane_headers(),data=json.dumps(data).encode() if data is not None else None)
+ try:
+  with urlopen(req,timeout=25) as r:return json.load(r)
+ except HTTPError as e:
+  if e.code in (401,403):raise ValueError('Amane 认证失败，请检查 Token') from None
+  raise ValueError('Amane 接口错误 HTTP '+str(e.code)) from None
+
+def cache_artwork(url,vid,art='poster'):
+ if art not in ('poster','cover'):raise ValueError('图片类型无效')
+ # Use Amane's authenticated cached-resource endpoint, never fetch upstream URLs here.
+ if not url:return False
+ target=DATA/f'{vid}-{art}.jpg'
+ with db() as c:old=c.execute('SELECT '+art+'_origin FROM videos WHERE id=?',(vid,)).fetchone()
+ if old and old[0]==url and target.exists():return True
+ parsed=urlparse(url)
+ digest=parsed.path.rsplit('/',1)[-1] if parsed.path.startswith('/api/resources/') and re.fullmatch(r'[a-f0-9]{16}',parsed.path.rsplit('/',1)[-1]) else hashlib.sha256(url.encode()).hexdigest()[:16]
+ req=Request(amane_base()+'/api/resources/'+digest,headers=amane_headers())
+ try:
+  try:response=urlopen(req,timeout=15)
+  except HTTPError as e:
+   if e.code!=404 or urlparse(url).scheme not in ('http','https'):raise
+   response=urlopen(Request(amane_base()+'/api/resources/proxy?url='+quote(url,safe=''),headers=amane_headers()),timeout=40)
+  with response:
+   kind=response.headers.get('Content-Type','');payload=response.read(12_000_001)
+  if not kind.startswith('image/') or len(payload)>12_000_000:return False
+  if not (payload.startswith(b'\xff\xd8') or payload.startswith(b'\x89PNG') or payload.startswith(b'RIFF')):return False
+  tmp=DATA/f'{vid}-{art}.part';tmp.write_bytes(payload);tmp.replace(target)
+  with db() as c:c.execute('UPDATE videos SET '+art+'_origin=? WHERE id=?',(url,vid))
+  return True
+ except (OSError,ValueError):return False
+
+def cache_poster(url,vid):return cache_artwork(url,vid,'poster')
+
+def sync_amane():
+ if RESTORING.is_set() or not AMANE_LOCK.acquire(False):return AMANE_STATUS['synced']
+ SYNC_CANCEL.clear();WORK_STATUS['sync'].update(running=True,phase='metadata');WORK_STATUS['images'].update(running=False,failed=0)
+ synced=0;offset=0;posters=[];covers=[]
+ try:
+  while True:
+   if SYNC_CANCEL.is_set():AMANE_STATUS['message']='同步已取消';return synced
+   page=amane_request('metadata?limit=200&offset='+str(offset));items=page.get('items',[])
+   with db() as c:
+    for item in items:
+     if not item.get('title') or not item.get('field_sources'):continue
+     rows=c.execute('SELECT * FROM videos WHERE UPPER(code)=?',(str(item['number']).upper(),)).fetchall()
+     for old in rows:
+      updates={'source_tags':', '.join(dict.fromkeys(item.get('tags') or [])),'amane_id':item['id'],'amane_snapshot':json.dumps(item,ensure_ascii=False),'source':'amane'}
+      locked=set(json.loads(old['locked_fields'] or '[]'))
+      if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
+      values={'code':item['number'],'title':item['title'],'actors':', '.join(item.get('actors') or []),'studio':item.get('studio') or '', 'date':item.get('release') or '', 'plot':item.get('plot') or ''}
+      updates.update({k:v for k,v in values.items() if k not in locked and v})
+      tags,reasons=classify(dict(old)|updates);updates.update(auto_tags=tags,tag_reasons=reasons)
+      c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),old['id']]);synced+=1
+      if item.get('poster_url'):posters.append((item['poster_url'],old['id']))
+      if item.get('thumb_url') or item.get('poster_url'):covers.append((item.get('thumb_url') or item['poster_url'],old['id']))
+   offset+=len(items)
+   if not items or offset>=page.get('total',0):break
+  WORK_STATUS['sync']['phase']='images';WORK_STATUS['images']['running']=True
+  cached=covered=0
+  for art,images in [('poster',posters),('cover',covers)]:
+   for url,vid in images:
+    if SYNC_CANCEL.is_set():AMANE_STATUS['message']='图片同步已取消';return synced
+    ok=cache_artwork(url,vid,art)
+    if art=='poster':cached+=bool(ok)
+    else:covered+=bool(ok)
+    if not ok:WORK_STATUS['images']['failed']+=1
+  AMANE_STATUS.update(connected=True,synced=synced,message=f'封面 {covered}/{len(covers)} · 海报 {cached}/{len(posters)}',last_sync=time.time())
+  return synced
+ finally:WORK_STATUS['sync'].update(running=False,phase='idle');WORK_STATUS['images']['running']=False;AMANE_LOCK.release()
+
+def submit_scrapes(ids):
+ if not SUBMIT_LOCK.acquire(False):raise ValueError('另一批提交进行中，请稍后重试')
+ try:return _submit_scrapes(ids)
+ finally:SUBMIT_LOCK.release()
+
+def _submit_scrapes(ids):
+ if not isinstance(ids,list) or not 1<=len(ids)<=50:raise ValueError('每次请选择 1–50 部视频')
+ with db() as c:
+  rows=[c.execute('SELECT id,code FROM videos WHERE id=?',(int(vid),)).fetchone() for vid in dict.fromkeys(ids)]
+ if any(not r or not r['code'].strip() for r in rows):raise ValueError('有视频缺少编号，请先在详情中填写并保存编号')
+ codes=list(dict.fromkeys(r['code'].strip().upper() for r in rows));submitted=[];skipped=0;failures=[]
+ for code in codes:
+  with db() as c:active=c.execute("SELECT id FROM scrape_jobs WHERE code=? AND status IN ('queued','running','submitting','cancelling')",(code,)).fetchone()
+  if active:skipped+=1;continue
+  with db() as c:job_id=c.execute('INSERT INTO scrape_jobs(code,status,created,updated) VALUES(?,?,?,?)',(code,'submitting',time.time(),time.time())).lastrowid
+  try:
+   remote=amane_request('tasks',{'type':'scrape','number':code})
+   with db() as c:c.execute('UPDATE scrape_jobs SET remote_id=?,status=?,updated=? WHERE id=?',(remote['id'],remote['status'],time.time(),job_id))
+   submitted.append(remote['id'])
+  except Exception as e:
+   with db() as c:c.execute('UPDATE scrape_jobs SET error=? WHERE id=?',('提交结果待核对：'+str(e)[:150],job_id))
+   failures.append({'code':code,'error':str(e)[:200]})
+ return {'submitted':len(submitted),'skipped':skipped,'failures':failures}
+
+def poll_scrapes():
+ with db() as c:jobs=c.execute("SELECT * FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchall()
+ for job in jobs:
+  remote_id=job['remote_id']
+  if remote_id is None:
+   entries=amane_request('tasks?limit=200').get('items',[])
+   def recent(task):
+    try:return datetime.datetime.fromisoformat(task.get('created_at','').replace('Z','+00:00')).timestamp()>=job['created']-5
+    except ValueError:return False
+   found=next((t for t in entries if str(t.get('title','')).upper()==job['code'].upper() and recent(t)),None)
+   if not found:
+    with db() as c:c.execute("UPDATE scrape_jobs SET status='failed',retry_kind='needs_review',error=? WHERE id=?",('远程提交结果未确认，请查看 Amane 后再决定重试',job['id']))
+    continue
+   remote_id=found['id']
+   with db() as c:c.execute('UPDATE scrape_jobs SET remote_id=? WHERE id=?',(remote_id,job['id']))
+  try:remote=amane_request('tasks/'+str(remote_id))
+  except ValueError as e:
+   if '404' not in str(e):raise
+   with db() as c:c.execute("UPDATE scrape_jobs SET status='failed',retry_kind='needs_review',error=? WHERE id=?",('远程任务不存在，请核对后重试',job['id']))
+   continue
+  result=remote.get('result') or {};details=[]
+  for out in result.get('outcomes',[]):
+   if out.get('outcome')=='failed':details.append(str(out.get('site',''))+': '+str(out.get('reason','unknown')))
+  reasons=[x.get('reason') for x in result.get('outcomes',[]) if x.get('outcome')=='failed']
+  retry='retryable' if any(x in ('network','timeout','rate_limited','server_error') for x in reasons) else 'needs_review' if remote['status']=='failed' else ''
+  with db() as c:c.execute('UPDATE scrape_jobs SET status=?,error=?,details=?,updated=?,retry_kind=? WHERE id=?',(remote['status'],remote.get('error') or '', '; '.join(details),time.time(),retry,job['id']))
+
+AUTO_STATUS={'enabled':True,'message':'等待自动刮削','submitted':0}
+def auto_scrape_tick():
+ enabled=bool(config().get('auto_scrape'));AUTO_STATUS['enabled']=enabled
+ if not enabled:AUTO_STATUS['message']='自动刮削已暂停';return
+ with db() as c:
+  active=c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]
+  rows=c.execute("SELECT id,UPPER(code) AS code FROM videos WHERE missing=0 AND amane_id=0 AND code!='' ORDER BY id").fetchall()
+  candidates=[];seen=set()
+  for row in rows:
+   code=row['code']
+   if code in seen:continue
+   seen.add(code)
+   jobs=c.execute('SELECT status,created,retry_kind FROM scrape_jobs WHERE code=? ORDER BY id DESC',(code,)).fetchall()
+   if jobs and (jobs[0]['retry_kind']=='needs_review' or jobs[0]['status'] in ('queued','running','submitting','cancelling','done','cancelled','canceled') or time.time()-jobs[0]['created']<86400 or len(jobs)>=3):continue
+   candidates.append(row['id'])
+ if active>=3:AUTO_STATUS['message']='等待当前刮削任务完成';return
+ batch=candidates[:min(2,3-active)]
+ if not batch:AUTO_STATUS['message']='暂无可提交的编号（失败项 24 小时后重试，最多 3 次）';return
+ result=submit_scrapes(batch);AUTO_STATUS['submitted']+=result['submitted'];AUTO_STATUS['message']='已自动提交 '+str(result['submitted'])+' 个编号'
+
+DUP_STATUS={'running':False,'processed':0,'total':0,'errors':0,'message':'尚未检测'}
+DUP_LOCK=threading.Lock()
+def detect_duplicates():
+ if RESTORING.is_set() or not DUP_LOCK.acquire(False):return
+ DUP_CANCEL.clear()
+ DUP_STATUS.update(running=True,processed=0,total=0,errors=0,message='查找大小相同的文件…')
+ try:
+  with db() as c:
+   rows=c.execute('SELECT * FROM videos WHERE missing=0 AND size IN (SELECT size FROM videos WHERE missing=0 GROUP BY size HAVING COUNT(*)>1)').fetchall()
+  DUP_STATUS['total']=len(rows)
+  for row in rows:
+   if DUP_CANCEL.is_set():DUP_STATUS['message']='重复校验已取消';return
+   try:
+    p=Path(row['path']);before=p.stat();stamp=f'{before.st_size}:{before.st_mtime_ns}'
+    if row['hash_stamp']!=stamp or not row['file_hash']:
+     h=hashlib.sha256()
+     with p.open('rb') as f:
+      for block in iter(lambda:f.read(4194304),b''):
+       if DUP_CANCEL.is_set():DUP_STATUS['message']='重复校验已取消';return
+       h.update(block)
+     after=p.stat()
+     if before.st_size!=after.st_size or before.st_mtime_ns!=after.st_mtime_ns:raise ValueError('文件读取期间发生变化')
+     with db() as c:c.execute('UPDATE videos SET file_hash=?,hash_stamp=? WHERE id=?',(h.hexdigest(),stamp,row['id']))
+    DUP_STATUS['processed']+=1;DUP_STATUS['message']='正在校验重复候选 '+str(DUP_STATUS['processed'])+'/'+str(len(rows))
+   except (OSError,ValueError):DUP_STATUS['errors']+=1
+  DUP_STATUS['message']='检测完成；同编号组仅为疑似重复，分集与多版本请人工核对'
+ finally:DUP_STATUS['running']=False;DUP_LOCK.release()
+
+def actor_library():
+ with db() as c:
+  videos=[dict(r) for r in c.execute('SELECT * FROM videos WHERE missing=0')]
+  prefs={r['name']:dict(r) for r in c.execute('SELECT * FROM actor_preferences')}
+ people={}
+ for video in videos:
+  for name in set(n.strip() for n in re.split(r'[,，;；\n]',video.get('actors') or '') if n.strip()):
+   person=people.setdefault(name,{'name':name,'rating':prefs.get(name,{}).get('rating',0),'favorite':prefs.get(name,{}).get('favorite',0),'movie_keys':set(),'file_count':0})
+   person['file_count']+=1
+   movie=video['code'].strip().upper() or presentation(video)['part_key'] or video['path'];person['movie_keys'].add(movie)
+ for name,pref in prefs.items():
+  if name not in people and (pref['favorite'] or pref['rating']):people[name]=dict(pref,movie_keys=set(),file_count=0)
+ result=[]
+ for person in people.values():
+  person['movie_count']=len(person.pop('movie_keys'));result.append(person)
+ return sorted(result,key=lambda p:(-p['favorite'],-p['rating'],-p['movie_count'],p['name']))
+
+def duplicate_groups():
+ CORE.reconcile()
+ with db() as c:
+  links={r['video_id']:dict(r) for r in c.execute('SELECT * FROM media_links')}
+  rows=[dict(r) for r in c.execute('SELECT * FROM videos WHERE missing=0')];choices={r[0]:r[1] for r in c.execute('SELECT * FROM duplicate_choices')}
+ hashes={};codes={}
+ for row in rows:
+  if row['file_hash']:
+   try:
+    st=Path(row['path']).stat()
+    if row['hash_stamp']==f'{st.st_size}:{st.st_mtime_ns}':hashes.setdefault(row['file_hash'],[]).append(row)
+    else:row['file_hash']=''
+   except OSError:row['file_hash']=''
+  if row['code']:codes.setdefault(row['code'].strip().upper(),[]).append(row)
+ result=[]
+ for kind,buckets in [('exact',hashes),('candidate',codes)]:
+  for key,items in buckets.items():
+   if len(items)<2:continue
+   segments=[presentation(x) for x in items]
+   if kind=='candidate' and len({links[x['id']]['version_key'] for x in items})==1 and len({links[x['id']]['part_no'] for x in items})==len(items):continue
+   if kind=='candidate' and all(x['part_index'] for x in segments) and len({x['part_key'] for x in segments})==1 and len({x['part_index'] for x in segments})==len(segments):continue
+   if kind=='candidate' and len({x['file_hash'] for x in items})==1 and items[0]['file_hash']:continue
+   group=kind+':'+key
+   safe=[dict({k:x[k] for k in ['id','title','path','size','duration','width','height','codec','code','file_hash']},part_index=links[x['id']]['part_no'],version_key=links[x['id']]['version_key']) for x in items]
+   result.append({'key':group,'kind':kind,'classification':'exact' if kind=='exact' else 'versions' if len({links[x['id']]['movie_key'] for x in items})==1 else 'candidate','videos':safe,'preferred_id':choices.get(group)})
+ return result
+
+def background_sync():
+ try:sync_amane()
+ except Exception as e:AMANE_STATUS.update(connected=False,message=str(e)[:200])
+
+def amane_watcher():
+ last=0;auto_last=0
+ while True:
+  if RESTORING.is_set():time.sleep(1);continue
+  try:poll_scrapes()
+  except Exception as e:AMANE_STATUS.update(connected=False,message=str(e)[:200])
+  if time.time()-last>=60 and not AMANE_LOCK.locked():
+   threading.Thread(target=background_sync,daemon=True).start();last=time.time()
+  if time.time()-auto_last>=60:
+   try:auto_scrape_tick()
+   except Exception as e:AUTO_STATUS['message']='自动刮削等待连接：'+str(e)[:150]
+   auto_last=time.time()
+  time.sleep(15)
+
+def watcher():
+ while True:
+  try:
+   if not RESTORING.is_set():
+    scan()
+    if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
+  except Exception as e:STATUS['message']='扫描失败：'+str(e)
+  time.sleep(max(30,int(config()['interval'])))
+PICKER_LOCK=threading.Lock()
+def choose_folder():
+ if NAS:raise ValueError('NAS 模式请使用服务器目录路径')
+ if not PICKER_LOCK.acquire(False):raise ValueError('文件夹选择器已打开，请切换到系统窗口')
+ try:
+  if sys.platform=='win32':
+   script="""[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = '选择要导入 Velvet 的视频文件夹'
+$dialog.ShowNewFolderButton = $false
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
+$owner.Opacity = 0
+$owner.Show()
+try { if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Write($dialog.SelectedPath) } }
+finally { $dialog.Dispose(); $owner.Close(); $owner.Dispose() }
+"""
+   args=['powershell.exe','-NoProfile','-STA','-Command',script]
+  else:
+   script="from tkinter import Tk,filedialog; r=Tk(); r.withdraw(); r.attributes('-topmost',True); p=filedialog.askdirectory(title='选择媒体文件夹'); print(p,end=''); r.destroy()"
+   args=[sys.executable,'-c',script]
+  result=run(args,600)
+  if result.returncode:raise ValueError('无法打开系统选择器，请使用备用路径输入')
+  return result.stdout.decode('utf-8-sig').strip()
+ finally:PICKER_LOCK.release()
+
+def launch(path):
+ if sys.platform=='win32':os.startfile(path)
+ else:subprocess.Popen(['open' if sys.platform=='darwin' else 'xdg-open',path],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+class Handler(BaseHTTPRequestHandler):
+ def log_message(self,*a):pass
+ def send(self,data,kind='application/json',status=200):
+  if not isinstance(data,bytes):data=json.dumps(data,ensure_ascii=False).encode()
+  self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)));self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(data)
+ def video(self,vid):
+  with db() as c:r=c.execute('SELECT * FROM videos WHERE id=?',(int(vid),)).fetchone()
+  if not r:raise ValueError('视频记录不存在')
+  return dict(r)
+ def authorize(self):
+  if not NAS:return True
+  expected='Basic '+base64.b64encode((USER+':'+PASSWORD).encode()).decode()
+  if hmac.compare_digest(self.headers.get('Authorization',''),expected):return True
+  self.send_response(401);self.send_header('WWW-Authenticate','Basic realm="Velvet", charset="UTF-8"');self.send_header('Content-Length','0');self.end_headers();return False
+ def do_GET(self):
+  if not self.authorize():return
+  if not NAS and self.headers.get('Host') not in ('127.0.0.1:8765','localhost:8765'):return self.send({},status=403)
+  path=urlparse(self.path).path
+  try:
+   if path=='/':return self.send((ROOT/'index.html').read_bytes(),'text/html; charset=utf-8')
+   if path=='/api/hierarchy':return self.send({'movies':CORE.hierarchy()})
+   if path=='/api/backups':return self.send({'backups':CORE.backups()})
+   if path.startswith('/api/field-diff/'):
+    row=self.video(path.rsplit('/',1)[-1]);snapshot=json.loads(row.get('amane_snapshot') or '{}');values={'title':snapshot.get('title'),'actors':', '.join(snapshot.get('actors') or []),'studio':snapshot.get('studio'),'date':snapshot.get('release'),'plot':snapshot.get('plot'),'code':snapshot.get('number')}
+    return self.send({'fields':[{'field':k,'current':row.get(k),'incoming':v,'locked':k in json.loads(row['locked_fields'] or '[]'),'source':(snapshot.get('field_sources') or {}).get(k,'Amane')} for k,v in values.items()]})
+   if path=='/api/actors':return self.send({'actors':actor_library()})
+   if path=='/api/duplicates':return self.send({'groups':duplicate_groups(),'status':DUP_STATUS})
+   if path=='/api/amane-jobs':
+    with db() as c:
+     jobs=[dict(r) for r in c.execute('SELECT * FROM scrape_jobs ORDER BY id DESC LIMIT 100')]
+     for job in jobs:
+      row=c.execute('SELECT * FROM videos WHERE UPPER(code)=? LIMIT 1',(job['code'].upper(),)).fetchone()
+      job['completeness']='awaiting_sync' if job['status']=='done' and row and not row['amane_id'] else 'partial' if job['status']=='done' and row and (not row['actors'] or not row['studio'] or not row['source_tags']) else ''
+    return self.send({'jobs':jobs,'status':AMANE_STATUS,'auto':AUTO_STATUS,'work':WORK_STATUS,'duplicates':DUP_STATUS})
+   if path=='/api/tag-rules':
+    try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
+    except (OSError,ValueError):rules=[]
+    return self.send({'rules':rules})
+   if path=='/api/health':
+    with db() as c:
+     counts=dict(c.execute("SELECT COUNT(*) AS videos,SUM(missing) AS missing,SUM(CASE WHEN error!='' THEN 1 ELSE 0 END) AS errors FROM videos").fetchone())
+    return self.send({'ok':True,'version':APP_VERSION,'platform':sys.platform,'server_mode':NAS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'scan':STATUS,'library':counts})
+   if path=='/api/library':
+    cfg=config();cfg['has_key']=bool(cfg['api_key']);cfg['api_key']='';cfg['has_amane_token']=bool(cfg['amane_token']);cfg['amane_token']=''
+    movies=CORE.hierarchy()
+    with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')],'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN})
+   if path.startswith('/thumb/'):
+    name=path.split('/')[-1]
+    if not re.fullmatch(r'\d+(?:-(?:[1-5]|poster|cover))?\.jpg',name):return self.send({},status=404)
+    file=DATA/name
+    if not file.exists() and '-cover' in name:file=DATA/(name.split('-')[0]+'-poster.jpg')
+    if not file.exists() and ('-poster' in name or '-cover' in name):file=DATA/(name.split('-')[0]+'.jpg')
+    if not file.exists():return self.send({},status=404)
+    payload=file.read_bytes();kind='image/png' if payload.startswith(b'\x89PNG') else 'image/webp' if payload.startswith(b'RIFF') else 'image/jpeg'
+    return self.send(payload,kind)
+   if path.startswith('/media/'):
+    row=self.video(path.split('/')[-1]);p=Path(row['path']);size=p.stat().st_size
+    start,end=0,size-1;header=self.headers.get('Range')
+    if header:
+     m=re.fullmatch(r'bytes=(\d*)-(\d*)',header)
+     if not m or not any(m.groups()):return self.send({},status=416)
+     if not m[1]:start=max(0,size-int(m[2]))
+     else:start=int(m[1]);end=min(end,int(m[2])) if m[2] else end
+     if start>end or start>=size:
+      self.send_response(416);self.send_header('Content-Range',f'bytes */{size}');self.end_headers();return
+    self.send_response(206 if header else 200);self.send_header('Content-Type',mimetypes.guess_type(p.name)[0] or 'application/octet-stream');self.send_header('Accept-Ranges','bytes');self.send_header('Content-Length',str(end-start+1))
+    if header:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+    self.end_headers()
+    with p.open('rb') as f:
+     f.seek(start);remaining=end-start+1
+     while remaining:
+      chunk=f.read(min(262144,remaining))
+      if not chunk:break
+      self.wfile.write(chunk);remaining-=len(chunk)
+    return
+   return self.send({},status=404)
+  except (BrokenPipeError,ConnectionResetError):pass
+  except Exception as e:self.send({'error':str(e)},status=400)
+ def do_POST(self):
+  if not self.authorize():return
+  if self.headers.get('X-Velvet-Token')!=TOKEN:return self.send({},status=403)
+  try:
+   length=int(self.headers.get('Content-Length',0))
+   if length>100000:raise ValueError('请求过大')
+   a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
+   if path=='/api/pick-folder':
+    return self.send({'path':choose_folder()})
+   elif path=='/api/folder':
+    p=Path(a['path']).expanduser().resolve()
+    if not p.is_dir():raise ValueError('目录不存在')
+    with db() as c:c.execute('INSERT OR IGNORE INTO folders VALUES(?)',(str(p),))
+    threading.Thread(target=scan,daemon=True).start()
+   elif path=='/api/remove-folder':
+    with db() as c:c.execute('DELETE FROM folders WHERE path=?',(a['path'],))
+   elif path=='/api/scan':
+    if LOCK.locked():return self.send({'ok':True,'busy':True})
+    threading.Thread(target=scan,args=(bool(a.get('force')),),daemon=True).start()
+   elif path=='/api/settings':
+    cfg=config();cfg.update({k:a[k] for k in DEFAULT if k in a and k in {'interval','online','provider'}})
+    if a.get('api_key'):cfg['api_key']=a['api_key']
+    cfg['interval']=max(30,min(86400,int(cfg['interval'])))
+    if cfg['provider'] and (not cfg['provider'].startswith('https://') or '{code}' not in cfg['provider']):raise ValueError('接口需为包含 {code} 的 HTTPS 地址')
+    (DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8')
+   elif path=='/api/movie-flag':
+    field=a.get('field');value=a.get('value')
+    if field not in ('favorite','watched') or value not in (0,1):raise ValueError('状态参数无效')
+    movie=next((m for m in CORE.hierarchy() if any(p['id']==int(a['id']) for v in m['_versions'] for p in v['_parts'])),None)
+    if not movie:raise ValueError('影片不存在')
+    versions=movie['_versions'] if field=='favorite' else [v for v in movie['_versions'] if any(p['id']==int(a['id']) for p in v['_parts'])]
+    ids=[p['id'] for v in versions for p in v['_parts']]
+    with db() as c:
+     for vid in ids:
+      c.execute('UPDATE videos SET '+field+'=?'+(',position=0' if field=='watched' and value==0 else '')+' WHERE id=?',(int(value),vid))
+   elif path=='/api/relationships':
+    CORE.relation(a.get('changes'));return self.send({'ok':True})
+   elif path=='/api/relationships-reset':CORE.reset(a['ids'])
+   elif path=='/api/relationships-undo':CORE.undo()
+   elif path=='/api/preferred-version':CORE.prefer(a['id'])
+   elif path=='/api/task-cancel':
+    kind=a.get('kind')
+    if kind=='scan':SCAN_CANCEL.set()
+    elif kind in ('sync','images'):SYNC_CANCEL.set()
+    elif kind=='duplicates':DUP_CANCEL.set()
+    elif kind=='scrape':
+     with db() as c:job=c.execute('SELECT * FROM scrape_jobs WHERE id=?',(int(a['id']),)).fetchone()
+     if not job:raise ValueError('任务不存在')
+     if job['remote_id'] is None:raise ValueError('正在提交，尚未获得远程任务编号，请稍后取消')
+     amane_request('tasks/batch',{'action':'cancel','task_ids':[job['remote_id']]})
+     with db() as c:c.execute("UPDATE scrape_jobs SET status='cancelling' WHERE id=?",(job['id'],))
+     poll_scrapes()
+    else:raise ValueError('未知任务类型')
+   elif path=='/api/backup':return self.send({'ok':True,'name':CORE.backup()})
+   elif path=='/api/backup-validate':
+    CORE.validate_backup(a['name']);return self.send({'ok':True})
+   elif path=='/api/restore':
+    if a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
+    locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK];acquired=[]
+    RESTORING.set()
+    try:
+     for lock in locks:
+      if not lock.acquire(False):raise ValueError('后台任务运行中，请先暂停自动刮削并取消扫描/同步后重试')
+      acquired.append(lock)
+     with db() as c:
+      if c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]:raise ValueError('仍有刮削任务，请先在任务中心取消并等待结束后恢复')
+     with DB_MUTEX:rollback=CORE.restore(a['name'])
+    finally:
+     for lock in reversed(acquired):lock.release()
+     RESTORING.clear()
+    return self.send({'ok':True,'rollback':rollback})
+   elif path=='/api/field-apply':
+    row=self.video(a['id']);snapshot=json.loads(row['amane_snapshot'] or '{}');field=a['field'];values={'title':snapshot.get('title'),'code':snapshot.get('number'),'actors':', '.join(snapshot.get('actors') or []),'studio':snapshot.get('studio'),'date':snapshot.get('release'),'plot':snapshot.get('plot')}
+    if field not in values or not values[field]:raise ValueError('来源未返回此字段')
+    locks=set(json.loads(row['locked_fields'] or '[]'));locks.discard(field)
+    with db() as c:c.execute('UPDATE videos SET '+field+'=?,locked_fields=?,manual=0 WHERE id=?',(values[field],json.dumps(sorted(locks)),row['id']))
+   elif path=='/api/field-lock':
+    row=self.video(a['id']);field=a['field']
+    if field not in ('title','code','actors','studio','date','plot'):raise ValueError('字段无效')
+    locks=set(json.loads(row['locked_fields'] or '[]'))
+    if a.get('locked'):locks.add(field)
+    else:locks.discard(field)
+    with db() as c:c.execute('UPDATE videos SET locked_fields=?,manual=0 WHERE id=?',(json.dumps(sorted(locks)),row['id']))
+   elif path=='/api/actor-edit':
+    name=str(a.get('name','')).strip()
+    if not name or len(name)>200:raise ValueError('演员名称无效')
+    with db() as c:
+     old=c.execute('SELECT * FROM actor_preferences WHERE name=?',(name,)).fetchone()
+     rating=a.get('rating',old['rating'] if old else 0);favorite=a.get('favorite',old['favorite'] if old else 0)
+     if type(rating) is not int or not 0<=rating<=5:raise ValueError('评分范围为 0–5 星')
+     if favorite not in (0,1,False,True):raise ValueError('收藏状态无效')
+     c.execute('INSERT INTO actor_preferences VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET rating=excluded.rating,favorite=excluded.favorite',(name,rating,int(favorite)))
+   elif path=='/api/auto-scrape':
+    cfg=config();cfg['auto_scrape']=bool(a['enabled']);(DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8');AUTO_STATUS['enabled']=cfg['auto_scrape']
+   elif path=='/api/duplicates-scan':
+    threading.Thread(target=detect_duplicates,daemon=True).start()
+   elif path=='/api/duplicates-choice':
+    group=next((g for g in duplicate_groups() if g['key']==a['key']),None)
+    if not group:raise ValueError('重复分组已变化，请刷新')
+    preferred=a.get('preferred_id')
+    if preferred is not None and preferred not in [v['id'] for v in group['videos']]:raise ValueError('保留项必须属于该组')
+    with db() as c:
+     if preferred is None:c.execute('DELETE FROM duplicate_choices WHERE group_key=?',(a['key'],))
+     else:
+      before={}
+      for video in group['videos']:
+       link=c.execute('SELECT movie_key FROM media_links WHERE video_id=?',(video['id'],)).fetchone()
+       if link:
+        pref=c.execute('SELECT * FROM movie_preferences WHERE movie_key=?',(link[0],)).fetchone();before[link[0]]=dict(pref) if pref else None
+      c.execute('INSERT OR IGNORE INTO duplicate_preference_history VALUES(?,?)',(a['key'],json.dumps(before)))
+      c.execute('INSERT INTO duplicate_choices VALUES(?,?) ON CONFLICT(group_key) DO UPDATE SET preferred_id=excluded.preferred_id',(a['key'],preferred))
+    if preferred is not None:CORE.prefer(preferred)
+    else:
+     with db() as c:
+      saved=c.execute('SELECT payload FROM duplicate_preference_history WHERE group_key=?',(a['key'],)).fetchone()
+      if saved:
+       for movie_key,pref in json.loads(saved[0]).items():
+        c.execute('DELETE FROM movie_preferences WHERE movie_key=?',(movie_key,))
+        if pref:c.execute('INSERT INTO movie_preferences(movie_key,version_key,preferred_id) VALUES(?,?,?)',(pref['movie_key'],pref['version_key'],pref.get('preferred_id')))
+       c.execute('DELETE FROM duplicate_preference_history WHERE group_key=?',(a['key'],))
+      else:
+       for video in group['videos']:
+        link=c.execute('SELECT movie_key FROM media_links WHERE video_id=?',(video['id'],)).fetchone()
+        if link:c.execute('DELETE FROM movie_preferences WHERE movie_key=?',(link[0],))
+   elif path=='/api/amane-submit':
+    return self.send(submit_scrapes(a.get('ids')))
+   elif path=='/api/amane-poll':
+    poll_scrapes();return self.send({'ok':True})
+   elif path=='/api/unlock':
+    with db() as c:c.execute('UPDATE videos SET locked_fields=?,manual=0 WHERE id=?',('[]',int(a['id'])))
+   elif path=='/api/amane-settings':
+    cfg=config();cfg['amane_url']=str(a.get('url','')).rstrip('/')
+    parsed=urlparse(cfg['amane_url'])
+    if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username:raise ValueError('服务地址无效')
+    if parsed.scheme=='http' and parsed.hostname not in ('127.0.0.1','localhost','::1'):raise ValueError('远程连接需要 HTTPS')
+    if a.get('token'):cfg['amane_token']=str(a['token'])
+    aliases=a.get('aliases',{})
+    if not isinstance(aliases,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in aliases.items()):raise ValueError('别名应为 JSON 对象')
+    cfg['tag_aliases']=aliases
+    (DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8');retag_all()
+   elif path=='/api/amane-sync':
+    if AMANE_LOCK.locked():return self.send({'ok':True,'busy':True,'count':AMANE_STATUS['synced']})
+    return self.send({'ok':True,'count':sync_amane()})
+   elif path=='/api/retag':
+    return self.send({'ok':True,'count':retag_all()})
+   elif path=='/api/tag-rules':
+    rules=a.get('rules',[])
+    if not isinstance(rules,list) or len(rules)>100:raise ValueError('最多 100 条规则')
+    for rule in rules:
+     if not isinstance(rule,dict) or not isinstance(rule.get('tag'),str) or not isinstance(rule.get('keywords'),list) or not all(isinstance(k,str) for k in rule['keywords']):raise ValueError('规则格式应为 tag 与 keywords 数组')
+    (DATA/'tag_rules.json').write_text(json.dumps(rules,ensure_ascii=False,indent=2),'utf-8')
+    return self.send({'ok':True,'count':retag_all()})
+   elif path=='/api/edit':
+    allowed={'title','tags','actors','studio','code','plot','date','favorite','watched','rating','censor_override'};updates={k:v for k,v in a.items() if k in allowed}
+    if 'censor_override' in updates and updates['censor_override'] not in ('auto','censored','uncensored','unknown'):raise ValueError('有码/无码标记无效')
+    with db() as c:old=c.execute('SELECT * FROM videos WHERE id=?',(int(a['id']),)).fetchone()
+    if not old:raise ValueError('视频不存在')
+    locked=set(json.loads(old['locked_fields'] or '[]'))
+    if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
+    locked.update(k for k,v in updates.items() if k in {'title','code','actors','studio','date','plot','tags'} and str(v)!=str(old[k]))
+    updates['locked_fields']=json.dumps(sorted(locked));updates['manual']=0
+    if 'code' in updates and updates['code']!=old['code']:
+     updates.update(amane_id=0,source_tags='',amane_snapshot='{}',source='filename',poster_origin='',cover_origin='')
+     (DATA/f"{old['id']}-poster.jpg").unlink(missing_ok=True)
+     (DATA/f"{old['id']}-cover.jpg").unlink(missing_ok=True)
+    tags,reasons=classify(dict(old)|updates);updates.update(auto_tags=tags,tag_reasons=reasons)
+    with db() as c:c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),int(a['id'])])
+   elif path=='/api/progress':
+    with db() as c:c.execute('UPDATE videos SET position=?,watched=CASE WHEN ? THEN 1 ELSE watched END WHERE id=?',(max(0,float(a['position'])),bool(a.get('ended')),int(a['id'])))
+   elif path=='/api/play':
+    if NAS:raise ValueError('NAS 模式请使用浏览器播放，或通过 SMB 在电脑播放器打开原文件')
+    row=self.video(a['id'])
+    if not Path(row['path']).is_file():raise ValueError('文件不存在或磁盘未连接')
+    launch(row['path'])
+   elif path=='/api/reveal':
+    if NAS:raise ValueError('NAS 模式下请通过 SMB 访问媒体目录')
+    launch(str(Path(self.video(a['id'])['path']).parent))
+   elif path=='/api/forget':
+    with db() as c:c.execute('DELETE FROM videos WHERE id=?',(int(a['id']),))
+   else:return self.send({},status=404)
+   self.send({'ok':True})
+  except Exception as e:self.send({'error':str(e)},status=400)
+class LocalServer(ThreadingHTTPServer):
+ allow_reuse_address=False
+ def server_bind(self):
+  if os.name=='nt':self.socket.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
+  super().server_bind()
+
+if __name__=='__main__':
+ if NAS and len(PASSWORD)<12:raise SystemExit('NAS 模式必须设置至少 12 位 VELVET_PASSWORD')
+ server=LocalServer((BIND,8765),Handler)
+ if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
+ threading.Thread(target=watcher,daemon=True).start()
+ threading.Thread(target=amane_watcher,daemon=True).start()
+ print('Velvet: http://127.0.0.1:8765  Ctrl+C 退出')
+ if not NAS and '--no-browser' not in sys.argv:webbrowser.open('http://127.0.0.1:8765')
+ try:server.serve_forever()
+ except KeyboardInterrupt:server.server_close()

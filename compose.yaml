@@ -1,0 +1,18 @@
+services:
+  velvet:
+    build: .
+    ports:
+      - "8765:8765"
+    environment:
+      VELVET_SERVER: "1"
+      VELVET_DATA: /data
+      VELVET_USER: ${VELVET_USER:-admin}
+      VELVET_PASSWORD: ${VELVET_PASSWORD:?请在 .env 中设置至少12位密码}
+    volumes:
+      - ./data:/data
+      - ${MEDIA_PATH:?请设置NAS媒体目录}:/media:ro
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
