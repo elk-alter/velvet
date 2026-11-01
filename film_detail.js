@@ -1,5 +1,5 @@
 /* Keep the existing playback/edit handlers; make reading the default detail view. */
-let filmArtwork=[],artworkFilter='all',detailGeneration=0;
+let filmArtwork=[],artworkFilter='all',detailGeneration=0,artworkPollTimer,artworkPollRounds=0;
 const detailBody=detail.querySelector('.dialogBody');
 const originalFigure=$('coverPreview').parentElement;
 const playbackActions=detailBody.querySelector('.playback-actions');
@@ -22,18 +22,19 @@ function moveArtwork(delta){if(filmArtwork.length)openArtwork((lightboxIndex+del
 imageDialog.addEventListener('keydown',event=>{if(event.key==='ArrowLeft'){event.preventDefault();moveArtwork(-1)}if(event.key==='ArrowRight'){event.preventDefault();moveArtwork(1)}});
 const previousOpenVideo=openVideo;
 openVideo=function(id,exact=false){
- previousOpenVideo(id,exact);const generation=++detailGeneration;editor.open=false;saveButton.hidden=true;playbackSection.hidden=true;artworkFilter='all';filmArtwork=[];
+ previousOpenVideo(id,exact);clearTimeout(artworkPollTimer);artworkPollRounds=0;const generation=++detailGeneration;editor.open=false;saveButton.hidden=true;playbackSection.hidden=true;artworkFilter='all';filmArtwork=[];
  const v=selected;
  $('coverPreview').style.display='block';$('coverPreview').dataset.fallback='0';$('coverPreview').src='/thumb/'+v.id+'-poster.jpg';$('coverPreview').onerror=function(){if(this.dataset.fallback==='0'){this.dataset.fallback='1';this.src='/thumb/'+v.id+'-cover.jpg'}else this.style.display='none'};
- $('filmSummary').innerHTML=`<div class="filmEyebrow">${esc(v.code||'本地收藏')} ${v.date?' · '+esc(v.date):''}</div><h2>${esc(v.title)}</h2><div class="filmFacts"><span>${esc(v.resolution_label||'画质待解析')}</span>${v.vr?'<span>VR</span>':''}${v.height>=2160?'<span class="premiumFact">✦ 精品</span>':''}<span>${esc(v.censorship_label||'类型未知')}</span><span>${duration(v.duration)}</span>${v.rating?'<span>★ '+v.rating+'</span>':''}</div><p class="filmStudio">${esc(v.studio||'厂商资料待补全')}</p><p class="filmPlot">${esc(v.plot||'暂无简介。可以在刮削中心补全资料，或展开下方编辑区手动整理。')}</p>`;
+ renderSelectedFilmSummary();
  $('shots').innerHTML='<div class="galleryEmpty">正在读取剧照与本地截图…</div>';$('filmGalleryStatus').textContent='正在加载';$('filmGalleryFilters').innerHTML='';
  const movie=(library.movies||[]).find(m=>m._versions.some(version=>version._parts.some(part=>part.id===v.id)));
  detail.querySelector('.dialogTools').hidden=!(movie?._versions.length>1||movie?._versions.some(version=>version._parts.length>1));
  loadFilmArtwork(v.id,generation);
 };
 async function loadFilmArtwork(id,generation){
+ clearTimeout(artworkPollTimer);if(!detail.open||generation!==detailGeneration)return;
  try{const response=await fetch('/api/video-artwork/'+id);if(!response.ok)throw Error();const data=await response.json();if(generation!==detailGeneration||selected.id!==id)return;
- filmArtwork=data.items;$('filmGalleryStatus').textContent=`${data.stills} 张剧照 · ${data.screenshots} 张本地截图${data.pending?' · '+data.pending+' 张待下载':''}${data.failed?' · '+data.failed+' 张失败，可重试':''}`;renderFilmArtwork();
+ filmArtwork=data.items;$('filmGalleryStatus').textContent=`${data.stills} 张剧照 · ${data.screenshots} 张本地截图${data.pending?' · '+data.pending+' 张待下载':''}${data.failed?' · '+data.failed+' 张失败，可重试':''}`;renderFilmArtwork();if(data.pending&&artworkPollRounds++<30)artworkPollTimer=setTimeout(()=>loadFilmArtwork(id,generation),4000);
  }catch(e){if(generation!==detailGeneration)return;filmArtwork=Array.from({length:6},(_,i)=>({url:'/thumb/'+id+(i?'-'+i:'')+'.jpg',kind:'screenshot',label:'本地截图 '+(i+1)}));$('filmGalleryStatus').textContent='剧照接口暂不可用，显示本地截图';renderFilmArtwork()}
 }
 function renderFilmArtwork(){
@@ -42,5 +43,7 @@ function renderFilmArtwork(){
 }
 const previousInternalPlay=internalPlay;
 internalPlay=function(){playbackSection.hidden=false;previousInternalPlay();playbackSection.scrollIntoView({behavior:'smooth',block:'start'})};
-async function retryFilmArtwork(){try{await api('/api/artwork-retry',{id:selected.id});toast('已加入剧照下载队列；不重新刮削文字资料');pollFilmArtwork(selected.id,detailGeneration,0)}catch(e){toast(e.message)}}
-function pollFilmArtwork(id,generation,count){if(generation!==detailGeneration||!detail.open||count>=15)return;setTimeout(async()=>{await loadFilmArtwork(id,generation);pollFilmArtwork(id,generation,count+1)},2000)}
+async function retryFilmArtwork(){try{await api('/api/artwork-retry',{id:selected.id});toast('已加入剧照下载队列；不重新刮削文字资料');artworkPollRounds=0;loadFilmArtwork(selected.id,detailGeneration)}catch(e){toast(e.message)}}
+
+function renderSelectedFilmSummary(){const v=selected;$('filmSummary').innerHTML=`<div class="filmEyebrow">${esc(v.code||'本地收藏')} ${v.date?' · '+esc(v.date):''}</div><h2>${esc(v.title)}</h2><div class="filmFacts"><span>${esc(v.resolution_label||'画质待解析')}</span>${v.vr?'<span>VR</span>':''}${v.height>=2160?'<span class="premiumFact">✦ 精品</span>':''}<span>${esc(v.censorship_label||'类型未知')}</span><span>${duration(v.duration)}</span>${v.rating?'<span>★ '+v.rating+'</span>':''}</div><p class="filmStudio">${esc(v.studio||'厂商资料待补全')}</p><p class="filmPlot">${esc(v.plot||'暂无简介。可以在刮削中心补全资料，或展开下方编辑区手动整理。')}</p>`;}
+const previousSaveVideo=saveVideo;saveVideo=async function(){await previousSaveVideo();renderSelectedFilmSummary()};
