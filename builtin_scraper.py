@@ -6,6 +6,7 @@ import re
 import sqlite3
 import threading
 import time
+import hashlib
 from contextlib import contextmanager
 from urllib.parse import parse_qs, urlparse
 from pathlib import Path
@@ -22,13 +23,15 @@ def source_types():
         from scrapers.freejavbt import FreejavbtCrawler
         from scrapers.airav import AiravCrawler
         from scrapers.xcity import XCityCrawler
+        from scrapers.javdb import JavDBCrawler
+        from scrapers.javlibrary import JavLibraryCrawler
     except ImportError:
         raise ValueError('内置刮削需要安装依赖：python -m pip install -r requirements.txt') from None
-    return {'javbus': JavBusCrawler, 'jav321': Jav321Crawler, 'fc2': FC2Crawler, 'fc2club': FC2ClubCrawler, 'fc2ppvdb': FC2PPVDBCrawler, 'freejavbt': FreejavbtCrawler, 'airav': AiravCrawler, 'xcity': XCityCrawler}
+    return {'javbus': JavBusCrawler, 'jav321': Jav321Crawler, 'fc2': FC2Crawler, 'fc2club': FC2ClubCrawler, 'fc2ppvdb': FC2PPVDBCrawler, 'freejavbt': FreejavbtCrawler, 'airav': AiravCrawler, 'xcity': XCityCrawler,'javdb':JavDBCrawler,'javlibrary':JavLibraryCrawler}
 
 
 def validate_code(code):
-    if not isinstance(code, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{1,79}', code):
+    if not isinstance(code, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{1,79}', code):
         raise ValueError('编号格式无效，请先核对编号')
     return code.upper()
 
@@ -58,9 +61,12 @@ class Engine:
         self.fetcher = fetcher or self.fetch
         self.lock = threading.Lock()
         self.worker_lock = threading.Lock()
+        self.current_task_id=None
         with self.connect() as db:
             db.executescript('CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY,code TEXT,status TEXT,error TEXT,result TEXT,created REAL); CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY,code TEXT UNIQUE,data TEXT);')
             db.execute("UPDATE tasks SET status='queued' WHERE status='running'")
+            if 'use_cache' not in {row[1] for row in db.execute('PRAGMA table_info(tasks)')}:db.execute('ALTER TABLE tasks ADD COLUMN use_cache INTEGER DEFAULT 1')
+            db.execute('CREATE TABLE IF NOT EXISTS source_cache(code TEXT,source TEXT,signature TEXT,data TEXT,updated REAL,PRIMARY KEY(code,source))')
 
     @contextmanager
     def connect(self):
@@ -87,7 +93,7 @@ class Engine:
                     raise ValueError('内置引擎仅接受元数据刮削任务')
                 row = db.execute("SELECT * FROM tasks WHERE code=? AND status IN ('queued','running')", (code,)).fetchone()
                 if not row:
-                    task_id = db.execute("INSERT INTO tasks(code,status,error,result,created) VALUES(?,'queued','','{}',?)", (code, time.time())).lastrowid
+                    task_id = db.execute("INSERT INTO tasks(code,status,error,result,created,use_cache) VALUES(?,'queued','','{}',?,?)", (code, time.time(),int('metadata' in data.get('use_cache',['metadata'])))).lastrowid
                     row = db.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
                 result = self.task(row)
             elif parsed.path == 'tasks/batch':
@@ -130,6 +136,8 @@ class Engine:
                         return
                     db.execute("UPDATE tasks SET status='running' WHERE id=?", (row['id'],))
                 try:
+                    self.current_task_id=row['id']
+                    self.current_use_cache=bool(row['use_cache'])
                     metadata, outcomes = self.fetcher(row['code'])
                     error = '' if metadata.get('title') else '未匹配到可信资料，请检查编号或来源网络'
                     with self.lock, self.connect() as db:
@@ -142,6 +150,7 @@ class Engine:
                     with self.lock, self.connect() as db:
                         db.execute("UPDATE tasks SET status='failed',error='内置引擎执行失败，请检查依赖与配置' WHERE id=? AND status='running'", (row['id'],))
         finally:
+            self.current_task_id=None
             # Serialize releasing the worker lease with queue submission: no lost wakeup.
             with self.lock:
                 self.worker_lock.release()
@@ -157,13 +166,23 @@ class Engine:
         types = source_types()
         cfg = self.config()
         enabled = cfg.get('scrape_sources', ['javbus', 'jav321', 'fc2'])
-        route = {'fc2','fc2club','fc2ppvdb','freejavbt','airav'} if re.fullmatch(r'FC2-(?:PPV-)?\d+', code) else {'javbus','jav321','freejavbt','airav','xcity'}
+        route = {'fc2','fc2club','fc2ppvdb','freejavbt','airav','javdb'} if re.fullmatch(r'FC2-(?:PPV-)?\d+', code) else {'javbus','jav321','freejavbt','airav','xcity','javdb','javlibrary'}
         priority = [s for s in enabled if s in route]
-        client = HttpClient(cfg.get('scrape_proxy', ''))
         snapshots, outcomes = {}, []
         for source in priority:
+            if self.current_task_id is not None:
+                with self.connect() as db:task=db.execute('SELECT status FROM tasks WHERE id=?',(self.current_task_id,)).fetchone()
+                if task and task['status']=='cancelled':break
             try:
-                value = await types[source](client).fetch(SearchQuery(code))
+                options=cfg.get('scrape_site_config',{}).get(source,{})
+                signature=hashlib.sha256(json.dumps(options,sort_keys=True).encode()).hexdigest()
+                with self.connect() as db:cached=db.execute('SELECT * FROM source_cache WHERE code=? AND source=?',(code,source)).fetchone()
+                if getattr(self,'current_use_cache',True) and cached and cached['signature']==signature and time.time()-cached['updated']<7*86400:
+                    snapshots[source]=json.loads(cached['data']);outcomes.append({'site':source,'outcome':'success','cached':True});continue
+                base=options.get('base_url') or types[source].profile().base_url
+                client=HttpClient(cfg.get('scrape_proxy',''),options,base)
+                crawler=types[source](client);crawler.base_url=base.rstrip('/')
+                value = await crawler.fetch(SearchQuery(code))
                 if value is None:
                     outcomes.append({'site': source, 'outcome': 'not_found'})
                     continue
@@ -172,6 +191,7 @@ class Engine:
                     outcomes.append({'site': source, 'outcome': 'failed', 'reason': 'identity_mismatch'})
                     continue
                 snapshots[source] = values
+                with self.connect() as db:db.execute('INSERT INTO source_cache VALUES(?,?,?,?,?) ON CONFLICT(code,source) DO UPDATE SET signature=excluded.signature,data=excluded.data,updated=excluded.updated',(code,source,signature,json.dumps(values,ensure_ascii=False),time.time()))
                 outcomes.append({'site': source, 'outcome': 'success'})
             except Exception as exc:
                 status = getattr(exc, 'http_status', None)
@@ -185,6 +205,8 @@ class Engine:
 
     def cache_artwork(self, url, target, referer=''):
         try:
+            if url.startswith('//'):url='https:'+url
+            if url.startswith('http://'):url='https://'+url[len('http://'):]
             host = urlparse(url).netloc
             page = referer if urlparse(referer).scheme == 'https' else 'https://' + host + '/'
             payload, kind = fetch_bytes(url, self.config().get('scrape_proxy', ''), {'Referer': page, 'User-Agent': 'Mozilla/5.0'}, 12_000_000)

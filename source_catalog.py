@@ -4,7 +4,7 @@ import threading
 import time
 from pathlib import Path
 
-NATIVE_SOURCES = ('javbus','jav321','fc2','fc2club','fc2ppvdb','freejavbt','airav','xcity')
+NATIVE_SOURCES = ('javbus','jav321','fc2','fc2club','fc2ppvdb','freejavbt','airav','xcity','javdb','javlibrary')
 
 
 class SourceCatalog:

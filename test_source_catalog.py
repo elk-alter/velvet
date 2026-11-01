@@ -13,7 +13,7 @@ class SourceCatalogTests(unittest.TestCase):
         catalog=SourceCatalog(request,lambda:{'scrape_sources':list(NATIVE_SOURCES),'scrape_engine':'builtin'})
         result=catalog.snapshot()
         self.assertTrue(result['upstream']['connected'])
-        self.assertEqual(len([row for row in result['items'] if row['native']]),8)
+        self.assertEqual(len([row for row in result['items'] if row['native']]),10)
         self.assertTrue(next(row for row in result['items'] if row['id']=='plugin.test')['amane_enabled'])
         self.assertNotIn('private-cookie',json.dumps(result))
         self.assertNotIn('private-proxy',json.dumps(result))

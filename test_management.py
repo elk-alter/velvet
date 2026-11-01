@@ -110,6 +110,11 @@ class LibraryManagementTests(unittest.TestCase):
             for data in ({'sources':[{}]}, {'sources':['javbus'],'field_priority':{'title':['unknown']}}):
                 with self.assertRaises(HTTPError):request('/api/scraping-options',data)
             self.assertFalse(request('/api/network')['running'])
+            request('/api/scrape-sites',{'source':'javdb','cookie':'session=private-secret','timeout':15,'retries':1})
+            self.assertNotIn('private-secret',json.dumps(request('/api/library')['settings']))
+            site=next(s for s in request('/api/scrape-sites')['items'] if s['id']=='javdb')
+            self.assertTrue(site['cookie_configured']);self.assertNotIn('private-secret',json.dumps(site))
+            with self.assertRaises(HTTPError):request('/api/scrape-sites',{'source':'javdb','cookie':'x\r\ny','timeout':15,'retries':1})
             with self.assertRaises(HTTPError):request('/api/network/check',{'source_ids':'invalid'})
         finally:
             server.shutdown();server.server_close();thread.join()

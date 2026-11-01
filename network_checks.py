@@ -9,19 +9,21 @@ import time
 from scrapers.compat import fetch_bytes, RequestError
 from scrapers.block import classify_block
 
-CATALOG = {'javbus': 'https://www.javbus.com', 'jav321': 'https://www.jav321.com', 'fc2': 'https://adult.contents.fc2.com','fc2club':'https://fc2club.top','fc2ppvdb':'https://fc2ppvdb.com','freejavbt':'https://freejavbt.com','airav':'https://airav.io','xcity':'https://xcity.jp'}
+CATALOG = {'javbus': 'https://www.javbus.com', 'jav321': 'https://www.jav321.com', 'fc2': 'https://adult.contents.fc2.com','fc2club':'https://fc2club.top','fc2ppvdb':'https://fc2ppvdb.com','freejavbt':'https://freejavbt.com','airav':'https://airav.io','xcity':'https://xcity.jp','javdb':'https://javdb.com','javlibrary':'https://www.javlibrary.com'}
 
 
-def probe(source, proxy, transport=fetch_bytes):
+def probe(source, proxy, transport=fetch_bytes,site_options=None):
     if source not in CATALOG:
         return {'source_id': source, 'status': 'skipped', 'reason': 'unknown_source', 'elapsed_ms': None}
     start = time.monotonic()
-    result = {'source_id': source, 'url': CATALOG[source], 'status': 'ok', 'reason': '', 'http_status': None}
+    options=site_options or {};url=options.get('base_url') or CATALOG[source]
+    result = {'source_id': source, 'url': url, 'status': 'ok', 'reason': '', 'http_status': None}
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         if source == 'javbus':
             headers.update({'Cookie': 'dv=1', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.6'})
-        body, kind, status = transport(CATALOG[source], proxy, headers, with_status=True)
+        if options.get('cookie'):headers['Cookie']=options['cookie']
+        body, kind, status = transport(url, proxy, headers, with_status=True,**({'timeout':options['timeout']} if options.get('timeout') else {}))
         result['http_status'] = status
         reason = classify_block(body.decode('utf-8', errors='replace'))
         if reason:
@@ -92,7 +94,8 @@ class NetworkChecks:
                 return {'source_id': source, 'status': 'skipped', 'reason': 'disabled', 'elapsed_ms': None}
             if source not in CATALOG:
                 return {'source_id': source, 'status': 'skipped', 'reason': 'unknown_source', 'elapsed_ms': None}
-            return probe(source, cfg.get('scrape_proxy', ''))
+            options=cfg.get('scrape_site_config',{}).get(source)
+            return probe(source,cfg.get('scrape_proxy',''),site_options=options) if options else probe(source, cfg.get('scrape_proxy', ''))
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
                 futures = {pool.submit(check, s): s for s in ids}

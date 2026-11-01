@@ -111,4 +111,4 @@ async function executeRestore(name){const r=await api('/api/restore',{name,confi
 function readableReasons(text){const map={geo_restricted:'地区限制',cloudflare_challenge:'访问验证',no_usable_metadata:'无可用资料',rate_limited:'请求限流',network:'网络异常',timeout:'请求超时',server_error:'资料源服务异常'};return String(text||'').replace(/geo_restricted|cloudflare_challenge|no_usable_metadata|rate_limited|network|timeout|server_error/g,k=>map[k])}
 function pushViewState(){try{const state=captureView(),u=new URL(location.href);u.searchParams.set('view',JSON.stringify(state));history.pushState(null,'',u);localStorage.setItem('velvet-view',JSON.stringify(state))}catch(e){}}
 
-</script><script src="/management.js"></script><script src="/browse.js"></script><script>refresh();setInterval(refresh,7000);</script></html>
+</script><script src="/management.js"></script><script src="/browse.js"></script><script src="/film_detail.js"></script><script>refresh();setInterval(refresh,7000);</script></html>

@@ -49,11 +49,13 @@ from media_libraries import MediaLibraries
 from network_checks import NetworkChecks
 from source_catalog import SourceCatalog,NATIVE_SOURCES
 from people_catalog import PeopleCache,FacetCatalog,actor_key
+from artwork_store import ArtworkStore
 LIBRARIES=MediaLibraries(db)
 SOURCES=SourceCatalog(lambda path:external_amane_request(path),config)
 NETWORK=NetworkChecks(config,lambda:external_amane_request('metadata?limit=1'),external_probe=lambda ids:external_amane_request('network/check',{'source_ids':ids} if ids else {}),external_sources=lambda:list(dict.fromkeys(s for route in SOURCES.snapshot()['upstream']['routes'].values() for s in route)))
 PEOPLE=PeopleCache(db,DATA,config,lambda path:external_amane_request(path),lambda url:actor_image_bytes(url))
 CATEGORIES=FacetCatalog(db,config)
+ARTWORK=ArtworkStore(db,DATA,lambda url,target,engine,referer:download_still(url,target,engine,referer))
 
 def binary(name):
  found=shutil.which(name)
@@ -337,10 +339,19 @@ def actor_image_bytes(url):
   if not response.headers.get('Content-Type','').startswith('image/'):raise ValueError('头像响应不是图片')
   return payload
 
+def download_still(url,target,engine,referer):
+ if engine=='builtin':return builtin_engine().cache_artwork(url,target,referer)
+ from people_catalog import image_payload
+ try:
+  payload=actor_image_bytes(url)
+  if not image_payload(payload):return False
+  temporary=target.with_suffix('.part');temporary.write_bytes(payload);temporary.replace(target);return True
+ except (OSError,ValueError):return False
+
 def sync_amane():
  if RESTORING.is_set() or not AMANE_LOCK.acquire(False):return AMANE_STATUS['synced']
  SYNC_CANCEL.clear();WORK_STATUS['sync'].update(running=True,phase='metadata');WORK_STATUS['images'].update(running=False,failed=0)
- synced=0;offset=0;posters=[];covers=[]
+ synced=0;offset=0;posters=[];covers=[];stills=[]
  try:
   while True:
    if SYNC_CANCEL.is_set():AMANE_STATUS['message']='同步已取消';return synced
@@ -350,7 +361,7 @@ def sync_amane():
      if not item.get('title') or not item.get('field_sources'):continue
      rows=c.execute('SELECT * FROM videos WHERE UPPER(code)=?',(str(item['number']).upper(),)).fetchall()
      for old in rows:
-      updates={'source_tags':', '.join(dict.fromkeys(item.get('tags') or [])),'amane_id':item['id'],'amane_snapshot':json.dumps(item,ensure_ascii=False),'source':'amane'}
+      updates={'source_tags':', '.join(dict.fromkeys(item.get('tags') or [])),'amane_id':item['id'],'amane_snapshot':json.dumps(dict(item,_velvet_engine=config().get('scrape_engine','external')),ensure_ascii=False),'source':'amane'}
       locked=set(json.loads(old['locked_fields'] or '[]'))
       if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
       values={'code':item['number'],'title':item['title'],'actors':', '.join(item.get('actors') or []),'studio':item.get('studio') or '', 'date':item.get('release') or '', 'plot':item.get('plot') or ''}
@@ -359,9 +370,11 @@ def sync_amane():
       c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),old['id']]);synced+=1
       if item.get('poster_url'):posters.append((item['poster_url'],old['id']))
       if item.get('thumb_url') or item.get('poster_url'):covers.append((item.get('thumb_url') or item['poster_url'],old['id']))
+      stills.append((old['id'],item))
    offset+=len(items)
    if not items or offset>=page.get('total',0):break
   WORK_STATUS['sync']['phase']='images';WORK_STATUS['images']['running']=True
+  for vid,item in stills:ARTWORK.queue(vid,item,config().get('scrape_engine','external'))
   cached=covered=0
   for art,images in [('poster',posters),('cover',covers)]:
    for url,vid in images:
@@ -370,16 +383,17 @@ def sync_amane():
     if art=='poster':cached+=bool(ok)
     else:covered+=bool(ok)
     if not ok:WORK_STATUS['images']['failed']+=1
-  AMANE_STATUS.update(connected=True,synced=synced,message=f'封面 {covered}/{len(covers)} · 海报 {cached}/{len(posters)}',last_sync=time.time())
+  ARTWORK.process(SYNC_CANCEL)
+  AMANE_STATUS.update(connected=True,synced=synced,message=f'封面 {covered}/{len(covers)} · 海报 {cached}/{len(posters)} · 本批剧照 {ARTWORK.status["processed"]-ARTWORK.status["failed"]}/{ARTWORK.status["processed"]}',last_sync=time.time())
   return synced
  finally:WORK_STATUS['sync'].update(running=False,phase='idle');WORK_STATUS['images']['running']=False;AMANE_LOCK.release()
 
-def submit_scrapes(ids):
+def submit_scrapes(ids,use_cache=False):
  if not SUBMIT_LOCK.acquire(False):raise ValueError('另一批提交进行中，请稍后重试')
- try:return _submit_scrapes(ids)
+ try:return _submit_scrapes(ids,use_cache)
  finally:SUBMIT_LOCK.release()
 
-def _submit_scrapes(ids):
+def _submit_scrapes(ids,use_cache=False):
  if not isinstance(ids,list) or not 1<=len(ids)<=50:raise ValueError('每次请选择 1–50 部视频')
  with db() as c:
   rows=[c.execute('SELECT id,code FROM videos WHERE id=?',(int(vid),)).fetchone() for vid in dict.fromkeys(ids)]
@@ -390,7 +404,7 @@ def _submit_scrapes(ids):
   if active:skipped+=1;continue
   with db() as c:job_id=c.execute('INSERT INTO scrape_jobs(code,status,created,updated) VALUES(?,?,?,?)',(code,'submitting',time.time(),time.time())).lastrowid
   try:
-   remote=amane_request('tasks',{'type':'scrape','number':code})
+   remote=amane_request('tasks',{'type':'scrape','number':code,'use_cache':['metadata','trans'] if use_cache else []})
    with db() as c:c.execute('UPDATE scrape_jobs SET remote_id=?,status=?,updated=? WHERE id=?',(remote['id'],remote['status'],time.time(),job_id))
    submitted.append(remote['id'])
   except Exception as e:
@@ -421,6 +435,8 @@ def poll_scrapes():
   result=remote.get('result') or {};details=[]
   for out in result.get('outcomes',[]):
    if out.get('outcome')=='failed':details.append(str(out.get('site',''))+': '+str(out.get('reason','unknown')))
+   elif out.get('outcome')=='success':details.append(str(out.get('site',''))+': '+('缓存命中' if out.get('cached') else '获取成功'))
+   elif out.get('outcome')=='not_found':details.append(str(out.get('site',''))+': 未匹配')
   reasons=[x.get('reason') for x in result.get('outcomes',[]) if x.get('outcome')=='failed']
   retry='retryable' if any(x in ('network','timeout','dns','rate_limited','server_error') for x in reasons) else 'needs_review' if remote['status']=='failed' else ''
   with db() as c:c.execute('UPDATE scrape_jobs SET status=?,error=?,details=?,updated=?,retry_kind=? WHERE id=?',(remote['status'],remote.get('error') or '', '; '.join(details),time.time(),retry,job['id']))
@@ -448,7 +464,7 @@ def auto_scrape_tick():
  if active>=3:AUTO_STATUS['message']='等待当前刮削任务完成';return
  batch=candidates[:min(2,3-active)]
  if not batch:AUTO_STATUS['message']='暂无可提交的编号（失败项 24 小时后重试，最多 3 次）';return
- result=submit_scrapes(batch);AUTO_STATUS['submitted']+=result['submitted'];AUTO_STATUS['message']='已自动提交 '+str(result['submitted'])+' 个编号'
+ result=submit_scrapes(batch,use_cache=True);AUTO_STATUS['submitted']+=result['submitted'];AUTO_STATUS['message']='已自动提交 '+str(result['submitted'])+' 个编号'
 
 DUP_STATUS={'running':False,'processed':0,'total':0,'errors':0,'message':'尚未检测'}
 DUP_LOCK=threading.Lock()
@@ -608,8 +624,14 @@ class Handler(BaseHTTPRequestHandler):
    if path=='/management.js':return self.send((ROOT/'management.js').read_bytes(),'text/javascript; charset=utf-8')
    if path=='/management.css':return self.send((ROOT/'management.css').read_bytes(),'text/css; charset=utf-8')
    if path=='/browse.js':return self.send((ROOT/'browse.js').read_bytes(),'text/javascript; charset=utf-8')
+   if path=='/film_detail.js':return self.send((ROOT/'film_detail.js').read_bytes(),'text/javascript; charset=utf-8')
    if path=='/browse.css':return self.send((ROOT/'browse.css').read_bytes(),'text/css; charset=utf-8')
    if path=='/api/network':return self.send(NETWORK.status())
+   if path=='/api/scrape-sites':
+    options=config().get('scrape_site_config',{})
+    return self.send({'items':[{'id':source,'base_url':options.get(source,{}).get('base_url',''),'timeout':options.get(source,{}).get('timeout',20),'retries':options.get(source,{}).get('retries',1),'cookie_configured':bool(options.get(source,{}).get('cookie'))} for source in NATIVE_SOURCES]})
+   if path.startswith('/api/video-artwork/'):
+    row=self.video(path.rsplit('/',1)[-1]);return self.send(ARTWORK.manifest(row['id']))
    if path=='/api/source-catalog':return self.send(SOURCES.snapshot(refresh=parse_qs(urlparse(self.path).query).get('refresh')==['1']))
    if path=='/api/libraries':return self.send({'items':LIBRARIES.list()})
    if path=='/api/library-files':
@@ -647,12 +669,12 @@ class Handler(BaseHTTPRequestHandler):
      counts=dict(c.execute("SELECT COUNT(*) AS videos,SUM(missing) AS missing,SUM(CASE WHEN error!='' THEN 1 ELSE 0 END) AS errors FROM videos").fetchone())
     return self.send({'ok':True,'version':APP_VERSION,'platform':sys.platform,'server_mode':NAS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'scan':STATUS,'library':counts})
    if path=='/api/library':
-    cfg=config();cfg['has_key']=bool(cfg['api_key']);cfg['api_key']='';cfg['has_amane_token']=bool(cfg['amane_token']);cfg['amane_token']=''
+    cfg=config();cfg['has_key']=bool(cfg['api_key']);cfg['api_key']='';cfg['has_amane_token']=bool(cfg['amane_token']);cfg['amane_token']='';cfg.pop('scrape_site_config',None)
     movies=CORE.hierarchy()
     with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')],'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN})
    if path.startswith('/thumb/'):
     name=path.split('/')[-1]
-    if not re.fullmatch(r'\d+(?:-(?:[1-5]|poster|cover))?\.jpg',name):return self.send({},status=404)
+    if not re.fullmatch(r'\d+(?:-(?:[1-5]|poster|cover|still-(?:[1-9]|1[0-2])))?\.jpg',name):return self.send({},status=404)
     file=DATA/name
     if not file.exists() and '-cover' in name:file=DATA/(name.split('-')[0]+'-poster.jpg')
     if not file.exists() and ('-poster' in name or '-cover' in name):file=DATA/(name.split('-')[0]+'.jpg')
@@ -689,7 +711,28 @@ class Handler(BaseHTTPRequestHandler):
    length=int(self.headers.get('Content-Length',0))
    if length>100000:raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
-   if path=='/api/actors-sync':
+   if path=='/api/scrape-sites':
+    source=a.get('source')
+    if source not in NATIVE_SOURCES:raise ValueError('未知内置来源')
+    timeout=a.get('timeout',20);retries=a.get('retries',1);base=str(a.get('base_url','')).strip().rstrip('/');cookie=a.get('cookie','')
+    if type(timeout) is not int or not 5<=timeout<=60 or type(retries) is not int or not 0<=retries<=2:raise ValueError('超时应为 5–60 秒，重试为 0–2 次')
+    if base:
+     parsed=urlparse(base)
+     if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.query or parsed.fragment:raise ValueError('来源地址必须为无凭据的 HTTPS 地址')
+    if not isinstance(cookie,str) or len(cookie)>16000 or '\n' in cookie or '\r' in cookie or not cookie.isascii():raise ValueError('Cookie 格式无效')
+    cfg=config();options=cfg.setdefault('scrape_site_config',{}).setdefault(source,{})
+    options.update(base_url=base,timeout=timeout,retries=retries)
+    if cookie:options['cookie']=cookie
+    if a.get('clear_cookie'):options.pop('cookie',None)
+    (DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8');return self.send({'ok':True})
+   elif path=='/api/artwork-retry':
+    row=self.video(a['id'])
+    try:snapshot=json.loads(row['amane_snapshot'] or '{}')
+    except ValueError:snapshot={}
+    ARTWORK.queue(row['id'],snapshot,snapshot.get('_velvet_engine',config().get('scrape_engine','external')));ARTWORK.retry(row['id'])
+    if not AMANE_LOCK.locked():SYNC_CANCEL.clear()
+    threading.Thread(target=ARTWORK.process,args=(SYNC_CANCEL,),kwargs={'video_id':row['id']},daemon=True).start();return self.send({'ok':True})
+   elif path=='/api/actors-sync':
     names=a.get('names');known={p['name'] for p in actor_library()}
     if not isinstance(names,list) or any(not isinstance(n,str) or n not in known for n in names):raise ValueError('只能同步当前演员库中的演员')
     return self.send({'ok':True,'started':PEOPLE.start(names,bool(a.get('force')))})
@@ -767,6 +810,7 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/backup-validate':
     CORE.validate_backup(a['name']);return self.send({'ok':True})
    elif path=='/api/restore':
+    if ARTWORK.status['running']:raise ValueError('请等待剧照下载完成后再恢复备份')
     if PEOPLE.state['running']:raise ValueError('请等待演员资料与头像同步完成后再恢复备份')
     if any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values()):raise ValueError('请等待内置刮削任务停止后再恢复备份')
     if a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
@@ -846,6 +890,7 @@ class Handler(BaseHTTPRequestHandler):
     cfg=config();engine=a.get('engine',cfg.get('scrape_engine','external'))
     if engine not in ('builtin','external'):raise ValueError('未知刮削引擎')
     if engine!=cfg.get('scrape_engine','external'):
+     if AMANE_LOCK.locked() or ARTWORK.status['running']:raise ValueError('请等待资料与图片同步完成，或在任务中心取消同步后再切换引擎')
      with db() as c:
       if c.execute("SELECT 1 FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone():raise ValueError('请先完成或取消当前刮削任务，再切换引擎')
      if engine=='builtin':

@@ -1,6 +1,6 @@
 # 内置自动刮削：第一批移植
 
-Velvet 现可直接执行移植自 Amane 的采集器，不必为此另外运行 Amane。当前已移植 JavBus、Jav321、FC2、FC2Club、FC2PPVDB、Freejavbt、Airav 和 XCity 八个采集器的解析与查找流程，不包含 Amane 全套来源、浏览器后端、翻译、智能体或文件整理功能。上游基线及修改声明见 [NOTICE](../NOTICE)。
+Velvet 现可直接执行移植自 Amane 的采集器，不必为此另外运行 Amane。当前已移植 JavBus、Jav321、FC2、FC2Club、FC2PPVDB、Freejavbt、Airav、XCity、JavDB 和 JavLibrary 十个采集器的解析与查找流程，不包含 Amane 全套来源、浏览器后端、翻译、智能体或文件整理功能。上游基线及修改声明见 [NOTICE](../NOTICE)。
 
 ## 使用
 
@@ -29,3 +29,5 @@ Velvet 现可直接执行移植自 Amane 的采集器，不必为此另外运行
 内置引擎数据库为 `data/builtin-scraper.db`，包含任务、原始资料和图片 URL，属于私人运行资料，已被 Git 忽略。现有应用备份仍只覆盖主片库与配置；需要完整迁移内置队列时，先停止应用，再整体备份 data 目录。不要在内置任务运行中恢复应用备份。
 
 当前暂不提供内部任务库与主片库的原子备份恢复。内置资料同步写入的主片库内容仍随现有备份保留，内部任务历史需整体备份 data 才能保留。
+
+站点设置、来源缓存、独立剧照队列和详情画廊见 [独立刮削与剧照](INDEPENDENT-SCRAPING.md)。

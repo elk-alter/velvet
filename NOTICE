@@ -29,3 +29,8 @@ Actor image lookup in people_catalog.py follows the exact-filename and Filetree
 flattening conventions of Amane src/amane/crawlers/actor/sites/gfriends.py at
 the same revision. The cache/worker and UI are implemented for Velvet. No
 GFriends images or index data are bundled or licensed by this repository.
+
+Additional adapters (2026-11-02): scrapers/javdb.py and scrapers/javlibrary.py
+are adapted from the matching Amane source paths at revision 99369d2 above.
+Imports use the Velvet host; identity matching, transport and caching are
+implemented by Velvet. No account cookies or credentials are bundled.

@@ -40,7 +40,11 @@ class BuiltinTests(unittest.TestCase):
             app.DATA.joinpath('settings.json').write_text(json.dumps({'scrape_engine': 'builtin'}))
             with app.db() as db:
                 video_id = db.execute('INSERT INTO videos(path,code,title,locked_fields) VALUES(?,?,?,?)', (str(source), 'ABC-123', 'Manual', '["title"]')).lastrowid
-            engine = Engine(app.DATA, app.config, lambda code: (merge_results(code, {'fixture': {'title': 'Remote', 'tags': ['Tag'], 'actors': ['Actor']}}, ['fixture']), []))
+            engine = Engine(app.DATA, app.config, lambda code: (merge_results(code, {'fixture': {'title': 'Remote', 'tags': ['Tag'], 'actors': ['Actor'],'extrafanart':['https://example.invalid/still.jpg']}}, ['fixture']), []))
+            app.external_amane_request=lambda *args,**kwargs:self.fail('native workflow must not call Amane')
+            def download_still(url,target,mode,referer):
+                self.assertEqual(mode,'builtin');target.write_bytes(b'\xff\xd8fixture');return True
+            app.ARTWORK.fetcher=download_still
             app.BUILTIN_ENGINES[str(app.DATA)] = engine
             submitted = app.submit_scrapes([video_id])
             self.assertEqual(submitted['submitted'], 1)
@@ -55,6 +59,7 @@ class BuiltinTests(unittest.TestCase):
                 self.assertGreater(row['amane_id'], 0)
             self.assertEqual(source.read_bytes(), b'unchanged-video')
             self.assertEqual(source.stat().st_mtime_ns, stamp)
+            self.assertEqual(app.ARTWORK.manifest(video_id)['stills'],1)
 
     def wait(self, engine, task_id):
         deadline = time.monotonic() + 4

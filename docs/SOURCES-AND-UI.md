@@ -6,7 +6,7 @@
 
 | 方式 | 范围 | 依赖 |
 |---|---|---|
-| Velvet 内置 | JavBus、Jav321、FC2、FC2Club、FC2PPVDB、Freejavbt、Airav、XCity，共 8 项 | requirements.txt、对应站点网络；不依赖 Amane 进程 |
+| Velvet 内置 | JavBus、Jav321、FC2、FC2Club、FC2PPVDB、Freejavbt、Airav、XCity、JavDB、JavLibrary，共 10 项 | requirements.txt、对应站点网络；不依赖 Amane 进程 |
 | Amane 完整引擎 | 使用配置的 Amane 实例的分类路线、字段择优、缓存、站点凭据、浏览器后端及已安装插件 | Amane 必须运行，地址和 Token 正确，站点自身条件满足 |
 
 “刮削来源”页面显示来源执行方式、当前模式下是否启用，以及从 Amane 实时读取的分类路线。路线里出现的新插件 ID 也会加入目录；静态来源 URL 来自固定源码版本，不保证与未来版本一致。目录可在 Amane 离线时继续显示内置来源。
@@ -21,7 +21,7 @@
 4. 完整模式保留 Amane 的路线和凭据；这批不代用户修改 Amane 配置。需要修改完整路线时在 Amane 设置中完成，然后刷新 Velvet 的本机配置。
 5. 在“网络检测”查看逐来源结果。完整模式会调用该实例的真实检测接口，使用该实例的网络设置；Velvet 内置代理不会自动写入 Amane。
 
-新增安装的默认内置清单包含 8 项；已有显式来源选择保持原样。按编号选择适用路线，不会为每个编号请求所有来源。默认内置普通路线支持 JavBus/Jav321/Freejavbt/Airav/XCity；FC2 路线支持 FC2/FC2Club/FC2PPVDB/Freejavbt/Airav。额外来源的合成页面解析已验证，尚未做全部来源的真实编号验收。
+内置清单现有 10 项，JavDB/JavLibrary 可在内置来源页启用；已有显式来源选择保持原样。按编号选择适用路线，不会为每个编号请求所有来源。默认内置普通路线支持 JavBus/Jav321/Freejavbt/Airav/XCity/JavDB/JavLibrary；FC2 路线支持 FC2/FC2Club/FC2PPVDB/Freejavbt/Airav/JavDB。额外来源的合成页面解析已验证，尚未做全部来源的真实编号验收。
 
 ## 页面形式
 

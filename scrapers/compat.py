@@ -3,10 +3,11 @@ import asyncio
 import re
 import socket
 import ssl
+import datetime
 from .block import classify_block
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, build_opener, ProxyHandler
+from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler
 from urllib.parse import urlparse
 
 
@@ -19,10 +20,44 @@ class SiteName:
     FREEJAVBT = 'freejavbt'
     AIRAV = 'airav'
     XCITY = 'xcity'
+    JAVDB = 'javdb'
+    JAVLIBRARY = 'javlibrary'
 
 
 class ActorGender:
     UNKNOWN = 'unknown'
+    FEMALE = 'female'
+    MALE = 'male'
+
+
+@dataclass
+class FilmActor:
+    name: str
+    gender: str = 'unknown'
+
+
+@dataclass
+class WesternNumber:
+    alternate: str
+
+
+def parse_western_number(number):
+    match=re.fullmatch(r'(.+?)([._-])(\d{2}|\d{4})([._-])(\d{2})([._-])(\d{2})',number)
+    if not match:return None
+    studio,sep,year,sep2,month,sep3,day=match.groups()
+    try:datetime.date(int(year) if len(year)==4 else 2000+int(year),int(month),int(day))
+    except ValueError:return None
+    return WesternNumber(studio+sep+(year[2:] if len(year)==4 else '20'+year)+sep2+month+sep3+day)
+
+
+class FailureReason:
+    LOGIN_REQUIRED = 'login_required'
+
+
+class SourceError(ValueError):
+    def __init__(self,reason,**kwargs):
+        self.reason=reason
+        super().__init__(reason)
 
 
 @dataclass
@@ -45,6 +80,7 @@ class FetchOptions:
 
 class MediaMetadata:
     def __init__(self, **values):
+        if 'actors' in values:values['actors']=[actor.name if isinstance(actor,FilmActor) else actor for actor in values['actors']]
         self.values = values
 
 
@@ -93,7 +129,9 @@ def leading_token(text):
 
 
 def select_number_index(found, query):
-    matches = [i for i, value in enumerate(found) if fold_number(value) == fold_number(query)]
+    alternate=parse_western_number(query)
+    keys={fold_number(query)}|({fold_number(alternate.alternate)} if alternate else set())
+    matches = [i for i, value in enumerate(found) if fold_number(value) in keys]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -104,13 +142,22 @@ class RequestError(ValueError):
         self.reason = reason or ('not_found' if http_status == 404 else 'rate_limited' if http_status == 429 else 'server_error' if http_status and http_status >= 500 else 'http_error' if http_status else 'network')
 
 
-def fetch_bytes(url, proxy='', headers=None, limit=8_000_000, with_status=False):
+class SourceRedirect(HTTPRedirectHandler):
+    def redirect_request(self,req,fp,code,msg,headers,newurl):
+        if urlparse(newurl).scheme!='https':raise RequestError('拒绝不安全的来源重定向')
+        redirected=super().redirect_request(req,fp,code,msg,headers,newurl)
+        if redirected and urlparse(newurl).netloc!=urlparse(req.full_url).netloc:
+            redirected.remove_header('Cookie');redirected.remove_header('Authorization')
+        return redirected
+
+
+def fetch_bytes(url, proxy='', headers=None, limit=8_000_000, with_status=False,timeout=20):
     parsed = urlparse(url)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.username:
         raise RequestError('来源资源必须使用 HTTPS')
-    opener = build_opener(ProxyHandler({'http': proxy, 'https': proxy} if proxy else {}))
+    opener = build_opener(ProxyHandler({'http': proxy, 'https': proxy} if proxy else {}),SourceRedirect())
     try:
-        with opener.open(Request(url, headers=headers or {}), timeout=20) as response:
+        with opener.open(Request(url, headers=headers or {}), timeout=timeout) as response:
             payload = response.read(limit + 1)
             if len(payload) > limit:
                 raise RequestError('来源响应超过大小限制')
@@ -128,14 +175,22 @@ def fetch_bytes(url, proxy='', headers=None, limit=8_000_000, with_status=False)
 
 
 class HttpClient:
-    def __init__(self, proxy=''):
+    def __init__(self, proxy='', options=None,source_url=''):
         self.proxy = proxy
+        self.options=options or {};self.host=urlparse(source_url).hostname
 
     async def get_html(self, url, cookies=None, headers=None):
         request_headers = {'User-Agent': 'Mozilla/5.0', **(headers or {})}
         if cookies:
             request_headers['Cookie'] = '; '.join(k + '=' + v for k, v in cookies.items())
-        body, _ = await asyncio.to_thread(fetch_bytes, url, self.proxy, request_headers)
+        if self.options.get('cookie') and urlparse(url).hostname==self.host:request_headers['Cookie']=self.options['cookie']
+        for attempt in range(int(self.options.get('retries',1))+1):
+            try:
+                body, _ = await asyncio.to_thread(fetch_bytes, url, self.proxy, request_headers,timeout=int(self.options.get('timeout',20)))
+                break
+            except RequestError as exc:
+                if attempt>=int(self.options.get('retries',1)) or exc.reason not in ('network','timeout','dns','rate_limited','server_error'):raise
+                await asyncio.sleep(min(2**attempt,4))
         text = body.decode('utf-8', errors='replace')
         reason = classify_block(text)
         if reason:
