@@ -1,13 +1,17 @@
 let managedLibraries=[],managerSection="sources",managerTaskTimer,managerNetworkTimer;
+function showScrapeHub(){showTaskCenter()}
+function scrapeNavigation(){return `<nav class="scrapeSubnav" aria-label="刮削中心"><button class="${managerSection==='tasks'?'active':''}" onclick="showTaskCenter()">任务</button><button class="${managerSection==='sources'?'active':''}" onclick="showScrapingOptions()">来源</button><button class="${managerSection==='network'?'active':''}" onclick="showNetwork()">网络检测</button><button onclick="showScrapeConnection()">连接设置</button></nav>`}
+async function showScrapeConnection(){await refresh();managerSection='sources';const cfg=library.settings;openManager('刮削连接',`<label>执行引擎<select id="hubEngine"><option value="builtin" ${cfg.scrape_engine==='builtin'?'selected':''}>Velvet 内置</option><option value="external" ${cfg.scrape_engine!=='builtin'?'selected':''}>Amane 完整引擎</option></select></label><label>内置代理<input id="hubProxy" value="${esc(cfg.scrape_proxy||'')}" placeholder="http://127.0.0.1:10808"></label><label>Amane 地址<input id="hubUrl" value="${esc(cfg.amane_url||'http://127.0.0.1:18000')}"></label><label>Amane Token<input type="password" autocomplete="new-password" id="hubToken" placeholder="留空保留现有 Token"></label><p class="muted">内置代理只用于 Velvet 的采集与头像下载。完整引擎使用 Amane 自己的网络设置。</p>`,`<button class="accent" onclick="saveHubConnection()">保存连接</button>`)}
+async function saveHubConnection(){try{await api('/api/amane-settings',{engine:$('hubEngine').value,proxy:$('hubProxy').value.trim(),url:$('hubUrl').value.trim(),token:$('hubToken').value.trim(),aliases:library.settings.tag_aliases||{}});toast('连接设置已保存');showScrapeConnection()}catch(e){toast(e.message)}}
 function closeManager(){clearTimeout(managerTaskTimer);clearTimeout(managerNetworkTimer);document.body.classList.remove("manager-open");if($('managerView'))$('managerView').hidden=true;document.querySelector('main').hidden=false;}
 function openManager(title,body,footer=''){
  if(toolDialog.open)toolDialog.close();
  document.querySelector('main').hidden=true;document.body.classList.add("manager-open");
  const view=$('managerView');view.hidden=false;
- view.innerHTML=`<header class="managerHeader"><div><small>Velvet / 管理</small><h2>${esc(title)}</h2></div><button onclick="closeManager()">返回片库</button></header><nav class="managerNav" aria-label="管理页面"><button onclick="showMediaLibraries()">媒体库</button><button onclick="showScrapingOptions()">刮削来源</button><button onclick="showNetwork()">网络检测</button><button onclick="showTaskCenter()">任务</button></nav><div class="managerBody">${body}</div>${footer?'<footer class="managerFooter">'+footer+'</footer>':''}`;
+ view.innerHTML=`<header class="managerHeader"><div><small>Velvet / 管理</small><h2>${esc(title)}</h2></div><button onclick="closeManager()">返回片库</button></header><nav class="managerNav" aria-label="管理页面"><button onclick="showMediaLibraries()">媒体库</button><button onclick="showScrapeHub()">刮削中心</button></nav><div class="managerBody">${managerSection!=='libraries'?scrapeNavigation():''}${body}</div>${footer?'<footer class="managerFooter">'+footer+'</footer>':''}`;
  const names={libraries:'媒体库',sources:'刮削来源',network:'网络检测',tasks:'任务'};
- for(const button of view.querySelectorAll('.managerNav button')){button.classList.toggle('active',button.textContent===names[managerSection]);}
- const handlers={libraries:'showMediaLibraries',sources:'showScrapingOptions',network:'showNetwork',tasks:'showTaskCenter'};
+ for(const button of view.querySelectorAll('.managerNav button')){button.classList.toggle('active',button.textContent===(managerSection==='libraries'?'媒体库':'刮削中心'));}
+ const handlers={libraries:'showMediaLibraries',sources:'showScrapeHub',network:'showScrapeHub',tasks:'showScrapeHub'};
  for(const button of document.querySelectorAll('aside button')){button.toggleAttribute('data-manager-active',(button.getAttribute('onclick')||'').includes(handlers[managerSection]));}
  window.scrollTo({top:0});
 }

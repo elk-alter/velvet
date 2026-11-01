@@ -9,6 +9,7 @@
 - `builtin_scraper.py`、`scrapers/`：持久队列及第一批移植采集器；网络与拦截判定由刮削和检测共享。
 - `network_checks.py`：有界并发的来源诊断，不改变元数据。
 - `media_libraries.py`：库配置、路径归属、过滤和统计；`management.js` 提供管理界面。
+- `people_catalog.py`：人物资料/头像缓存与分类聚合；`browse.js`、`browse.css` 提供演员、分类和影片卡片。
 
 这是实验结构，不是最终架构。部分共享状态仍在内存中，视图层包含较多逻辑，部分 API 全量返回资料。
 

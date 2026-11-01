@@ -48,9 +48,12 @@ with db() as c:
 from media_libraries import MediaLibraries
 from network_checks import NetworkChecks
 from source_catalog import SourceCatalog,NATIVE_SOURCES
+from people_catalog import PeopleCache,FacetCatalog,actor_key
 LIBRARIES=MediaLibraries(db)
 SOURCES=SourceCatalog(lambda path:external_amane_request(path),config)
 NETWORK=NetworkChecks(config,lambda:external_amane_request('metadata?limit=1'),external_probe=lambda ids:external_amane_request('network/check',{'source_ids':ids} if ids else {}),external_sources=lambda:list(dict.fromkeys(s for route in SOURCES.snapshot()['upstream']['routes'].values() for s in route)))
+PEOPLE=PeopleCache(db,DATA,config,lambda path:external_amane_request(path),lambda url:actor_image_bytes(url))
+CATEGORIES=FacetCatalog(db,config)
 
 def binary(name):
  found=shutil.which(name)
@@ -325,6 +328,15 @@ def cache_artwork(url,vid,art='poster'):
 
 def cache_poster(url,vid):return cache_artwork(url,vid,'poster')
 
+def actor_image_bytes(url):
+ parsed=urlparse(url);digest=parsed.path.rsplit('/',1)[-1]
+ if parsed.path.startswith('/api/resources/') and re.fullmatch(r'[a-f0-9]{16}',digest):path='resources/'+digest
+ else:path='resources/proxy?url='+quote(url,safe='')
+ with urlopen(Request(amane_base()+'/api/'+path,headers=amane_headers()),timeout=25) as response:
+  payload=response.read(12_000_001)
+  if not response.headers.get('Content-Type','').startswith('image/'):raise ValueError('头像响应不是图片')
+  return payload
+
 def sync_amane():
  if RESTORING.is_set() or not AMANE_LOCK.acquire(False):return AMANE_STATUS['synced']
  SYNC_CANCEL.clear();WORK_STATUS['sync'].update(running=True,phase='metadata');WORK_STATUS['images'].update(running=False,failed=0)
@@ -478,8 +490,14 @@ def actor_library():
    movie=video['code'].strip().upper() or presentation(video)['part_key'] or video['path'];person['movie_keys'].add(movie)
  for name,pref in prefs.items():
   if name not in people and (pref['favorite'] or pref['rating']):people[name]=dict(pref,movie_keys=set(),file_count=0)
- result=[]
+ result=[];profiles=PEOPLE.profiles()
  for person in people.values():
+  profile=profiles.get(person['name'],{})
+  try:person.update(json.loads(profile.get('profile') or '{}'))
+  except ValueError:pass
+  key=actor_key(person['name']);portrait=DATA/'actors'/(key+'.jpg')
+  person['portrait']='/actor-image/'+key+'?v='+str(int(profile.get('updated',0))) if portrait.is_file() else ''
+  person['portrait_source']=profile.get('origin','');person['portrait_error']=profile.get('error','')
   person['movie_count']=len(person.pop('movie_keys'));result.append(person)
  return sorted(result,key=lambda p:(-p['favorite'],-p['rating'],-p['movie_count'],p['name']))
 
@@ -589,6 +607,8 @@ class Handler(BaseHTTPRequestHandler):
    if path=='/':return self.send((ROOT/'index.html').read_bytes(),'text/html; charset=utf-8')
    if path=='/management.js':return self.send((ROOT/'management.js').read_bytes(),'text/javascript; charset=utf-8')
    if path=='/management.css':return self.send((ROOT/'management.css').read_bytes(),'text/css; charset=utf-8')
+   if path=='/browse.js':return self.send((ROOT/'browse.js').read_bytes(),'text/javascript; charset=utf-8')
+   if path=='/browse.css':return self.send((ROOT/'browse.css').read_bytes(),'text/css; charset=utf-8')
    if path=='/api/network':return self.send(NETWORK.status())
    if path=='/api/source-catalog':return self.send(SOURCES.snapshot(refresh=parse_qs(urlparse(self.path).query).get('refresh')==['1']))
    if path=='/api/libraries':return self.send({'items':LIBRARIES.list()})
@@ -601,6 +621,15 @@ class Handler(BaseHTTPRequestHandler):
     row=self.video(path.rsplit('/',1)[-1]);snapshot=json.loads(row.get('amane_snapshot') or '{}');values={'title':snapshot.get('title'),'actors':', '.join(snapshot.get('actors') or []),'studio':snapshot.get('studio'),'date':snapshot.get('release'),'plot':snapshot.get('plot'),'code':snapshot.get('number')}
     return self.send({'fields':[{'field':k,'current':row.get(k),'incoming':v,'locked':k in json.loads(row['locked_fields'] or '[]'),'source':(snapshot.get('field_sources') or {}).get(k,'Amane')} for k,v in values.items()]})
    if path=='/api/actors':return self.send({'actors':actor_library()})
+   if path=='/api/actor-sync-status':return self.send(dict(PEOPLE.state))
+   if path=='/api/categories':return self.send({'items':CATEGORIES.list()})
+   if path.startswith('/actor-image/'):
+    key=path.rsplit('/',1)[-1]
+    if not re.fullmatch(r'[a-f0-9]{64}',key):raise ValueError('头像标识无效')
+    image_path=DATA/'actors'/(key+'.jpg')
+    if not image_path.is_file():return self.send({},status=404)
+    payload=image_path.read_bytes();kind='image/png' if payload.startswith(b'\x89PNG') else 'image/webp' if payload.startswith(b'RIFF') else 'image/jpeg'
+    return self.send(payload,kind)
    if path=='/api/duplicates':return self.send({'groups':duplicate_groups(),'status':DUP_STATUS})
    if path=='/api/amane-jobs':
     with db() as c:
@@ -660,7 +689,13 @@ class Handler(BaseHTTPRequestHandler):
    length=int(self.headers.get('Content-Length',0))
    if length>100000:raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
-   if path=='/api/network/check':return self.send({'ok':True,'started':NETWORK.start(a.get('source_ids'))})
+   if path=='/api/actors-sync':
+    names=a.get('names');known={p['name'] for p in actor_library()}
+    if not isinstance(names,list) or any(not isinstance(n,str) or n not in known for n in names):raise ValueError('只能同步当前演员库中的演员')
+    return self.send({'ok':True,'started':PEOPLE.start(names,bool(a.get('force')))})
+   elif path=='/api/category-favorite':
+    CATEGORIES.favorite(a.get('kind'),a.get('name'),a.get('favorite'));return self.send({'ok':True})
+   elif path=='/api/network/check':return self.send({'ok':True,'started':NETWORK.start(a.get('source_ids'))})
    elif path=='/api/libraries':
     library_path=LIBRARIES.save(a)
     if a.get('scan'):threading.Thread(target=scan,kwargs={'folder_path':library_path},daemon=True).start()
@@ -732,6 +767,7 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/backup-validate':
     CORE.validate_backup(a['name']);return self.send({'ok':True})
    elif path=='/api/restore':
+    if PEOPLE.state['running']:raise ValueError('请等待演员资料与头像同步完成后再恢复备份')
     if any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values()):raise ValueError('请等待内置刮削任务停止后再恢复备份')
     if a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
     locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK];acquired=[]

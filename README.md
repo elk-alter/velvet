@@ -95,7 +95,7 @@ python app.py --no-browser
 
 项目现提供第一批移植自 Amane 的内置采集器，安装 `python -m pip install -r requirements.txt` 后，在资料源设置选择“内置刮削”；原有外部模式继续可用。内置引擎的范围、代理、测试与限制见 [内置刮削](docs/BUILTIN-SCRAPING.md)。
 
-外部模式下，Amane 不是本项目打包的依赖。Velvet 通过公共 API 读取资料和缓存图片，不调用原视频整理；自动任务仍受来源可访问性、编号识别和网络情况影响。详见 [使用与配置](docs/USAGE.md)。网络检测、来源开关、字段择优和媒体库配置见 [管理功能说明](docs/NETWORK-AND-LIBRARIES.md)。新增独立管理页面及完整来源目录，执行方式和依赖见 [来源与界面](docs/SOURCES-AND-UI.md)。
+外部模式下，Amane 不是本项目打包的依赖。Velvet 通过公共 API 读取资料和缓存图片，不调用原视频整理；自动任务仍受来源可访问性、编号识别和网络情况影响。详见 [使用与配置](docs/USAGE.md)。网络检测、来源开关、字段择优和媒体库配置见 [管理功能说明](docs/NETWORK-AND-LIBRARIES.md)。新增独立管理页面及完整来源目录，执行方式和依赖见 [来源与界面](docs/SOURCES-AND-UI.md)。单一刮削入口、演员头像、分类与海报浏览见 [浏览更新](docs/BROWSING-UPDATE.md)。
 
 ### 数据在哪里
 

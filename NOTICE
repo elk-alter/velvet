@@ -24,3 +24,8 @@ freejavbt.py and xcity.py are adapted from the corresponding files under
 src/amane/crawlers/sites/ at the revision above. Imports use the Velvet host;
 parsing logic is retained. sources.json records source IDs and public profile
 URLs from that revision. No upstream credentials or user configuration is bundled.
+
+Actor image lookup in people_catalog.py follows the exact-filename and Filetree
+flattening conventions of Amane src/amane/crawlers/actor/sites/gfriends.py at
+the same revision. The cache/worker and UI are implemented for Velvet. No
+GFriends images or index data are bundled or licensed by this repository.
