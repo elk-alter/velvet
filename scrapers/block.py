@@ -22,4 +22,3 @@ def classify_block(text: str):
     if "年齢認証" in text or "age verification" in lower:
         return 'age_verification'
     return None
-
