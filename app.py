@@ -571,6 +571,9 @@ def amane_watcher():
   if time.time()-auto_last>=60:
    try:auto_scrape_tick()
    except Exception as e:AUTO_STATUS['message']='自动刮削等待连接：'+str(e)[:150]
+   try:
+    if not LOCK.locked():REVIEW.auto_tick()
+   except Exception:pass
    auto_last=time.time()
   time.sleep(15)
 
@@ -635,6 +638,19 @@ class Handler(BaseHTTPRequestHandler):
    if path in UI_ASSETS:
     filename,kind=UI_ASSETS[path]
     return self.send((ROOT/filename).read_bytes(),kind+'; charset=utf-8')
+   if path.startswith('/api/review-evidence/'):
+    match=re.fullmatch(r'/api/review-evidence/(\d+)/(\d+)',path)
+    if not match or not 0<=int(match[2])<32:return self.send({},status=404)
+    row=self.video(match[1])
+    with db() as c:record=c.execute('SELECT size,mtime,auto_generation,result,auto_status FROM file_reviews WHERE video_id=?',(row['id'],)).fetchone()
+    if not record or tuple(record)[:2]!=(row['size'],row['mtime']) or not re.fullmatch(r'[a-f0-9]{32}',record[2] or '') or record[3]=='changed' or record[4]=='stale':return self.send({},status=404)
+    try:
+     stamp=Path(row['path']).stat()
+     if stamp.st_size!=row['size'] or abs(stamp.st_mtime-row['mtime'])>.01:return self.send({},status=404)
+    except OSError:return self.send({},status=404)
+    image=DATA/'analysis'/str(row['id'])/record[2]/(match[2]+'.jpg')
+    if not image.is_file():return self.send({},status=404)
+    return self.send(image.read_bytes(),'image/jpeg')
    if path=='/api/file-review':
     with db() as c:return self.send(REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],CORE.hierarchy()))
    if path=='/api/network':return self.send(NETWORK.status())
@@ -723,7 +739,11 @@ class Handler(BaseHTTPRequestHandler):
    if length>100000:raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
    if path.startswith('/api/file-review/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
-   if path=='/api/file-review/mark':
+   if path=='/api/file-review/automatic':
+    REVIEW.set_auto(a.get('enabled'));return self.send({'ok':True})
+   elif path=='/api/file-review/automatic-mark':
+    REVIEW.review_automatic(a.get('ids'),a.get('code'),a.get('decision'));return self.send({'ok':True})
+   elif path=='/api/file-review/mark':
     REVIEW.mark(a.get('ids'),a.get('flag'),a.get('enabled',True),a.get('decision'),a.get('note'));return self.send({'ok':True})
    elif path=='/api/file-review/check':
     if RESTORING.is_set():raise ValueError('恢复中，请稍后检查')
@@ -731,7 +751,7 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/file-review/target':
     REVIEW.target(a.get('height'));return self.send({'ok':True})
    elif path=='/api/file-review/cancel':
-    REVIEW.stop();return self.send({'ok':True})
+    REVIEW.set_auto(False);REVIEW.stop();return self.send({'ok':True})
    elif path=='/api/file-review/resume':
     REVIEW.resume();return self.send({'ok':True})
    elif path=='/api/scrape-sites':
