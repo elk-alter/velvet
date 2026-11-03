@@ -146,3 +146,5 @@ python -m unittest discover -s . -p "test_*.py"
 - [架构](docs/ARCHITECTURE.md) · [发布流程](docs/RELEASING.md) · [本版说明](docs/RELEASE-0.1.0-alpha.4.md)
 
 最新结构审计与改进清单见 [体验审计](docs/UX-AUDIT.md)，自动识别说明见 [自动标记](docs/AUTOMATIC-MARKS.md)。
+
+开发流程、模块边界、测试与迁移控制见 [开发文档入口](docs/development/README.md)。

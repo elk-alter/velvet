@@ -38,3 +38,5 @@ Thumbs.db
 
 # Reproducible source release artifacts
 /dist/
+
+!/AGENTS.md
