@@ -7,6 +7,8 @@ from urllib.request import Request,urlopen
 from urllib.parse import urlparse,quote,parse_qs
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from media_naming import fallback_title, generic_name
+from runtime_config import load_runtime, diagnostics
+RUNTIME=load_runtime(sys.argv[1:] if __name__=='__main__' else ())
 ROOT=Path(__file__).resolve().parent
 APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip()
 UI_ASSETS={
@@ -25,7 +27,7 @@ SCAN_CANCEL=threading.Event();SYNC_CANCEL=threading.Event();DUP_CANCEL=threading
 DB=DATA/'library.db'; LOCK=threading.Lock(); TOKEN=secrets.token_urlsafe(32)
 STATUS={'running':False,'message':'准备就绪','processed':0,'errors':0}
 NAS=os.environ.get('VELVET_SERVER','0')=='1'
-BIND=os.environ.get('VELVET_BIND','0.0.0.0' if NAS else '127.0.0.1')
+BIND=RUNTIME.bind
 USER=os.environ.get('VELVET_USER','admin'); PASSWORD=os.environ.get('VELVET_PASSWORD','')
 DEFAULT={'interval':300,'online':False,'provider':'','api_key':'','amane_url':'http://127.0.0.1:18000','amane_token':'','tag_aliases':{},'auto_scrape':True,'scrape_engine':'external','scrape_proxy':'','scrape_sources':['javbus','jav321','fc2','fc2club','fc2ppvdb','freejavbt','airav','xcity'],'scrape_field_priority':{}}
 class Connection(sqlite3.Connection):
@@ -62,6 +64,8 @@ from source_catalog import SourceCatalog,NATIVE_SOURCES
 from people_catalog import PeopleCache,FacetCatalog,actor_key
 from artwork_store import ArtworkStore
 LIBRARIES=MediaLibraries(db)
+from directory_policy import DirectoryPolicy
+DIRECTORY_POLICY=DirectoryPolicy(db,LIBRARIES)
 SOURCES=SourceCatalog(lambda path:external_amane_request(path),config)
 NETWORK=NetworkChecks(config,lambda:external_amane_request('metadata?limit=1'),external_probe=lambda ids:external_amane_request('network/check',{'source_ids':ids} if ids else {}),external_sources=lambda:list(dict.fromkeys(s for route in SOURCES.snapshot()['upstream']['routes'].values() for s in route)))
 PEOPLE=PeopleCache(db,DATA,config,lambda path:external_amane_request(path),lambda url:actor_image_bytes(url))
@@ -637,7 +641,7 @@ class Handler(BaseHTTPRequestHandler):
   self.send_response(401);self.send_header('WWW-Authenticate','Basic realm="Velvet", charset="UTF-8"');self.send_header('Content-Length','0');self.end_headers();return False
  def do_GET(self):
   if not self.authorize():return
-  if not NAS and self.headers.get('Host') not in ('127.0.0.1:8765','localhost:8765'):return self.send({},status=403)
+  if not NAS and not RUNTIME.accepts_host(self.headers.get('Host')):return self.send({},status=403)
   path=urlparse(self.path).path
   try:
    if path in UI_ASSETS:
@@ -696,15 +700,16 @@ class Handler(BaseHTTPRequestHandler):
     try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
     except (OSError,ValueError):rules=[]
     return self.send({'rules':rules})
+   if path=='/api/diagnostics':return self.send(diagnostics(APP_VERSION,RUNTIME,binary,{**WORK_STATUS,'duplicates':DUP_STATUS,'file_review':{'running':REVIEW.lock.locked()}}))
    if path=='/api/health':
     with db() as c:
      counts=dict(c.execute("SELECT COUNT(*) AS videos,SUM(missing) AS missing,SUM(CASE WHEN error!='' THEN 1 ELSE 0 END) AS errors FROM videos").fetchone())
-    return self.send({'ok':True,'version':APP_VERSION,'platform':sys.platform,'server_mode':NAS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'scan':STATUS,'library':counts})
+    return self.send({'ok':True,'application':'velvet','port':RUNTIME.port,'version':APP_VERSION,'platform':sys.platform,'server_mode':NAS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'scan':STATUS,'library':counts})
    if path=='/api/library':
     cfg=config();cfg['has_key']=bool(cfg['api_key']);cfg['api_key']='';cfg['has_amane_token']=bool(cfg['amane_token']);cfg['amane_token']='';cfg.pop('scrape_site_config',None)
     excluded=LIBRARIES.exclusions()
     movies=[m for m in CORE.hierarchy() if not any(Path(m['path']).is_relative_to(Path(root)) for root in excluded)]
-    with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC') if not any(Path(r['path']).is_relative_to(Path(root)) for root in excluded)],'excluded_directories':excluded,'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN,'review':REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],movies)})
+    with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC') if not any(Path(r['path']).is_relative_to(Path(root)) for root in excluded)],'collection_rules':DIRECTORY_POLICY.rules(),'excluded_directories':excluded,'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN,'review':REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],movies)})
    if path.startswith('/thumb/'):
     name=path.split('/')[-1]
     if not re.fullmatch(r'\d+(?:-(?:[1-5]|poster|cover|still-(?:[1-9]|1[0-2])))?\.jpg',name):return self.send({},status=404)
@@ -745,7 +750,11 @@ class Handler(BaseHTTPRequestHandler):
    if length>100000:raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
    if path.startswith('/api/file-review/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
-   if path=='/api/excluded-directories':
+   if path=='/api/directory-preview':return self.send(DIRECTORY_POLICY.preview(a.get('path')))
+   elif path=='/api/collection-rule':
+    if RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
+    return self.send({'ok':True,'preview':DIRECTORY_POLICY.set_rule(a.get('path'),a.get('mode'),a.get('digest'))})
+   elif path=='/api/excluded-directories':
     target=Path(self.video(a['id'])['path']).parent if 'id' in a else a.get('path')
     LIBRARIES.exclude(str(target) if target else '',a.get('enabled',True));return self.send({'ok':True})
    elif path=='/api/file-review/automatic':
@@ -1012,12 +1021,13 @@ class LocalServer(ThreadingHTTPServer):
 
 if __name__=='__main__':
  if NAS and len(PASSWORD)<12:raise SystemExit('NAS 模式必须设置至少 12 位 VELVET_PASSWORD')
- server=LocalServer((BIND,8765),Handler)
+ try:server=LocalServer((BIND,RUNTIME.port),Handler)
+ except OSError as error:raise SystemExit('服务端口不可用，请检查已有实例或使用 --port；系统错误码 '+str(error.errno)) from None
  if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
  REVIEW.resume()
  threading.Thread(target=watcher,daemon=True).start()
  threading.Thread(target=amane_watcher,daemon=True).start()
- print('Velvet: http://127.0.0.1:8765  Ctrl+C 退出')
- if not NAS and '--no-browser' not in sys.argv:webbrowser.open('http://127.0.0.1:8765')
+ print('Velvet: '+RUNTIME.local_url+'  Ctrl+C 退出',flush=True)
+ if not NAS and not RUNTIME.no_browser:webbrowser.open(RUNTIME.local_url)
  try:server.serve_forever()
  except KeyboardInterrupt:server.server_close()
