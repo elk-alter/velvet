@@ -43,8 +43,23 @@ async function favoriteCategory(index){const c=categoriesData[index];try{await a
 function openCategory(index){const c=categoriesData[index];setMode('all');resetFilters();activeCatalogFacet={kind:c.kind,name:c.name,ids:new Set(c.ids)};$('pageTitle').textContent=c.name;$('actorProfile').hidden=false;$('actorProfile').innerHTML=`<div class="facetHeader"><button onclick="showCategories()">← 分类</button><span class="sourceTag">${esc(categoryNames[c.kind])}</span><span>${c.movie_count} 部影片</span><button onclick="setMode('all')">清除此分类</button></div>`;render();window.scrollTo({top:0})}
 
 let unmatchedCollections=new Map();
-function groupUnmatchedFolders(items){unmatchedCollections=new Map();const groups=new Map();for(const v of items){const parts=v._versions?.flatMap(x=>x._parts)||[v];if(v.relation_manual||parts.some(p=>p.code||['nfo','online','amane'].includes(p.source)))continue;const parent=String(v.path||'').replaceAll('\\','/').split('/').slice(0,-1).join('/');if(!parent)continue;if(!groups.has(parent))groups.set(parent,[]);groups.get(parent).push(v)}const used=new Set(),out=[];for(const v of items){if(used.has(v.id))continue;const group=[...groups.entries()].find(([path,rows])=>rows.length>1&&rows.some(row=>row.id===v.id));if(!group){out.push(v);continue}const [path,rows]=group;rows.forEach(row=>used.add(row.id));const collection={...v,title:path.split('/').pop(),_folderCollection:rows};unmatchedCollections.set(v.id,collection);out.push(collection)}return out}
-function openFolderCollection(id){const collection=unmatchedCollections.get(id);if(!collection)return;openTool(collection.title,`<p class="muted">同目录未匹配条目，尚未合并影片关系。目录名可能是作品标题，请核对后逐项修正。</p>${collection._folderCollection.map(v=>`<div class="folder"><div><strong>${esc(v.title)}</strong><small class="path">${esc(v.path)}</small></div><button onclick="toolDialog.close();openVideo(${v.id},true)">查看 / 修正</button></div>`).join('')}`)}
+let folderCollectionsEnabled=true;try{folderCollectionsEnabled=localStorage.getItem('velvet-folder-collections')!=='off'}catch(error){}
+function collectionDirectory(path){const segments=String(path||'').replaceAll('\\','/').split('/');segments.pop();for(let i=segments.length-1;i>=Math.max(0,segments.length-6);i--){const name=segments[i].trim();if(/合集|全集|collection|box[ _-]?set/i.test(name)&&! /^(?:合集|全集|collections?|box[ _-]?sets?)$/i.test(name))return segments.slice(0,i+1).join('/')}return ''}
+function groupUnmatchedFolders(items){
+ unmatchedCollections=new Map();if(!folderCollectionsEnabled)return items;
+ const groups=new Map(),membership=new Map();
+ for(const v of items){const parts=v._versions?.flatMap(x=>x._parts)||[v];let root=collectionDirectory(v.path);if(root&&!parts.every(p=>collectionDirectory(p.path)===root))root='';
+  if(!root){if(v.relation_manual||parts.some(p=>p.code||['nfo','online','amane'].includes(p.source)))continue;root=String(v.path||'').replaceAll('\\','/').split('/').slice(0,-1).join('/')}
+  if(!root)continue;if(!groups.has(root))groups.set(root,[]);groups.get(root).push(v);membership.set(v.id,root)
+ }
+ const emitted=new Set(),out=[],natural=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
+ for(const v of items){const root=membership.get(v.id),rows=groups.get(root);if(!rows||rows.length<2){out.push(v);continue}if(emitted.has(root))continue;emitted.add(root);
+  const ordered=[...rows].sort((a,b)=>natural.compare(String(a.path),String(b.path))||a.id-b.id);
+  const collection={...v,title:root.split('/').pop(),_folderCollection:ordered,_collectionRoot:root};unmatchedCollections.set(v.id,collection);out.push(collection)
+ }return out
+}
+const folderCollectionButton=document.createElement('button');folderCollectionButton.textContent=folderCollectionsEnabled?'目录归组：开':'目录归组：关';folderCollectionButton.onclick=()=>{folderCollectionsEnabled=!folderCollectionsEnabled;try{localStorage.setItem('velvet-folder-collections',folderCollectionsEnabled?'on':'off')}catch(error){}folderCollectionButton.textContent=folderCollectionsEnabled?'目录归组：开':'目录归组：关';page=1;render()};$('videoLayoutButton').parentElement.append(folderCollectionButton);
+function openFolderCollection(id){const collection=unmatchedCollections.get(id);if(!collection)return;openTool(collection.title,`<p class="muted">当前筛选范围内的目录条目，按自然序号排列。目录归组仅影响展示，不改变影片、版本、分段关系或文件。</p>${collection._folderCollection.map(v=>`<div class="folder"><div><strong>${esc(v.title)}</strong><small class="path">${esc(v.path)}</small></div><button onclick="toolDialog.close();openVideo(${v.id},true)">查看 / 修正</button></div>`).join('')}`)}
 
 /* Shared page-size and explicit history entries for deliberate page changes. */
 let pageSize=48;try{const size=Number(localStorage.getItem('velvet-page-size'));if([24,48,96].includes(size))pageSize=size}catch(error){}
