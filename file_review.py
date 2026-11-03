@@ -113,7 +113,9 @@ class FileReview:
             if c.execute("SELECT 1 FROM file_reviews WHERE status IN ('queued','running') LIMIT 1").fetchone():
                 return
             rows = [dict(r) for r in c.execute("SELECT v.* FROM videos v LEFT JOIN file_reviews r ON r.video_id=v.id WHERE v.missing=0 AND v.duration>0 AND v.mtime<? AND (r.video_id IS NULL OR r.size!=v.size OR r.mtime!=v.mtime OR (r.auto_status!='done' AND r.auto_attempts<3 AND r.auto_updated<? AND r.status!='cancelled' AND r.result!='changed' AND r.auto_status!='stale')) ORDER BY v.id LIMIT 100", (time.time()-120, time.time()-86400))]
+        excluded=getattr(self,'excluded',lambda:[])()
         for row in rows:
+            if any(Path(row['path']).is_relative_to(Path(root)) for root in excluded):continue
             if Path(row['path']).is_file():
                 self.enqueue([row['id']], 'auto')
                 break

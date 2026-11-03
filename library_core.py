@@ -37,6 +37,8 @@ class LibraryCore:
    pref_rows=[dict(r) for r in c.execute('SELECT * FROM movie_preferences')];prefs={r['movie_key']:r['version_key'] for r in pref_rows};preferred_ids={r['movie_key']:r['preferred_id'] for r in pref_rows}
    choices=[r[0] for r in c.execute('SELECT preferred_id FROM duplicate_choices')]
    rows=[self.present(r) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')]
+  excluded=getattr(self,'excluded',lambda:[])()
+  rows=[r for r in rows if not any(Path(r['path']).is_relative_to(Path(root)) for root in excluded)]
   movies={}
   for row in rows:
    link=links[row['id']];row.update(movie_key=link['movie_key'],version_key=link['version_key'],part_index=link['part_no'],relation_manual=link['manual'])

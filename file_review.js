@@ -59,3 +59,9 @@ $('videoLayoutButton').parentElement.append(privacyButton());
 for(const toolbar of document.querySelectorAll('.dialogChrome,.lightboxToolbar'))toolbar.append(privacyButton());
 setPrivacyMode(document.documentElement.classList.contains('privacyMode'));
 window.addEventListener('storage',event=>{if(event.key==='velvet-privacy')setPrivacyMode(event.newValue==='on')});
+
+const exclusionButton=document.createElement('button');exclusionButton.textContent='排除目录';exclusionButton.onclick=showExcludedDirectories;$('videoLayoutButton').parentElement.append(exclusionButton);
+async function showExcludedDirectories(){await refresh();openTool('排除目录',`<p class="muted">排除目录及其子目录，不删除文件；恢复后重新扫描可补全索引。</p><label>目录完整路径<input id="excludedPath" placeholder="填写媒体库内的目录路径"></label><button onclick="addExcludedDirectory()">添加排除</button>${(library.excluded_directories||[]).map(path=>`<div class="folder"><span class="path">${esc(path)}</span><button data-path="${esc(path)}" onclick="restoreExcludedDirectory(this.dataset.path)">恢复</button></div>`).join('')||'<p class="muted">暂无排除目录</p>'}`)}
+async function addExcludedDirectory(){try{await api('/api/excluded-directories',{path:$('excludedPath').value,enabled:true});await showExcludedDirectories()}catch(error){toast(error.message)}}
+async function restoreExcludedDirectory(path){try{await api('/api/excluded-directories',{path,enabled:false});await showExcludedDirectories()}catch(error){toast(error.message)}}
+const exclusionOpenVideo=openVideo;openVideo=function(...args){exclusionOpenVideo(...args);const button=document.createElement('button');button.textContent='排除此文件所在目录';button.onclick=async()=>{if(!confirm('排除此文件所在目录及其子目录？目录内的视频将从片库隐藏，原文件保留，可在排除目录中恢复。'))return;try{await api('/api/excluded-directories',{id:selected.id,enabled:true});detail.close();await refresh();toast('已排除目录，原文件保留')}catch(error){toast(error.message)}};reviewDetail.append(button)};

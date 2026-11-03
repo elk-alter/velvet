@@ -12,12 +12,31 @@ class MediaLibraries:
         with db() as c:
             c.execute("CREATE TABLE IF NOT EXISTS library_settings(path TEXT PRIMARY KEY,name TEXT DEFAULT '',automation TEXT DEFAULT 'scrape',exclude_patterns TEXT DEFAULT '[]',min_size INTEGER DEFAULT 0,settle_seconds INTEGER DEFAULT 0,last_scan REAL DEFAULT 0,last_error TEXT DEFAULT '')")
 
+    def exclusions(self):
+        with self.db() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS excluded_directories(path TEXT PRIMARY KEY)")
+            return [r[0] for r in c.execute('SELECT path FROM excluded_directories ORDER BY path')]
+
+    def exclude(self, raw, enabled=True):
+        if not isinstance(raw,str) or not raw.strip() or type(enabled) is not bool:
+            raise ValueError('请选择有效目录')
+        path=Path(raw).expanduser().resolve()
+        if enabled and not any(path.is_relative_to(Path(p['path'])) for p in self.policies()):
+            raise ValueError('只能排除媒体库内的目录')
+        self.exclusions()
+        with self.db() as c:
+            if enabled:c.execute('INSERT OR IGNORE INTO excluded_directories VALUES(?)',(str(path),))
+            else:c.execute('DELETE FROM excluded_directories WHERE path=?',(str(path),))
+        return str(path)
+
     def policies(self):
         with self.db() as c:
             if not c.execute("SELECT 1 FROM sqlite_master WHERE name='library_settings'").fetchone():
                 self.__init__(self.db)
             rows = [dict(row) for row in c.execute("SELECT f.path,COALESCE(s.name,'') AS name,COALESCE(s.automation,'scrape') AS automation,COALESCE(s.exclude_patterns,'[]') AS exclude_patterns,COALESCE(s.min_size,0) AS min_size,COALESCE(s.settle_seconds,0) AS settle_seconds,COALESCE(s.last_scan,0) AS last_scan,COALESCE(s.last_error,'') AS last_error FROM folders f LEFT JOIN library_settings s ON f.path=s.path ORDER BY f.path")]
+        excluded=self.exclusions()
         for row in rows:
+            row['excluded_directories']=excluded
             row['exclude_patterns'] = json.loads(row['exclude_patterns'] or '[]')
         return rows
 
@@ -86,6 +105,7 @@ class MediaLibraries:
 
     @staticmethod
     def included(path, policy, size):
+        if any(Path(path).is_relative_to(Path(root)) for root in policy.get('excluded_directories',[])):return False
         relative = Path(path).relative_to(Path(policy['path'])).as_posix()
         relative = os.path.normcase(relative)
         return size >= policy['min_size'] and not any(fnmatch.fnmatchcase(relative, os.path.normcase(pattern.replace('\\', '/'))) or fnmatch.fnmatchcase(Path(relative).name, os.path.normcase(pattern)) for pattern in policy['exclude_patterns'])

@@ -128,8 +128,10 @@ def presentation(row):
 sys.path.insert(0,str(ROOT))
 from library_core import LibraryCore
 CORE=LibraryCore(db,DATA,presentation)
+CORE.excluded=LIBRARIES.exclusions
 from file_review import FileReview
 REVIEW=FileReview(db,binary,DATA)
+REVIEW.excluded=LIBRARIES.exclusions
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
@@ -213,6 +215,7 @@ def scan(force=False,folder_path=None,automatic=False):
    seen=set()
    walk_errors=[]
    for base,dirs,files in os.walk(folder,onerror=lambda error:walk_errors.append('目录读取失败')):
+    dirs[:]=[d for d in dirs if not any((Path(base)/d).is_relative_to(Path(root)) for root in policy.get('excluded_directories',[]))]
     for name in files:
      if SCAN_CANCEL.is_set():STATUS['message']='扫描已取消（已完成项目保留）';return
      p=Path(base)/name
@@ -699,8 +702,9 @@ class Handler(BaseHTTPRequestHandler):
     return self.send({'ok':True,'version':APP_VERSION,'platform':sys.platform,'server_mode':NAS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'scan':STATUS,'library':counts})
    if path=='/api/library':
     cfg=config();cfg['has_key']=bool(cfg['api_key']);cfg['api_key']='';cfg['has_amane_token']=bool(cfg['amane_token']);cfg['amane_token']='';cfg.pop('scrape_site_config',None)
-    movies=CORE.hierarchy()
-    with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')],'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN,'review':REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],movies)})
+    excluded=LIBRARIES.exclusions()
+    movies=[m for m in CORE.hierarchy() if not any(Path(m['path']).is_relative_to(Path(root)) for root in excluded)]
+    with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC') if not any(Path(r['path']).is_relative_to(Path(root)) for root in excluded)],'excluded_directories':excluded,'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN,'review':REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],movies)})
    if path.startswith('/thumb/'):
     name=path.split('/')[-1]
     if not re.fullmatch(r'\d+(?:-(?:[1-5]|poster|cover|still-(?:[1-9]|1[0-2])))?\.jpg',name):return self.send({},status=404)
@@ -741,7 +745,10 @@ class Handler(BaseHTTPRequestHandler):
    if length>100000:raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
    if path.startswith('/api/file-review/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
-   if path=='/api/file-review/automatic':
+   if path=='/api/excluded-directories':
+    target=Path(self.video(a['id'])['path']).parent if 'id' in a else a.get('path')
+    LIBRARIES.exclude(str(target) if target else '',a.get('enabled',True));return self.send({'ok':True})
+   elif path=='/api/file-review/automatic':
     REVIEW.set_auto(a.get('enabled'));return self.send({'ok':True})
    elif path=='/api/file-review/automatic-mark':
     REVIEW.review_automatic(a.get('ids'),a.get('code'),a.get('decision'));return self.send({'ok':True})
