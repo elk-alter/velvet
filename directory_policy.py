@@ -1,4 +1,5 @@
 """Explicit display rules and versioned directory-operation previews."""
+from media_libraries import canonical
 import hashlib
 import json
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 class DirectoryPolicy:
     def __init__(self, db, libraries):
         self.db, self.libraries = db, libraries
+        self.ensure()
 
     def ensure(self):
         with self.db() as c:
@@ -24,7 +26,7 @@ class DirectoryPolicy:
         if not any(path.is_relative_to(Path(p['path']).resolve()) for p in self.libraries.policies()):
             raise ValueError('目录必须位于媒体库中')
         with self.db() as c:
-            rows = [dict(r) for r in c.execute('SELECT id,path,size,mtime FROM videos') if Path(r['path']).is_relative_to(path)]
+            rows = [dict(r) for r in c.execute('SELECT id,path,size,mtime FROM videos') if canonical(r['path']).is_relative_to(path)]
             has_links = c.execute("SELECT 1 FROM sqlite_master WHERE name='media_links'").fetchone()
             links = {r['video_id']: r['movie_key'] for r in c.execute('SELECT video_id,movie_key FROM media_links')} if has_links else {}
         stamp = json.dumps([str(path), sorted((r['id'], r['path'], r['size'], r['mtime']) for r in rows)], ensure_ascii=True)
@@ -48,7 +50,7 @@ class DirectoryPolicy:
 
     @staticmethod
     def collection_root(path, rules):
-        matches = [r for r in rules if Path(path).is_relative_to(Path(r['path']))]
+        matches = [r for r in rules if canonical(path).is_relative_to(canonical(r['path']))]
         if not matches:
             return None
         closest = max(matches, key=lambda r: len(Path(r['path']).parts))

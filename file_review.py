@@ -38,6 +38,7 @@ class FileReview:
             raise ValueError('请选择 1–500 个文件')
         with self.db() as c:
             rows = [dict(r) for r in c.execute('SELECT * FROM videos WHERE id IN (' + ','.join('?' for _ in ids) + ')', ids)]
+        if any(not getattr(self,'allowed',lambda row:True)(row) for row in rows):raise ValueError('选择的文件位于排除范围')
         if len(rows) != len(set(ids)):
             raise ValueError('文件已移除，请刷新列表')
         return rows
@@ -115,6 +116,7 @@ class FileReview:
             rows = [dict(r) for r in c.execute("SELECT v.* FROM videos v LEFT JOIN file_reviews r ON r.video_id=v.id WHERE v.missing=0 AND v.duration>0 AND v.mtime<? AND (r.video_id IS NULL OR r.size!=v.size OR r.mtime!=v.mtime OR (r.auto_status!='done' AND r.auto_attempts<3 AND r.auto_updated<? AND r.status!='cancelled' AND r.result!='changed' AND r.auto_status!='stale')) ORDER BY v.id LIMIT 100", (time.time()-120, time.time()-86400))]
         excluded=getattr(self,'excluded',lambda:[])()
         for row in rows:
+            if not getattr(self,'allowed',lambda row:True)(row):continue
             if any(Path(row['path']).is_relative_to(Path(root)) for root in excluded):continue
             if Path(row['path']).is_file():
                 self.enqueue([row['id']], 'auto')
@@ -124,6 +126,8 @@ class FileReview:
         with self.db() as c:
             records = {r['video_id']: dict(r) for r in c.execute('SELECT r.* FROM file_reviews r JOIN videos v ON v.id=r.video_id')}
             setting = c.execute("SELECT value FROM review_settings WHERE key='target'").fetchone()
+        visible={video['id'] for video in videos}
+        records={key:value for key,value in records.items() if key in visible}
         target = int(setting[0]) if setting else 1080
         higher = set()
         for movie in movies or []:
@@ -175,6 +179,9 @@ class FileReview:
             for row in rows:
                 self.touch(c, row)
                 c.execute("UPDATE file_reviews SET status='queued',mode=?,detail='',updated=? WHERE video_id=? AND status!='running'", (mode, time.time(), row['id']))
+        with self.db() as c:
+            states=[(row['id'],c.execute('SELECT status FROM file_reviews WHERE video_id=?',(row['id'],)).fetchone()[0]) for row in rows]
+        for vid,state in states:getattr(self,'observe',lambda *args:None)(vid,state,'')
         self.resume()
 
     def stop(self):
@@ -297,10 +304,13 @@ class FileReview:
                         break
                     row = dict(c.execute('SELECT * FROM videos WHERE id=?', (item['video_id'],)).fetchone())
                     c.execute("UPDATE file_reviews SET status='running' WHERE video_id=?", (row['id'],))
+                getattr(self,'observe',lambda *args:None)(row['id'],'running','')
                 analysis = None
                 analysis_error = ''
                 try:
-                    result, detail = self.inspect(row, item['mode'])
+                    if not getattr(self,'allowed',lambda row:True)(row):
+                        result,detail='cancelled','文件位于排除范围，跳过检查'
+                    else:result, detail = self.inspect(row, item['mode'])
                     if result in ('passed', 'decode_error'):
                         current = Path(row['path']).stat()
                         if current.st_size != row['size'] or abs(current.st_mtime - row['mtime']) > .01:
@@ -313,6 +323,8 @@ class FileReview:
                             analysis_error = str(error)[:300]
                 except Exception as error:
                     result, detail = 'error', '检查未完成：' + type(error).__name__
+                if not getattr(self,'allowed',lambda row:True)(row):
+                    result,detail,analysis='cancelled','文件已排除，检查结果丢弃',None
                 with self.db() as c:
                     if item['mode'] == 'auto':
                         if analysis is not None:
@@ -324,6 +336,7 @@ class FileReview:
                             c.execute("UPDATE file_reviews SET auto_status=?,auto_error=?,auto_updated=?,auto_attempts=auto_attempts+1 WHERE video_id=?",('cancelled' if result=='cancelled' else 'stale' if result=='changed' or '文件已变化' in analysis_error else 'error',analysis_error or detail,time.time(),row['id']))
                     c.execute("UPDATE file_reviews SET status=?,result=?,detail=?,updated=?,decision=CASE WHEN ?='decode_error' THEN 'open' ELSE decision END WHERE video_id=?",
                               ('cancelled' if result == 'cancelled' else 'done', result, detail[:3000], time.time(), result, row['id']))
+                getattr(self,'observe',lambda *args:None)(row['id'],'cancelled' if result=='cancelled' else 'done',result)
         finally:
             with self.db() as c:
                 pending = c.execute("SELECT 1 FROM file_reviews r JOIN videos v ON v.id=r.video_id WHERE status='queued' LIMIT 1").fetchone()

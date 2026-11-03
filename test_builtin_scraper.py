@@ -157,3 +157,31 @@ class BuiltinTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EngineResourceTests(unittest.TestCase):
+    def test_paused_engine_does_not_claim_queued_work(self):
+        with tempfile.TemporaryDirectory() as temp:
+            engine=Engine(temp,lambda:{})
+            engine.paused.set()
+            with engine.connect() as db:db.execute("INSERT INTO tasks(code,status,created) VALUES('EXAMPLE-001','queued',1)")
+            engine.start()
+            self.assertFalse(engine.worker_lock.locked())
+            self.assertEqual(engine.resource_summary()['queued'],1)
+            self.assertTrue(engine.resource_summary()['paused'])
+
+    def test_rate_limit_cooldown_survives_engine_recreation(self):
+        from unittest.mock import AsyncMock
+        from scrapers.compat import RequestError
+        class FakeSource:
+            def __init__(self,client):pass
+            @staticmethod
+            def profile():return type('Profile',(),{'base_url':'https://example.invalid'})()
+            async def fetch(self,query):raise RequestError('fixture',http_status=429)
+        with tempfile.TemporaryDirectory() as temp,patch('builtin_scraper.source_types',return_value={'javbus':FakeSource}),patch('builtin_scraper.asyncio.sleep',new_callable=AsyncMock):
+            config=lambda:{'scrape_sources':['javbus']}
+            engine=Engine(temp,config)
+            self.assertEqual(engine.fetch('EXAMPLE-001')[1][0]['reason'],'rate_limited')
+            resumed=Engine(temp,config)
+            self.assertEqual(resumed.fetch('EXAMPLE-001')[1][0]['reason'],'site_cooldown')
+            self.assertEqual(len(resumed.resource_summary()['cooldowns']),1)

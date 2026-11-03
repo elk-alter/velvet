@@ -1,4 +1,4 @@
 @echo off
 cd /d "%~dp0"
-python app.py
-pause
+python service_control.py start --open %*
+if errorlevel 1 pause

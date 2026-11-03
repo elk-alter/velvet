@@ -24,3 +24,14 @@
 新静态资源同步app.py的UI_ASSETS、页面引用、Dockerfile及资源回归。只改本地开发可用但归档/Docker缺文件不算完成。
 
 目标架构是清晰的路由/服务/仓储/任务/视图边界；这是重构方向，当前尚未完全实现。不要把文档中的目标结构误写成现状。
+
+## alpha.5模块
+
+- runtime_config：端口、监听与诊断白名单；service_control：本机后台启停及身份核验。
+- data_guard：数据目录跨进程所有权；full_backup：离线完整备份/恢复。
+- task_journal：任务逻辑ID、事件及既有执行器状态对账。
+- directory_policy：展示规则与预览摘要；media_libraries：共同可见性判断。
+- storage_inventory：只读设备/快照、建议修正、比较和不可执行计划；不承接源文件操作。
+- library_transport：重复文件元数据的无损引用传输；原全量接口保留。
+
+数据取舍见[ADR0001](../adr/0001-alpha5-reliability-and-readonly-plans.md)，性能限制见[测量报告](../ALPHA5-PERFORMANCE.md)。

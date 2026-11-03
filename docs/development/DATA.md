@@ -27,3 +27,7 @@
 测试/日志/诊断/Issue/截图不带真实媒体、私人路径、人物偏好、Token或OCR文字。配置及备份可能含凭据，只留在受控位置。模式扫描只能辅助审查，不能证明无秘密。
 
 公开源码包只来自已提交Git文件。生产重启前核验进程、任务空闲和数据位置；不要只凭端口TIME_WAIT或PID0结束进程。不在运行任务写入时强杀服务。完整恢复流程参考DEPLOYMENT与RELEASING，真实跨系统演练仍待完成。
+
+## alpha.5新增契约
+
+[ADR0001](../adr/0001-alpha5-reliability-and-readonly-plans.md)记录任务、快照、计划、来源归属及数据锁。旧主库恢复须补新表与scrape_jobs.engine列；未知在途引擎进入人工核对。完整离线备份与在线主库备份范围不同，见[操作指南](../ALPHA5-OPERATIONS.md)。

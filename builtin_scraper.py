@@ -61,11 +61,13 @@ class Engine:
         self.fetcher = fetcher or self.fetch
         self.lock = threading.Lock()
         self.worker_lock = threading.Lock()
+        self.paused = threading.Event()
         self.current_task_id=None
         with self.connect() as db:
             db.executescript('CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY,code TEXT,status TEXT,error TEXT,result TEXT,created REAL); CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY,code TEXT UNIQUE,data TEXT);')
             db.execute("UPDATE tasks SET status='queued' WHERE status='running'")
             if 'use_cache' not in {row[1] for row in db.execute('PRAGMA table_info(tasks)')}:db.execute('ALTER TABLE tasks ADD COLUMN use_cache INTEGER DEFAULT 1')
+            db.execute('CREATE TABLE IF NOT EXISTS source_cooldowns(source TEXT PRIMARY KEY,until REAL,reason TEXT)')
             db.execute('CREATE TABLE IF NOT EXISTS source_cache(code TEXT,source TEXT,signature TEXT,data TEXT,updated REAL,PRIMARY KEY(code,source))')
 
     @contextmanager
@@ -123,13 +125,19 @@ class Engine:
             self.start()
         return result
 
+    def resource_summary(self):
+        with self.connect() as db:
+            queued=db.execute("SELECT COUNT(*) FROM tasks WHERE status='queued'").fetchone()[0]
+            cooldowns=[{'source':r['source'],'retry_after':max(0,int(r['until']-time.time())),'reason':r['reason']} for r in db.execute('SELECT * FROM source_cooldowns WHERE until>?',(time.time(),))]
+        return {'queued':queued,'running':self.worker_lock.locked(),'paused':self.paused.is_set(),'cooldowns':cooldowns}
+
     def start(self):
-        if self.worker_lock.acquire(False):
+        if not self.paused.is_set() and self.worker_lock.acquire(False):
             threading.Thread(target=self.work, daemon=True).start()
 
     def work(self):
         try:
-            while True:
+            while not self.paused.is_set():
                 with self.lock, self.connect() as db:
                     row = db.execute("SELECT * FROM tasks WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
                     if row is None:
@@ -170,6 +178,9 @@ class Engine:
         priority = [s for s in enabled if s in route]
         snapshots, outcomes = {}, []
         for source in priority:
+            with self.connect() as db:cooldown=db.execute('SELECT until FROM source_cooldowns WHERE source=?',(source,)).fetchone()
+            if cooldown and cooldown[0]>time.time():
+                outcomes.append({'site':source,'outcome':'waiting','reason':'site_cooldown','retry_after':int(cooldown[0]-time.time())});continue
             if self.current_task_id is not None:
                 with self.connect() as db:task=db.execute('SELECT status FROM tasks WHERE id=?',(self.current_task_id,)).fetchone()
                 if task and task['status']=='cancelled':break
@@ -196,6 +207,8 @@ class Engine:
             except Exception as exc:
                 status = getattr(exc, 'http_status', None)
                 reason = getattr(exc, 'reason', 'unexpected')
+                if reason=='rate_limited':
+                    with self.connect() as db:db.execute('INSERT OR REPLACE INTO source_cooldowns VALUES(?,?,?)',(source,time.time()+300,'rate_limited'))
                 outcomes.append({'site': source, 'outcome': 'failed', 'reason': reason})
             # Bound source request rate; never parallelize an entire library at once.
             await asyncio.sleep(1)

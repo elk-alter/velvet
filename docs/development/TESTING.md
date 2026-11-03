@@ -29,3 +29,7 @@ release.py只检查Git跟踪/暂存文件；新增文件需先加入Git。它检
 环境：系统/Python/浏览器/FFmpeg及相关依赖；命令/场景；通过/失败；验证数据类型；未覆盖项；复现步骤。测试数量是当次结果，新增测试后不要继续复制旧数字。
 
 当前尚无强制CI、完整浏览器端到端、大库性能/真实NAS及全编码矩阵；这些是欠账，不在文档中假装门禁已启用。
+
+## alpha.5工具
+
+`python scripts/preview_alpha5.py`提供独立合成UI；`python scripts/benchmark_library.py --counts 10000 50000`量测接口；`python scripts/rehearse_upgrade.py --baseline a98609a`从alpha.4提交验证迁移/回滚，需要Git历史。源码包不含.git，演练可从开发checkout执行；包内后端测试不依赖Git。不得将HTTP时间写成首屏时间，或把模拟FAT32写成实机验证。

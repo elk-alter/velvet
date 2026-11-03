@@ -22,6 +22,7 @@ class ArtworkStore:
     def __init__(self,db,data,fetcher):
         self.db,self.data,self.fetcher=db,Path(data),fetcher
         self.lock=threading.Lock()
+        self.priority=None
         self.status={'running':False,'processed':0,'failed':0}
         self.ensure(recover=True)
 
@@ -31,6 +32,7 @@ class ArtworkStore:
             if recover:c.execute("UPDATE artwork_jobs SET status='queued' WHERE status='running'")
 
     def queue(self,video_id,metadata,engine):
+        if not getattr(self,'allowed',lambda vid:True)(video_id):return
         self.ensure()
         urls=still_urls(metadata)
         if not urls:return
@@ -40,7 +42,9 @@ class ArtworkStore:
                 c.execute("INSERT INTO artwork_jobs(video_id,ordinal,url,engine,referer) VALUES(?,?,?,?,?) ON CONFLICT(video_id,ordinal) DO UPDATE SET status=CASE WHEN url=excluded.url AND engine=excluded.engine THEN status ELSE 'queued' END,url=excluded.url,engine=excluded.engine,referer=excluded.referer,active=1",(video_id,ordinal,url,engine,metadata.get('source_url') or ''))
 
     def process(self,cancel,limit=24,video_id=None):
+        if video_id is not None:self.priority=video_id
         if not self.lock.acquire(False):return
+        if self.priority is not None:video_id=self.priority;self.priority=None
         self.status.update(running=True,processed=0,failed=0)
         started=time.monotonic()
         try:
@@ -53,10 +57,18 @@ class ArtworkStore:
                 jobs=[dict(row) for row in c.execute("SELECT * FROM artwork_jobs WHERE active=1 AND (status='queued' OR (status='failed' AND updated<?))"+scope+" ORDER BY updated,video_id,ordinal LIMIT ?",parameters)]
             for row in jobs:
                 if cancel.is_set() or time.monotonic()-started>45:break
+                if not getattr(self,'allowed',lambda vid:True)(row['video_id']):
+                    with self.db() as c:c.execute("UPDATE artwork_jobs SET status='cancelled',error='目录已排除' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
+                    continue
                 with self.db() as c:c.execute("UPDATE artwork_jobs SET status='running' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
+                getattr(self,'observe',lambda *args:None)(row['video_id'],row['ordinal'],'running')
                 try:ok=self.fetcher(row['url'],self.target(row['video_id'],row['ordinal']),row['engine'],row['referer'])
                 except Exception:ok=False
+                if not getattr(self,'allowed',lambda vid:True)(row['video_id']):
+                    with self.db() as c:c.execute("UPDATE artwork_jobs SET status='cancelled',error='目录已排除，结果跳过' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
+                    continue
                 with self.db() as c:c.execute('UPDATE artwork_jobs SET status=?,error=?,updated=? WHERE video_id=? AND ordinal=? AND url=? AND engine=?',('done' if ok else 'failed','' if ok else '剧照下载失败，可单独重试',time.time(),row['video_id'],row['ordinal'],row['url'],row['engine']))
+                getattr(self,'observe',lambda *args:None)(row['video_id'],row['ordinal'],'done' if ok else 'failed')
                 self.status['processed']+=1;self.status['failed']+=int(not ok)
         finally:self.status['running']=False;self.lock.release()
 

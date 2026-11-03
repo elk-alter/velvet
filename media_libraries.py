@@ -1,9 +1,15 @@
 """Library policies layered over the existing folder index. Source files stay read-only."""
+import hashlib
 import fnmatch
 import json
 import os
 import time
 from pathlib import Path
+
+
+def canonical(path):
+    path=Path(path)
+    return path.resolve() if os.name=='nt' and '~' in str(path) else path
 
 
 class MediaLibraries:
@@ -21,13 +27,27 @@ class MediaLibraries:
         if not isinstance(raw,str) or not raw.strip() or type(enabled) is not bool:
             raise ValueError('请选择有效目录')
         path=Path(raw).expanduser().resolve()
-        if enabled and not any(path.is_relative_to(Path(p['path'])) for p in self.policies()):
+        if enabled and not any(path.is_relative_to(canonical(p['path'])) for p in self.policies()):
             raise ValueError('只能排除媒体库内的目录')
         self.exclusions()
         with self.db() as c:
             if enabled:c.execute('INSERT OR IGNORE INTO excluded_directories VALUES(?)',(str(path),))
             else:c.execute('DELETE FROM excluded_directories WHERE path=?',(str(path),))
         return str(path)
+
+    def exclusion_preview(self, raw):
+        if not isinstance(raw,str) or not raw.strip():raise ValueError('请选择有效目录')
+        path=Path(raw).expanduser().resolve()
+        if not any(path.is_relative_to(canonical(p['path'])) for p in self.policies()):
+            raise ValueError('只能排除媒体库内的目录')
+        with self.db() as c:
+            rows=[dict(r) for r in c.execute('SELECT id,path,size,mtime FROM videos') if canonical(r['path']).is_relative_to(path)]
+            linked=c.execute("SELECT 1 FROM sqlite_master WHERE name='media_links'").fetchone()
+            links={r['video_id']:r['movie_key'] for r in c.execute('SELECT video_id,movie_key FROM media_links')} if linked else {}
+        stamp=json.dumps([str(path),rows,self.exclusions()],sort_keys=True)
+        return {'path':str(path),'files':len(rows),'movies':len({links.get(r['id'],str(r['id'])) for r in rows}),
+                'bytes':sum(r['size'] or 0 for r in rows),'digest':hashlib.sha256(stamp.encode()).hexdigest(),
+                'includes_subdirectories':True,'source_files_modified':False}
 
     def policies(self):
         with self.db() as c:
@@ -44,8 +64,10 @@ class MediaLibraries:
         rows = self.policies()
         with self.db() as c:
             videos = [dict(v) for v in c.execute('SELECT path,missing,amane_id,code,size FROM videos')]
+        visible=self.filter_rows(videos)
         for row in rows:
-            members = [v for v in videos if self.owner(v['path'], rows) == row['path']]
+            row['indexed_count']=sum(self.owner(v['path'],rows)==row['path'] for v in videos)
+            members = [v for v in visible if self.owner(v['path'], rows) == row['path']]
             row.update(name=row['name'] or Path(row['path']).name or row['path'], online=Path(row['path']).is_dir(),
                        file_count=len(members), missing_count=sum(bool(v['missing']) for v in members),
                        matched_count=sum(bool(v['amane_id']) for v in members), total_size=sum(v['size'] or 0 for v in members))
@@ -53,7 +75,7 @@ class MediaLibraries:
 
     @staticmethod
     def owner(path, policies):
-        matches = [r['path'] for r in policies if Path(path).is_relative_to(Path(r['path']))]
+        matches = [r['path'] for r in policies if canonical(path).is_relative_to(canonical(r['path']))]
         return max(matches, key=len) if matches else None
 
     def save(self, data):
@@ -75,7 +97,7 @@ class MediaLibraries:
             raise ValueError('最小大小或稳定等待时间无效')
         # Reject overlaps for new libraries; legacy overlaps remain readable, longest root owns files.
         for existing in self.policies():
-            other = Path(existing['path'])
+            other = canonical(existing['path'])
             if other != path and (path.is_relative_to(other) or other.is_relative_to(path)):
                 raise ValueError('媒体库目录不能相互包含，请使用现有媒体库的排除规则')
         with self.db() as c:
@@ -93,7 +115,7 @@ class MediaLibraries:
         with self.db() as c:
             rows = [dict(row) for row in c.execute('SELECT id,path,title,code,amane_id,missing,error,size,width,height FROM videos ORDER BY id')]
         members=[]
-        for row in rows:
+        for row in self.filter_rows(rows):
             if self.owner(row['path'], policies) != path:
                 continue
             if search.casefold() not in ((row['title'] or '')+' '+(row['code'] or '')).casefold():
@@ -105,10 +127,22 @@ class MediaLibraries:
 
     @staticmethod
     def included(path, policy, size):
-        if any(Path(path).is_relative_to(Path(root)) for root in policy.get('excluded_directories',[])):return False
-        relative = Path(path).relative_to(Path(policy['path'])).as_posix()
+        if any(canonical(path).is_relative_to(canonical(root)) for root in policy.get('excluded_directories',[])):return False
+        relative = canonical(path).relative_to(canonical(policy['path'])).as_posix()
         relative = os.path.normcase(relative)
         return size >= policy['min_size'] and not any(fnmatch.fnmatchcase(relative, os.path.normcase(pattern.replace('\\', '/'))) or fnmatch.fnmatchcase(Path(relative).name, os.path.normcase(pattern)) for pattern in policy['exclude_patterns'])
+
+    def filter_rows(self, rows):
+        policies=self.policies();excluded=self.exclusions()
+        result=[]
+        for row in rows:
+            path=canonical(row['path'])
+            if any(path.is_relative_to(canonical(root)) for root in excluded):continue
+            owner=self.owner(path,policies)
+            policy=next((p for p in policies if p['path']==owner),None)
+            if policy and not self.included(path,policy,row.get('size',0) or 0):continue
+            result.append(row)
+        return result
 
     def finish(self, path, error=''):
         with self.db() as c:

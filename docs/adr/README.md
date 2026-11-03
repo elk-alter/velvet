@@ -14,3 +14,7 @@
 - 迁移与回滚
 - 验证方法及未验证项
 - 替代/关联记录
+
+## 已采纳记录
+
+- [0001：alpha.5可靠性与只读计划](0001-alpha5-reliability-and-readonly-plans.md)

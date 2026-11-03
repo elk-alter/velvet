@@ -29,6 +29,7 @@ class LibraryCore:
     movie,version,part=self.infer(row)
     if (movie,version,part) in occupied:version+=':copy:'+str(row['id'])
     occupied.add((movie,version,part))
+    if old and (old['movie_key'],old['version_key'],old['part_no'])==(movie,version,part):continue
     c.execute('INSERT INTO media_links VALUES(?,?,?,?,0) ON CONFLICT(video_id) DO UPDATE SET movie_key=excluded.movie_key,version_key=excluded.version_key,part_no=excluded.part_no',(row['id'],movie,version,part))
  def hierarchy(self):
   self.reconcile()
@@ -39,6 +40,7 @@ class LibraryCore:
    rows=[self.present(r) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')]
   excluded=getattr(self,'excluded',lambda:[])()
   rows=[r for r in rows if not any(Path(r['path']).is_relative_to(Path(root)) for root in excluded)]
+  rows=getattr(self,'filter_rows',lambda rows:rows)(rows)
   movies={}
   for row in rows:
    link=links[row['id']];row.update(movie_key=link['movie_key'],version_key=link['version_key'],part_index=link['part_no'],relation_manual=link['manual'])

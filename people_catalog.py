@@ -123,6 +123,7 @@ class FacetCatalog:
             rows=[dict(r) for r in c.execute('SELECT * FROM videos WHERE missing=0')]
             favorites={(r['kind'],r['name']):r['favorite'] for r in c.execute('SELECT * FROM category_preferences')}
             links={r['video_id']:r['movie_key'] for r in c.execute('SELECT video_id,movie_key FROM media_links')}
+        rows=getattr(self,'filter_rows',lambda rows:rows)(rows)
         aliases=self.config().get('tag_aliases',{});groups={}
         def split(value):return [s.strip() for s in re.split(r'[,，;；\n]',value or '') if s.strip()]
         for row in rows:

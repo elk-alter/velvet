@@ -22,7 +22,16 @@ UI_ASSETS={
  '/file_review.js':('file_review.js','text/javascript'),
 }
 DATA=Path(os.environ.get('VELVET_DATA',str(ROOT/'data'))).resolve();DATA.mkdir(parents=True,exist_ok=True)
+if __name__=='__main__':
+ from data_guard import DataGuard
+ import atexit
+ try:DATA_GUARD=DataGuard(DATA)
+ except ValueError as error:raise SystemExit(str(error)) from None
+ atexit.register(DATA_GUARD.close)
+DB_REVISION=0
 DB_MUTEX=threading.RLock()
+SHUTTING_DOWN=threading.Event()
+POST_LEASE=threading.Lock();ACTIVE_POSTS=0
 SCAN_CANCEL=threading.Event();SYNC_CANCEL=threading.Event();DUP_CANCEL=threading.Event();RESTORING=threading.Event()
 DB=DATA/'library.db'; LOCK=threading.Lock(); TOKEN=secrets.token_urlsafe(32)
 STATUS={'running':False,'message':'准备就绪','processed':0,'errors':0}
@@ -36,6 +45,8 @@ class Connection(sqlite3.Connection):
   try:return super().__enter__()
   except BaseException:DB_MUTEX.release();raise
  def __exit__(self,*args):
+  global DB_REVISION
+  if not args[0] and self.total_changes:DB_REVISION+=1
   try:return super().__exit__(*args)
   finally:self.close();DB_MUTEX.release()
 def db():
@@ -56,6 +67,7 @@ with db() as c:
 with db() as c:
  job_fields={r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}
  if 'retry_kind' not in job_fields:c.execute("ALTER TABLE scrape_jobs ADD COLUMN retry_kind TEXT DEFAULT ''")
+ if 'engine' not in job_fields:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
  if 'video_id' not in job_fields:c.execute('ALTER TABLE scrape_jobs ADD COLUMN video_id INTEGER')
 
 from media_libraries import MediaLibraries
@@ -70,7 +82,9 @@ SOURCES=SourceCatalog(lambda path:external_amane_request(path),config)
 NETWORK=NetworkChecks(config,lambda:external_amane_request('metadata?limit=1'),external_probe=lambda ids:external_amane_request('network/check',{'source_ids':ids} if ids else {}),external_sources=lambda:list(dict.fromkeys(s for route in SOURCES.snapshot()['upstream']['routes'].values() for s in route)))
 PEOPLE=PeopleCache(db,DATA,config,lambda path:external_amane_request(path),lambda url:actor_image_bytes(url))
 CATEGORIES=FacetCatalog(db,config)
+CATEGORIES.filter_rows=LIBRARIES.filter_rows
 ARTWORK=ArtworkStore(db,DATA,lambda url,target,engine,referer:download_still(url,target,engine,referer))
+ARTWORK.allowed=lambda vid:video_included(vid)
 
 def binary(name):
  found=shutil.which(name)
@@ -133,15 +147,23 @@ sys.path.insert(0,str(ROOT))
 from library_core import LibraryCore
 CORE=LibraryCore(db,DATA,presentation)
 CORE.excluded=LIBRARIES.exclusions
+CORE.filter_rows=LIBRARIES.filter_rows
 from file_review import FileReview
 REVIEW=FileReview(db,binary,DATA)
 REVIEW.excluded=LIBRARIES.exclusions
+REVIEW.allowed=lambda row:bool(LIBRARIES.filter_rows([row]))
+from task_journal import TaskJournal
+JOURNAL=TaskJournal(db)
+ARTWORK.observe=lambda vid,ordinal,state:JOURNAL.observe('images',str(vid)+':'+str(ordinal),state)
+REVIEW.observe=lambda vid,state,result='':JOURNAL.observe('review',str(vid)+':',('failed' if state=='done' and result not in ('passed','') else state),{'reason':result or 'executor_state'})
+from storage_inventory import StorageInventory
+INVENTORY=StorageInventory(db,lambda path:inventory_metadata(path),LIBRARIES.exclusions)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
-def read_metadata(p):
+def read_metadata(p,nfo_path=None):
  result={'code':identify(p.stem) or identify(p.parent.name),'title':fallback_title(p),'source':'filename'}
- nfo=p.with_suffix('.nfo')
+ nfo=nfo_path or p.with_suffix('.nfo')
  if nfo.is_file():
   if nfo.stat().st_size>2_000_000:raise ValueError('NFO 过大')
   tree=ET.fromstring(nfo.read_bytes())
@@ -200,13 +222,15 @@ def classify(row):
 
 def retag_all():
  with db() as c:
-  rows=c.execute('SELECT * FROM videos').fetchall()
+  rows=LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT * FROM videos').fetchall()])
   for row in rows:
    tags,reasons=classify(dict(row));c.execute('UPDATE videos SET auto_tags=?,tag_reasons=? WHERE id=?',(tags,reasons,row['id']))
  return len(rows)
 
 def scan(force=False,folder_path=None,automatic=False):
- if RESTORING.is_set() or not LOCK.acquire(False):return
+ if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not LOCK.acquire(False):return
+ try:task_key=JOURNAL.start('scan')
+ except BaseException:LOCK.release();raise
  SCAN_CANCEL.clear()
  STATUS.update(running=True,message='扫描目录…',processed=0,errors=0)
  try:
@@ -229,6 +253,7 @@ def scan(force=False,folder_path=None,automatic=False):
       stat=p.stat()
       if LIBRARIES.owner(p,policies)!=folder:continue
       if not LIBRARIES.included(p,policy,stat.st_size) or time.time()-stat.st_mtime<policy['settle_seconds']:continue
+      if not LIBRARIES.filter_rows([{'path':str(p),'size':stat.st_size}]):continue
       with db() as c:
        old=c.execute('SELECT * FROM videos WHERE path=?',(str(p),)).fetchone()
        c.execute('INSERT INTO videos(path,title,size,mtime) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,missing=0',(str(p),p.stem,stat.st_size,stat.st_mtime))
@@ -266,6 +291,7 @@ def scan(force=False,folder_path=None,automatic=False):
       elif old:
        protected=set(json.loads(old['locked_fields'] or '[]'));meta={k:v for k,v in meta.items() if k not in protected}
       updates=meta|technical|{'scraped':time.time(),'metadata_stamp':stamp,'error':'; '.join(err)}
+      if not LIBRARIES.filter_rows([{'path':str(p),'size':stat.st_size}]):continue
       merged=(dict(old) if old else {'path':str(p)})|updates
       tags,reasons=classify(merged);updates.update(auto_tags=tags,tag_reasons=reasons)
       with db() as c:c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),vid])
@@ -275,16 +301,19 @@ def scan(force=False,folder_path=None,automatic=False):
       STATUS['errors']+=1
       with db() as c:c.execute('UPDATE videos SET error=? WHERE path=?',(str(e)[:500],str(p)))
    with db() as c:
-    for row in c.execute('SELECT id,path FROM videos').fetchall():
+    for row in LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT id,path,size FROM videos').fetchall()]):
      try:inside=Path(row['path']).is_relative_to(Path(folder))
      except ValueError:inside=False
      if inside and LIBRARIES.owner(row['path'],policies)==folder and row['path'] not in seen and not walk_errors and Path(folder).is_dir():c.execute('UPDATE videos SET missing=1 WHERE id=?',(row['id'],))
    LIBRARIES.finish(folder,'部分目录读取失败，未更新缺失标记' if walk_errors else '')
   STATUS['message']='扫描完成'
- finally:STATUS['running']=False;LOCK.release()
+ finally:
+  try:JOURNAL.observe('scan',task_key,'cancelled' if SCAN_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if STATUS['errors'] else 'done',{'processed':STATUS['processed'],'failed':STATUS['errors']})
+  finally:STATUS['running']=False;LOCK.release()
 AMANE_STATUS={'connected':False,'synced':0,'message':'等待连接','last_sync':0}
 AMANE_LOCK=threading.Lock()
 SUBMIT_LOCK=threading.Lock()
+POLL_LOCK=threading.Lock()
 BUILTIN_LOCK=threading.Lock()
 BUILTIN_ENGINES={}
 
@@ -320,6 +349,7 @@ def external_amane_request(path,data=None):
 
 def cache_artwork(url,vid,art='poster'):
  if art not in ('poster','cover'):raise ValueError('图片类型无效')
+ if not video_included(vid):return False
  # Use Amane's authenticated cached-resource endpoint, never fetch upstream URLs here.
  if not url:return False
  target=DATA/f'{vid}-{art}.jpg'
@@ -370,7 +400,9 @@ def download_still(url,target,engine,referer):
  except (OSError,ValueError):return False
 
 def sync_amane():
- if RESTORING.is_set() or not AMANE_LOCK.acquire(False):return AMANE_STATUS['synced']
+ if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not AMANE_LOCK.acquire(False):return AMANE_STATUS['synced']
+ try:task_key=JOURNAL.start('sync')
+ except BaseException:AMANE_LOCK.release();raise
  SYNC_CANCEL.clear();WORK_STATUS['sync'].update(running=True,phase='metadata');WORK_STATUS['images'].update(running=False,failed=0)
  synced=0;offset=0;posters=[];covers=[];stills=[]
  try:
@@ -381,7 +413,7 @@ def sync_amane():
     for item in items:
      if not item.get('title') or not item.get('field_sources'):continue
      rows=c.execute('SELECT * FROM videos WHERE UPPER(code)=?',(str(item['number']).upper(),)).fetchall()
-     for old in rows:
+     for old in LIBRARIES.filter_rows([dict(r) for r in rows]):
       updates={'source_tags':', '.join(dict.fromkeys(item.get('tags') or [])),'amane_id':item['id'],'amane_snapshot':json.dumps(dict(item,_velvet_engine=config().get('scrape_engine','external')),ensure_ascii=False),'source':'amane'}
       locked=set(json.loads(old['locked_fields'] or '[]'))
       if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
@@ -407,7 +439,9 @@ def sync_amane():
   ARTWORK.process(SYNC_CANCEL)
   AMANE_STATUS.update(connected=True,synced=synced,message=f'封面 {covered}/{len(covers)} · 海报 {cached}/{len(posters)} · 本批剧照 {ARTWORK.status["processed"]-ARTWORK.status["failed"]}/{ARTWORK.status["processed"]}',last_sync=time.time())
   return synced
- finally:WORK_STATUS['sync'].update(running=False,phase='idle');WORK_STATUS['images']['running']=False;AMANE_LOCK.release()
+ finally:
+  try:JOURNAL.observe('sync',task_key,'cancelled' if SYNC_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if WORK_STATUS['images']['failed'] else 'done',{'failed':WORK_STATUS['images']['failed']})
+  finally:WORK_STATUS['sync'].update(running=False,phase='idle');WORK_STATUS['images']['running']=False;AMANE_LOCK.release()
 
 def submit_scrapes(ids,use_cache=False):
  if not SUBMIT_LOCK.acquire(False):raise ValueError('另一批提交进行中，请稍后重试')
@@ -417,14 +451,16 @@ def submit_scrapes(ids,use_cache=False):
 def _submit_scrapes(ids,use_cache=False):
  if not isinstance(ids,list) or not 1<=len(ids)<=50:raise ValueError('每次请选择 1–50 部视频')
  with db() as c:
-  rows=[c.execute('SELECT id,code FROM videos WHERE id=?',(int(vid),)).fetchone() for vid in dict.fromkeys(ids)]
+  rows=[c.execute('SELECT * FROM videos WHERE id=?',(int(vid),)).fetchone() for vid in dict.fromkeys(ids)]
  if any(not r or not r['code'].strip() for r in rows):raise ValueError('有视频缺少编号，请先在详情中填写并保存编号')
+ rows=LIBRARIES.filter_rows([dict(r) for r in rows])
  codes=list(dict.fromkeys(r['code'].strip().upper() for r in rows));submitted=[];skipped=0;failures=[]
  for code in codes:
   with db() as c:active=c.execute("SELECT id FROM scrape_jobs WHERE code=? AND status IN ('queued','running','submitting','cancelling')",(code,)).fetchone()
   if active:skipped+=1;continue
-  with db() as c:job_id=c.execute('INSERT INTO scrape_jobs(code,status,created,updated) VALUES(?,?,?,?)',(code,'submitting',time.time(),time.time())).lastrowid
+  with db() as c:job_id=c.execute('INSERT INTO scrape_jobs(code,status,created,updated,engine) VALUES(?,?,?,?,?)',(code,'submitting',time.time(),time.time(),config().get('scrape_engine','external'))).lastrowid
   try:
+   JOURNAL.observe('scrape',job_id,'waiting',{'reason':'submitting'})
    remote=amane_request('tasks',{'type':'scrape','number':code,'use_cache':['metadata','trans'] if use_cache else []})
    with db() as c:c.execute('UPDATE scrape_jobs SET remote_id=?,status=?,updated=? WHERE id=?',(remote['id'],remote['status'],time.time(),job_id))
    submitted.append(remote['id'])
@@ -434,8 +470,16 @@ def _submit_scrapes(ids,use_cache=False):
  return {'submitted':len(submitted),'skipped':skipped,'failures':failures}
 
 def poll_scrapes():
+ if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not POLL_LOCK.acquire(False):return
+ try:return _poll_scrapes()
+ finally:POLL_LOCK.release()
+
+def _poll_scrapes():
  with db() as c:jobs=c.execute("SELECT * FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchall()
  for job in jobs:
+  if job['engine']!=config().get('scrape_engine','external'):
+   with db() as c:c.execute("UPDATE scrape_jobs SET status='failed',retry_kind='needs_review',error='任务来源未确认或已切换，请核对原引擎后重试' WHERE id=?",(job['id'],))
+   continue
   remote_id=job['remote_id']
   if remote_id is None:
    entries=amane_request('tasks?limit=200').get('items',[])
@@ -491,13 +535,17 @@ DUP_STATUS={'running':False,'processed':0,'total':0,'errors':0,'message':'尚未
 DUP_LOCK=threading.Lock()
 def detect_duplicates():
  if RESTORING.is_set() or not DUP_LOCK.acquire(False):return
+ try:task_key=JOURNAL.start('duplicates')
+ except BaseException:DUP_LOCK.release();raise
  DUP_CANCEL.clear()
  DUP_STATUS.update(running=True,processed=0,total=0,errors=0,message='查找大小相同的文件…')
  try:
   with db() as c:
    rows=c.execute('SELECT * FROM videos WHERE missing=0 AND size IN (SELECT size FROM videos WHERE missing=0 GROUP BY size HAVING COUNT(*)>1)').fetchall()
+  rows=LIBRARIES.filter_rows([dict(r) for r in rows])
   DUP_STATUS['total']=len(rows)
   for row in rows:
+   if not LIBRARIES.filter_rows([dict(row)]):continue
    if DUP_CANCEL.is_set():DUP_STATUS['message']='重复校验已取消';return
    try:
     p=Path(row['path']);before=p.stat();stamp=f'{before.st_size}:{before.st_mtime_ns}'
@@ -509,16 +557,20 @@ def detect_duplicates():
        h.update(block)
      after=p.stat()
      if before.st_size!=after.st_size or before.st_mtime_ns!=after.st_mtime_ns:raise ValueError('文件读取期间发生变化')
+     if not LIBRARIES.filter_rows([dict(row)]):continue
      with db() as c:c.execute('UPDATE videos SET file_hash=?,hash_stamp=? WHERE id=?',(h.hexdigest(),stamp,row['id']))
     DUP_STATUS['processed']+=1;DUP_STATUS['message']='正在校验重复候选 '+str(DUP_STATUS['processed'])+'/'+str(len(rows))
    except (OSError,ValueError):DUP_STATUS['errors']+=1
   DUP_STATUS['message']='检测完成；同编号组仅为疑似重复，分集与多版本请人工核对'
- finally:DUP_STATUS['running']=False;DUP_LOCK.release()
+ finally:
+  try:JOURNAL.observe('duplicates',task_key,'cancelled' if DUP_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if DUP_STATUS['errors'] else 'done',{'processed':DUP_STATUS['processed'],'total':DUP_STATUS['total'],'failed':DUP_STATUS['errors']})
+  finally:DUP_STATUS['running']=False;DUP_LOCK.release()
 
 def actor_library():
  with db() as c:
   videos=[dict(r) for r in c.execute('SELECT * FROM videos WHERE missing=0')]
   prefs={r['name']:dict(r) for r in c.execute('SELECT * FROM actor_preferences')}
+ videos=LIBRARIES.filter_rows(videos)
  people={}
  for video in videos:
   for name in set(n.strip() for n in re.split(r'[,，;；\n]',video.get('actors') or '') if n.strip()):
@@ -572,8 +624,8 @@ def background_sync():
 def amane_watcher():
  last=0;auto_last=0
  while True:
-  if RESTORING.is_set():time.sleep(1);continue
-  try:poll_scrapes()
+  if RESTORING.is_set() or SHUTTING_DOWN.is_set():time.sleep(1);continue
+  try:poll_scrapes();JOURNAL.reconcile_sources()
   except Exception as e:AMANE_STATUS.update(connected=False,message=str(e)[:200])
   if time.time()-last>=60 and not AMANE_LOCK.locked():
    threading.Thread(target=background_sync,daemon=True).start();last=time.time()
@@ -589,7 +641,7 @@ def amane_watcher():
 def watcher():
  while True:
   try:
-   if not RESTORING.is_set():
+   if not RESTORING.is_set() and not SHUTTING_DOWN.is_set():
     scan(automatic=True)
     if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
   except Exception as e:STATUS['message']='扫描失败：'+str(e)
@@ -661,7 +713,7 @@ class Handler(BaseHTTPRequestHandler):
     if not image.is_file():return self.send({},status=404)
     return self.send(image.read_bytes(),'image/jpeg')
    if path=='/api/file-review':
-    with db() as c:return self.send(REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],CORE.hierarchy()))
+    with db() as c:return self.send(REVIEW.snapshot(LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT * FROM videos')]),CORE.hierarchy()))
    if path=='/api/network':return self.send(NETWORK.status())
    if path=='/api/scrape-sites':
     options=config().get('scrape_site_config',{})
@@ -700,16 +752,36 @@ class Handler(BaseHTTPRequestHandler):
     try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
     except (OSError,ValueError):rules=[]
     return self.send({'rules':rules})
-   if path=='/api/diagnostics':return self.send(diagnostics(APP_VERSION,RUNTIME,binary,{**WORK_STATUS,'duplicates':DUP_STATUS,'file_review':{'running':REVIEW.lock.locked()}}))
+   if path=='/api/library-revision':return self.send({'instance':hashlib.sha256(TOKEN.encode()).hexdigest(),'revision':DB_REVISION,'scan':dict(STATUS),'review_running':REVIEW.lock.locked()})
+   if path=='/api/storage':return self.send({'devices':INVENTORY.devices()})
+   if path=='/api/storage/files':
+    query=parse_qs(urlparse(self.path).query);return self.send({'files':INVENTORY.files(query.get('id',[''])[0],query.get('offset',[0])[0],status=query.get('status',['all'])[0])})
+   if path=='/api/storage/errors':
+    query=parse_qs(urlparse(self.path).query);return self.send({'errors':INVENTORY.errors(query.get('id',[''])[0])})
+   if path=='/api/storage/comparisons':return self.send({'groups':INVENTORY.comparisons()})
+   if path=='/api/storage/plans':
+    query=parse_qs(urlparse(self.path).query);return self.send({'plans':INVENTORY.plans(query.get('id',[''])[0])})
+   if path=='/api/tasks':
+    JOURNAL.reconcile_sources();return self.send({'tasks':JOURNAL.list(),'resources':task_resources()})
+   if path=='/api/diagnostics':
+    result=diagnostics(APP_VERSION,RUNTIME,binary,{**WORK_STATUS,'duplicates':DUP_STATUS,'file_review':{'running':REVIEW.lock.locked()}})
+    result['task_ids']=[{k:row[k] for k in ('id','kind','state')} for row in JOURNAL.list(20)]
+    result['resources']=task_resources();return self.send(result)
    if path=='/api/health':
     with db() as c:
      counts=dict(c.execute("SELECT COUNT(*) AS videos,SUM(missing) AS missing,SUM(CASE WHEN error!='' THEN 1 ELSE 0 END) AS errors FROM videos").fetchone())
-    return self.send({'ok':True,'application':'velvet','port':RUNTIME.port,'version':APP_VERSION,'platform':sys.platform,'server_mode':NAS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'scan':STATUS,'library':counts})
+    return self.send({'ok':True,'application':'velvet','instance_id':hashlib.sha256(TOKEN.encode()).hexdigest(),'draining':SHUTTING_DOWN.is_set(),'port':RUNTIME.port,'version':APP_VERSION,'platform':sys.platform,'server_mode':NAS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'scan':STATUS,'library':counts})
    if path=='/api/library':
     cfg=config();cfg['has_key']=bool(cfg['api_key']);cfg['api_key']='';cfg['has_amane_token']=bool(cfg['amane_token']);cfg['amane_token']='';cfg.pop('scrape_site_config',None)
     excluded=LIBRARIES.exclusions()
-    movies=[m for m in CORE.hierarchy() if not any(Path(m['path']).is_relative_to(Path(root)) for root in excluded)]
-    with db() as c:return self.send({'movies':movies,'videos':[presentation(dict(r)) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC') if not any(Path(r['path']).is_relative_to(Path(root)) for root in excluded)],'collection_rules':DIRECTORY_POLICY.rules(),'excluded_directories':excluded,'folders':[r[0] for r in c.execute('SELECT path FROM folders')],'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN,'review':REVIEW.snapshot([dict(r) for r in c.execute('SELECT * FROM videos')],movies)})
+    movies=CORE.hierarchy()
+    with db() as c:
+     videos=LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')]);folders=[r[0] for r in c.execute('SELECT path FROM folders')]
+    payload={'movies':movies,'videos':[presentation(r) for r in videos],'collection_rules':DIRECTORY_POLICY.rules(),'excluded_directories':excluded,'folders':folders,'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN,'review':REVIEW.snapshot(videos,movies)}
+    if parse_qs(urlparse(self.path).query).get('compact')==['1']:
+     from library_transport import pack_library
+     payload=pack_library(payload)
+    return self.send(payload)
    if path.startswith('/thumb/'):
     name=path.split('/')[-1]
     if not re.fullmatch(r'\d+(?:-(?:[1-5]|poster|cover|still-(?:[1-9]|1[0-2])))?\.jpg',name):return self.send({},status=404)
@@ -743,20 +815,67 @@ class Handler(BaseHTTPRequestHandler):
   except (BrokenPipeError,ConnectionResetError):pass
   except Exception as e:self.send({'error':str(e)},status=400)
  def do_POST(self):
+  global ACTIVE_POSTS
+  with POST_LEASE:ACTIVE_POSTS+=1
+  try:return self._post()
+  finally:
+   with POST_LEASE:ACTIVE_POSTS-=1
+ def _post(self):
+  global DB_REVISION
   if not self.authorize():return
   if self.headers.get('X-Velvet-Token')!=TOKEN:return self.send({},status=403)
   try:
    length=int(self.headers.get('Content-Length',0))
    if length>100000:raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
-   if path.startswith('/api/file-review/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
-   if path=='/api/directory-preview':return self.send(DIRECTORY_POLICY.preview(a.get('path')))
+   DB_REVISION+=1
+   if RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
+   if path=='/api/runtime/resume':
+    SHUTTING_DOWN.clear();REVIEW.cancel.clear();REVIEW.resume()
+    for engine in BUILTIN_ENGINES.values():engine.paused.clear();engine.start()
+    return self.send({'ok':True})
+   if path=='/api/runtime/stop':
+    SHUTTING_DOWN.set();SCAN_CANCEL.set();SYNC_CANCEL.set();DUP_CANCEL.set();REVIEW.cancel.set()
+    for engine in BUILTIN_ENGINES.values():engine.paused.set()
+    busy=ACTIVE_POSTS>1 or RESTORING.is_set() or POLL_LOCK.locked() or ARTWORK.lock.locked() or LOCK.locked() or AMANE_LOCK.locked() or DUP_LOCK.locked() or SUBMIT_LOCK.locked() or REVIEW.lock.locked() or PEOPLE.state.get('running') or any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values())
+    if busy:return self.send({'ok':False,'waiting':True})
+    self.send({'ok':True,'waiting':False});threading.Thread(target=self.server.shutdown,daemon=True).start();return
+   if SHUTTING_DOWN.is_set() and path!='/api/task-cancel':raise ValueError('服务正在安全停止，请稍后操作')
+   if path.startswith('/api/storage/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
+   if path=='/api/storage/register':return self.send({'ok':True,'id':INVENTORY.register(a.get('path'),a.get('alias'))})
+   elif path=='/api/storage/annotate':
+    INVENTORY.annotate(a.get('id'),a.get('relative'),a.get('annotation'));return self.send({'ok':True})
+   elif path=='/api/storage/remap':return self.send({'ok':True,'device':INVENTORY.remap(a.get('id'),a.get('path'),a.get('identity'))})
+   elif path=='/api/storage/scan':
+    INVENTORY.device(a.get('id'))
+    if type(a.get('hashing',False)) is not bool:raise ValueError('哈希开关无效')
+    if not LOCK.acquire(False):raise ValueError('扫描资源占用，请等待当前扫描结束')
+    try:
+     task_key=JOURNAL.start('inventory');SCAN_CANCEL.clear()
+     threading.Thread(target=run_inventory,args=(task_key,a.get('id'),a.get('hashing',False)),daemon=True).start()
+    except BaseException:LOCK.release();raise
+    return self.send({'ok':True,'task_id':task_key})
+   elif path=='/api/storage/prefer':
+    INVENTORY.prefer(a.get('id'),a.get('relative'),a.get('preferred'),a.get('note',''));return self.send({'ok':True})
+   elif path=='/api/storage/revise':return self.send({'ok':True,'plan':INVENTORY.revise_plan(a.get('id'),a.get('digest'),a.get('selected'),a.get('edits'))})
+   elif path=='/api/storage/plan':
+    plan=INVENTORY.plan(a.get('id'),a.get('target'),a.get('layout','title'))
+    JOURNAL.observe('plan',plan['id'],'done',{'processed':len(plan['entries']),'total':len(plan['entries']),'phase':'preview_only'})
+    return self.send({'ok':True,'plan':plan})
+   elif path=='/api/directory-preview':return self.send(DIRECTORY_POLICY.preview(a.get('path')))
    elif path=='/api/collection-rule':
     if RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
-    return self.send({'ok':True,'preview':DIRECTORY_POLICY.set_rule(a.get('path'),a.get('mode'),a.get('digest'))})
+    with DB_MUTEX:preview=DIRECTORY_POLICY.set_rule(a.get('path'),a.get('mode'),a.get('digest'))
+    return self.send({'ok':True,'preview':preview})
+   elif path=='/api/exclusion-preview':
+    target=Path(self.video(a['id'])['path']).parent if 'id' in a else a.get('path')
+    return self.send(LIBRARIES.exclusion_preview(str(target) if target else ''))
    elif path=='/api/excluded-directories':
     target=Path(self.video(a['id'])['path']).parent if 'id' in a else a.get('path')
-    LIBRARIES.exclude(str(target) if target else '',a.get('enabled',True));return self.send({'ok':True})
+    with DB_MUTEX:
+     if a.get('enabled',True) and LIBRARIES.exclusion_preview(str(target) if target else '')['digest']!=a.get('digest'):raise ValueError('排除范围已变化，请重新预览确认')
+     LIBRARIES.exclude(str(target) if target else '',a.get('enabled',True))
+    return self.send({'ok':True,'message':'已更新可见性；恢复后的新增文件需要重扫'})
    elif path=='/api/file-review/automatic':
     REVIEW.set_auto(a.get('enabled'));return self.send({'ok':True})
    elif path=='/api/file-review/automatic-mark':
@@ -862,6 +981,7 @@ class Handler(BaseHTTPRequestHandler):
     elif kind=='scrape':
      with db() as c:job=c.execute('SELECT * FROM scrape_jobs WHERE id=?',(int(a['id']),)).fetchone()
      if not job:raise ValueError('任务不存在')
+     if job['engine']!=config().get('scrape_engine','external'):raise ValueError('任务来源未确认或已切换，不能向当前引擎发送取消')
      if job['remote_id'] is None:raise ValueError('正在提交，尚未获得远程任务编号，请稍后取消')
      amane_request('tasks/batch',{'action':'cancel','task_ids':[job['remote_id']]})
      with db() as c:c.execute("UPDATE scrape_jobs SET status='cancelling' WHERE id=?",(job['id'],))
@@ -875,8 +995,10 @@ class Handler(BaseHTTPRequestHandler):
     if PEOPLE.state['running']:raise ValueError('请等待演员资料与头像同步完成后再恢复备份')
     if any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values()):raise ValueError('请等待内置刮削任务停止后再恢复备份')
     if a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
-    locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK,REVIEW.lock];acquired=[]
-    RESTORING.set()
+    locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK,POLL_LOCK,ARTWORK.lock,REVIEW.lock];acquired=[]
+    with POST_LEASE:
+     if ACTIVE_POSTS>1:raise ValueError('其它修改请求运行中，请稍后恢复')
+     RESTORING.set()
     try:
      for lock in locks:
       if not lock.acquire(False):raise ValueError('后台任务运行中，请先暂停自动刮削并取消扫描/同步后重试')
@@ -884,7 +1006,9 @@ class Handler(BaseHTTPRequestHandler):
      with db() as c:
       if c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]:raise ValueError('仍有刮削任务，请先在任务中心取消并等待结束后恢复')
      with DB_MUTEX:
-      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True)
+      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure()
+      with db() as c:
+       if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:
      for lock in reversed(acquired):lock.release()
      RESTORING.clear()
@@ -1013,6 +1137,57 @@ class Handler(BaseHTTPRequestHandler):
    else:return self.send({},status=404)
    self.send({'ok':True})
   except Exception as e:self.send({'error':str(e)},status=400)
+def task_resources():
+ cfg=config()
+ with db() as c:
+  queued_images=c.execute("SELECT COUNT(*) FROM artwork_jobs WHERE active=1 AND status='queued'").fetchone()[0]
+  queued_reviews=c.execute("SELECT COUNT(*) FROM file_reviews WHERE status='queued'").fetchone()[0]
+ reasons=[]
+ if SHUTTING_DOWN.is_set():reasons.append('service_draining')
+ if LOCK.locked():reasons.append('scan_resource_busy')
+ if any(not Path(policy['path']).is_dir() for policy in LIBRARIES.policies()):reasons.append('library_offline')
+ if not cfg.get('auto_scrape'):reasons.append('automatic_scrape_paused')
+ if not binary('ffprobe'):reasons.append('ffprobe_missing')
+ if not REVIEW.auto_settings().get('available'):reasons.append('ocr_dependency_missing')
+ return {'reasons':reasons,'images_queued':queued_images,'reviews_queued':queued_reviews,
+         'limits':{'metadata_workers':1,'image_batch':24,'image_batch_seconds':45,'review_workers':1,'automatic_review_queue':1},
+         'engines':[engine.resource_summary() for engine in BUILTIN_ENGINES.values()]}
+
+
+def video_included(vid):
+ with db() as c:row=c.execute('SELECT * FROM videos WHERE id=?',(vid,)).fetchone()
+ return bool(row and LIBRARIES.filter_rows([dict(row)]))
+
+def inventory_metadata(path):
+ try:
+  shared=path.parent/'movie.nfo'
+  use_shared=shared.is_file() and not path.with_suffix('.nfo').is_file() and sum(p.suffix.lower() in {'.mp4','.mkv','.avi','.mov','.wmv','.m4v','.ts','.webm','.mpeg','.mpg','.flv'} for p in path.parent.iterdir())==1
+  local=read_metadata(path,shared if use_shared else None)
+ except Exception as error:local={'title':fallback_title(path),'code':identify(path.stem) or identify(path.parent.name),'source':'filename','metadata_warning':type(error).__name__}
+ candidates={'filename':path.stem,'directory':path.parent.name,'nfo':local.get('title') if local.get('source')=='nfo' else None}
+ with db() as c:row=c.execute('SELECT * FROM videos WHERE path=?',(str(path),)).fetchone()
+ if row:
+  metadata={key:row[key] for key in ('title','code','width','height','duration','codec','source','locked_fields')}
+  candidates['existing_metadata']=row['title'];metadata['candidates']=candidates
+  metadata['issues']=REVIEW.snapshot([dict(row)])['files'].get(row['id'],{}).get('issues',[])
+  return metadata
+ metadata=dict(local,candidates=candidates);probe=binary('ffprobe')
+ if probe:
+  result=run([probe,'-v','error','-show_format','-show_streams','-of','json',str(path)],45)
+  if result.returncode:metadata['issues']=[{'code':'probe_error','label':'无法解析，需复核'}]
+  else:
+   info=json.loads(result.stdout);stream=next((s for s in info.get('streams',[]) if s.get('codec_type')=='video'),{})
+   metadata.update(width=stream.get('width',0),height=stream.get('height',0),codec=stream.get('codec_name',''),duration=float(info.get('format',{}).get('duration') or 0))
+ return metadata
+
+def run_inventory(task_key,device_id,hashing):
+ try:
+  progress=lambda **counts:JOURNAL.observe('inventory',task_key,'running',{**counts,'phase':'hashing' if hashing else 'metadata','cancellable':True})
+  result=INVENTORY.scan(device_id,SCAN_CANCEL.is_set,progress,hashing)
+  JOURNAL.observe('inventory',task_key,result['state'],{'processed':result['processed'],'failed':result['failed'],'bytes_processed':result['bytes_processed']})
+ except Exception as error:JOURNAL.observe('inventory',task_key,'failed',{'reason':type(error).__name__})
+ finally:LOCK.release()
+
 class LocalServer(ThreadingHTTPServer):
  allow_reuse_address=False
  def server_bind(self):
@@ -1024,10 +1199,19 @@ if __name__=='__main__':
  try:server=LocalServer((BIND,RUNTIME.port),Handler)
  except OSError as error:raise SystemExit('服务端口不可用，请检查已有实例或使用 --port；系统错误码 '+str(error.errno)) from None
  if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
+ JOURNAL.recover()
+ JOURNAL.reconcile_sources(uncertain_remote=True)
  REVIEW.resume()
  threading.Thread(target=watcher,daemon=True).start()
  threading.Thread(target=amane_watcher,daemon=True).start()
+ (DATA/'runtime-instance.json').write_text(json.dumps({'url':RUNTIME.local_url,'token':TOKEN,'pid':os.getpid()}),'utf-8')
  print('Velvet: '+RUNTIME.local_url+'  Ctrl+C 退出',flush=True)
  if not NAS and not RUNTIME.no_browser:webbrowser.open(RUNTIME.local_url)
  try:server.serve_forever()
- except KeyboardInterrupt:server.server_close()
+ except KeyboardInterrupt:pass
+ finally:
+  server.server_close()
+  try:
+   descriptor=DATA/'runtime-instance.json'
+   if json.loads(descriptor.read_text('utf-8')).get('token')==TOKEN:descriptor.unlink()
+  except (OSError,ValueError):pass

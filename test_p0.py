@@ -59,7 +59,7 @@ class P0Tests(base.FeatureTests):
    post('/api/edit',{'id':a,'rating':5});post('/api/restore',{'name':backup,'confirm':backup})
    with app.db() as db:self.assertEqual(db.execute('SELECT rating FROM videos WHERE id=?',(a,)).fetchone()[0],0)
    post('/api/task-cancel',{'kind':'scan'});self.assertTrue(app.SCAN_CANCEL.is_set())
-   with app.db() as db:db.execute('INSERT INTO scrape_jobs(code,remote_id,status,created) VALUES(?,?,?,?)',('ABC-1',101,'queued',app.time.time()))
+   with app.db() as db:db.execute('INSERT INTO scrape_jobs(code,remote_id,status,created,engine) VALUES(?,?,?,?,?)',('ABC-1',101,'queued',app.time.time(),app.config().get('scrape_engine','external')))
    requests=[]
    def remote(path,data=None):requests.append((path,data));return {'status':'cancelled','result':{}}
    app.amane_request=remote;post('/api/task-cancel',{'kind':'scrape','id':1});self.assertEqual(requests[0][0],'tasks/batch');self.assertEqual(requests[0][1]['task_ids'],[101])
@@ -72,5 +72,16 @@ class P0Tests(base.FeatureTests):
    db.execute('INSERT INTO folders VALUES(?)',(str(self.root),));db.execute('UPDATE videos SET tags=?,locked_fields=? WHERE id=?',('ManualTag','["tags"]',a))
   self.app.scan(True)
   with self.app.db() as db:self.assertEqual(db.execute('SELECT tags FROM videos WHERE id=?',(a,)).fetchone()[0],'ManualTag')
+ def test_excluded_files_do_not_become_missing_and_restore_immediately(self):
+  folder=self.root/'Excluded';folder.mkdir();file=folder/'EXAMPLE-1.mp4';file.write_bytes(b'synthetic')
+  a=self.add(str(file),b'synthetic','EXAMPLE-1')
+  with self.app.db() as c:c.execute('INSERT OR IGNORE INTO folders VALUES(?)',(str(self.root),))
+  self.app.LIBRARIES.exclude(str(folder));self.app.binary=lambda name:None
+  self.app.scan()
+  with self.app.db() as c:self.assertEqual(c.execute('SELECT missing FROM videos WHERE id=?',(a,)).fetchone()[0],0)
+  self.assertEqual(self.app.CORE.hierarchy(),[])
+  self.app.LIBRARIES.exclude(str(folder),False)
+  self.assertEqual(len(self.app.CORE.hierarchy()),1)
+
 if __name__=='__main__':
  import unittest;unittest.main()

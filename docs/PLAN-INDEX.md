@@ -23,3 +23,5 @@ alpha.5：A5-01–32可靠性/目录政策；E-ORG的F01–F05及F09首批。F06
 ## 使用Skill
 
 仓库保留可版本化副本skills/velvet-development。安装到Codex skills目录后调用 `$velvet-development`；也可在会话直接要求阅读该SKILL.md并按其接力。仅复制Skill不会自动提供仓库，需要可访问的Velvet checkout。安装副本更新时从仓库同步，不能反向成为需求的另一份权威来源。
+
+开发候选证据：[alpha.5进度](ALPHA5-PROGRESS.md) · [验收](ALPHA5-VALIDATION.md) · [运行指南](ALPHA5-OPERATIONS.md) · [性能](ALPHA5-PERFORMANCE.md)。
