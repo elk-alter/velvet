@@ -132,7 +132,7 @@ with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manua
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
 def read_metadata(p):
- result={'code':identify(p.stem),'title':p.stem,'source':'filename'}
+ result={'code':identify(p.stem) or identify(p.parent.name),'title':p.parent.name if re.fullmatch(r'(?i)(?:\d+|(?:part|cd|pt)[ ._-]*\d+)',p.stem) else p.stem,'source':'filename'}
  nfo=p.with_suffix('.nfo')
  if nfo.is_file():
   if nfo.stat().st_size>2_000_000:raise ValueError('NFO 过大')
@@ -231,7 +231,7 @@ def scan(force=False,folder_path=None,automatic=False):
       err=[]
       try:meta=read_metadata(p)
       except Exception as e:
-       meta={'code':identify(p.stem),'title':p.stem,'source':'filename'};err.append('NFO 读取失败：'+str(e))
+       meta={'code':identify(p.stem) or identify(p.parent.name),'title':p.parent.name if re.fullmatch(r'(?i)(?:\d+|(?:part|cd|pt)[ ._-]*\d+)',p.stem) else p.stem,'source':'filename'};err.append('NFO 读取失败：'+str(e))
       if meta['source']!='nfo':
        try:meta.update(remote_metadata(meta['code']))
        except Exception as e:err.append('联网匹配失败：'+str(e))
