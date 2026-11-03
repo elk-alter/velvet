@@ -1,0 +1,4 @@
+interface:
+  display_name: "Velvet 开发接力"
+  short_description: "依据需求规划、验收证据和数据安全边界继续接力开发 Velvet 项目"
+  default_prompt: "Use $velvet-development to continue Velvet development from the current requirements and handoff."

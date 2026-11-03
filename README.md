@@ -148,3 +148,5 @@ python -m unittest discover -s . -p "test_*.py"
 最新结构审计与改进清单见 [体验审计](docs/UX-AUDIT.md)，自动识别说明见 [自动标记](docs/AUTOMATIC-MARKS.md)。
 
 开发流程、模块边界、测试与迁移控制见 [开发文档入口](docs/development/README.md)。
+
+[全部规划与AI接力入口](docs/PLAN-INDEX.md) · [AI开发Skill](skills/velvet-development/SKILL.md)

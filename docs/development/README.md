@@ -16,3 +16,5 @@
 开发依赖：Python3.10+、Git；Node.js用于JS语法与发布检查，不是运行时依赖。采集安装requirements.txt，OCR另安装requirements-vision.txt；媒体检查需FFmpeg/ffprobe。用虚构小片库启动，避免与生产8765端口争用。当前端口配置仍受服务实现约束，不能直接假定任意端口可用。
 
 文档维护：模块变化更新MODULES/ARCHITECTURE，数据变化更新DATA/ADR，用户行为更新FEATURES及对应使用文档，交付范围更新需求和CHANGELOG。历史发行说明不改写成当前状态。
+
+完整规划与接力从 [规划索引](../PLAN-INDEX.md) 开始；AI开发使用 [专用Skill](../../skills/velvet-development/SKILL.md)。
