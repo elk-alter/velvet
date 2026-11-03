@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.request import Request,urlopen
 from urllib.parse import urlparse,quote,parse_qs
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
+from media_naming import fallback_title, generic_name
 ROOT=Path(__file__).resolve().parent
 APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip()
 UI_ASSETS={
@@ -106,6 +107,7 @@ def censorship(row,metadata=None):
 
 def presentation(row):
  row=dict(row);p=Path(row['path'])
+ if row.get('source') in ('','filename') and not row.get('manual') and not row.get('amane_id') and 'title' not in json.loads(row.get('locked_fields') or '[]') and generic_name(row.get('title')):row['title']=fallback_title(p)
  pattern=r'(?i)(?<![a-z0-9])(?:part|pt|cd|disc|disk)[ ._-]*(\d{1,2})(?![a-z0-9])|第\s*(\d{1,2})\s*(?:部分|段|集)'
  match=re.search(pattern,p.stem)
  row['part_index']=int(match[1] or match[2]) if match else 0
@@ -132,7 +134,7 @@ with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manua
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
 def read_metadata(p):
- result={'code':identify(p.stem) or identify(p.parent.name),'title':p.parent.name if re.fullmatch(r'(?i)(?:\d+|(?:part|cd|pt)[ ._-]*\d+)',p.stem) else p.stem,'source':'filename'}
+ result={'code':identify(p.stem) or identify(p.parent.name),'title':fallback_title(p),'source':'filename'}
  nfo=p.with_suffix('.nfo')
  if nfo.is_file():
   if nfo.stat().st_size>2_000_000:raise ValueError('NFO 过大')
@@ -231,7 +233,7 @@ def scan(force=False,folder_path=None,automatic=False):
       err=[]
       try:meta=read_metadata(p)
       except Exception as e:
-       meta={'code':identify(p.stem) or identify(p.parent.name),'title':p.parent.name if re.fullmatch(r'(?i)(?:\d+|(?:part|cd|pt)[ ._-]*\d+)',p.stem) else p.stem,'source':'filename'};err.append('NFO 读取失败：'+str(e))
+       meta={'code':identify(p.stem) or identify(p.parent.name),'title':fallback_title(p),'source':'filename'};err.append('NFO 读取失败：'+str(e))
       if meta['source']!='nfo':
        try:meta.update(remote_metadata(meta['code']))
        except Exception as e:err.append('联网匹配失败：'+str(e))
