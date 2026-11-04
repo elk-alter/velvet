@@ -6,6 +6,7 @@
 |---|---|
 |当前已发布能力|[功能](FEATURES.md)及对应版本说明，仍须核对代码|
 |迭代顺序|[路线图](ROADMAP.md)|
+|alpha.6需求及验收|[A6-01–30](ALPHA6-REQUIREMENTS.md)|
 |alpha.5需求及验收|[A5-01–32](ALPHA5-REQUIREMENTS.md)|
 |原文件整理Epic/Feature/Story|[E-ORG、ORG-01–35](EPIC-RAW-MEDIA-ORGANIZATION.md)|
 |体验问题与后续改进|[U01–40](UX-AUDIT.md)|
@@ -18,7 +19,7 @@
 
 ## 范围
 
-alpha.5：A5-01–32可靠性/目录政策；E-ORG的F01–F05及F09首批。F06复制、F07绑定是条件试点，必须先满足前置验收；F08移动/改名/源处置延后。alpha.6、alpha.7方向保留在路线图，尚未拆成可执行承诺。
+alpha.5：A5-01–32可靠性/目录政策；E-ORG的F01–F05及F09首批。F06复制、F07绑定是条件试点，必须先满足前置验收；F08移动/改名/源处置延后。alpha.6已拆为A6-01–30，硬盘统一管理为必达，旧alpha.5条件/后续分配不能覆盖新的alpha.6承诺；alpha.7方向保留在路线图。
 
 ## 使用Skill
 
