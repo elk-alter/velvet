@@ -8,8 +8,7 @@ import uuid
 class MovieDetails:
     # Preserve legacy quality/duplicate ordering, including the original first-seen tie.
     ORDER="""b.all_missing,b.preferred DESC,b.min_height DESC,b.total_size DESC,
-        (SELECT MAX(v.mtime) FROM media_links l JOIN videos v ON v.id=l.video_id JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 WHERE l.movie_key=b.movie_key AND l.version_key=b.version_key) DESC,
-        (SELECT v.id FROM media_links l JOIN videos v ON v.id=l.video_id JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 WHERE l.movie_key=b.movie_key AND l.version_key=b.version_key ORDER BY v.mtime DESC,v.id LIMIT 1),b.version_key"""
+        b.version_mtime DESC,b.version_first_id,b.version_key"""
     LABELS={'censored':'有码','uncensored':'无码','unknown':'未知'}
 
     def __init__(self,browse,review):

@@ -114,8 +114,46 @@ class MovieDetailTests(unittest.TestCase):
             self.app.BROWSE.__init__(self.app.db,self.app.CORE,self.app.LIBRARIES,self.app.DIRECTORY_POLICY,self.app.config)
             self.app.BROWSE.refresh()
         with self.app.db() as c:
-            self.assertEqual(c.execute('SELECT projection_schema FROM browse_state').fetchone()[0],2)
+            self.assertEqual(c.execute('SELECT projection_schema FROM browse_state').fetchone()[0],3)
             self.assertEqual(c.execute("SELECT min_height FROM browse_version_rows WHERE version_key='cut-0'").fetchone()[0],1080)
+
+    def test_version_ties_keep_legacy_latest_visible_member_order(self):
+        ids=self.seed(4,3)
+        with self.app.db() as c:
+            c.execute('UPDATE videos SET height=1080,mtime=0')
+            for ident in (ids[2],ids[3],ids[7]):c.execute('UPDATE videos SET mtime=9 WHERE id=?',(ident,))
+        legacy=self.app.BROWSE.movie(ids[0])
+        detail=self.app.MOVIE_DETAILS.query({'id':ids[0]})['detail']
+        self.assertEqual([v['version_key'] for v in detail['versions']['items']],[v['version_key'] for v in legacy['_versions']])
+
+        self.assertEqual(detail['selected']['id'],legacy['id'])
+        with self.app.db() as c:
+            c.execute('UPDATE videos SET path=? WHERE id=?',(str(self.root/'Hidden'/'part.mp4'),ids[2]))
+            c.execute('INSERT INTO excluded_directories VALUES(?)',(str(self.root/'Hidden'),))
+        legacy=self.app.BROWSE.movie(ids[0])
+        detail=self.app.MOVIE_DETAILS.query({'id':ids[0]})['detail']
+        self.assertEqual([v['version_key'] for v in detail['versions']['items']],[v['version_key'] for v in legacy['_versions']])
+
+        # NULL timestamps have a deterministic tie order even though the legacy
+        # whole-work max() cannot compare nullable timestamps.
+        with self.app.db() as c:c.execute('UPDATE videos SET mtime=NULL')
+        detail=self.app.MOVIE_DETAILS.query({'id':ids[0]})['detail']
+        self.assertEqual(len(detail['versions']['items']),4)
+
+    def test_schema_two_adds_detail_order_without_representing_existing_projection(self):
+        ids=self.seed(3,3);before=self.app.MOVIE_DETAILS.query({'id':ids[0]})['detail']
+        with self.app.db() as c:
+            columns=[r[1] for r in c.execute('PRAGMA table_info(browse_version_rows)') if r[1] not in ('version_mtime','version_first_id')]
+            c.execute('CREATE TABLE legacy_versions AS SELECT '+','.join(columns)+' FROM browse_version_rows')
+            c.execute('DROP TABLE browse_version_rows');c.execute('ALTER TABLE legacy_versions RENAME TO browse_version_rows')
+            c.execute('UPDATE browse_state SET projection_schema=2')
+        with patch.object(self.app.CORE,'present',side_effect=AssertionError('Reuse valid per-file projection')):
+            self.app.BROWSE.__init__(self.app.db,self.app.CORE,self.app.LIBRARIES,self.app.DIRECTORY_POLICY,self.app.config)
+            self.app.BROWSE.refresh()
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT version_mtime,version_first_id FROM browse_version_rows WHERE version_key=?',('cut-1',)).fetchone()[:],(1,ids[3]))
+        with self.assertRaises(LibraryQueryChanged):self.app.MOVIE_DETAILS.query({'id':ids[0],'revision':before['revision']})
+        self.assertEqual(self.app.MOVIE_DETAILS.query({'id':ids[0]})['detail']['versions']['total'],3)
 
 
 class MovieDetailHTTPTests(unittest.TestCase):

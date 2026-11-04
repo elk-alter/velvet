@@ -34,7 +34,7 @@ class LibraryQuery:
             c.execute('INSERT OR IGNORE INTO browse_state(id,revision,rebuild) VALUES(1,1,0)')
             if 'projected_revision' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projected_revision INTEGER DEFAULT -1')
             if 'projection_schema' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projection_schema INTEGER DEFAULT 0')
-            c.execute('UPDATE browse_state SET rebuild=CASE WHEN projection_schema=1 THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=2,revision=revision+1 WHERE projection_schema!=2')
+            c.execute('UPDATE browse_state SET rebuild=CASE WHEN projection_schema IN (1,2) THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=3,revision=revision+1 WHERE projection_schema!=3')
             c.execute('CREATE TABLE IF NOT EXISTS browse_query_members(query_id TEXT,card_key TEXT,movie_key TEXT,version_key TEXT,resume_id INTEGER,title TEXT,part_count INTEGER,size INTEGER,PRIMARY KEY(query_id,movie_key))')
             c.execute('CREATE INDEX IF NOT EXISTS browse_member_card ON browse_query_members(query_id,card_key,movie_key)')
             c.execute('CREATE INDEX IF NOT EXISTS browse_member_preview ON browse_query_members(query_id,card_key,title,resume_id)')
@@ -150,7 +150,7 @@ class LibraryQuery:
  MAX(CASE WHEN id IN (SELECT preferred_id FROM duplicate_choices) THEN 1 ELSE 0 END) AS preferred,
  MAX(CASE WHEN json_extract(review,'$.needs_update') THEN 1 ELSE 0 END) AS needs_update,
  MAX(CASE WHEN json_extract(review,'$.decision')='open' THEN 1 ELSE 0 END) AS open_parts,
- MAX(CASE WHEN json_extract(review,'$.pending_automatic') THEN 1 ELSE 0 END) AS auto_pending
+ MAX(CASE WHEN json_extract(review,'$.pending_automatic') THEN 1 ELSE 0 END) AS auto_pending,MAX(mtime) AS version_mtime
  FROM files GROUP BY movie_key,version_key
  ), movie_stats AS (
  SELECT movie_key,COUNT(DISTINCT version_key) AS version_count,MAX(COALESCE(favorite,0)) AS movie_favorite,MAX(mtime) AS movie_mtime,
@@ -163,7 +163,8 @@ class LibraryQuery:
  SELECT v.id,v.path,v.size,v.mtime,v.duration,v.favorite,v.tags,v.error,v.code,v.actors,v.studio,v.date,v.width,v.height,v.codec,v.missing,v.watched,v.rating,v.source,v.source_tags,v.amane_id,v.auto_tags,v.position,p.title AS display_title,p.vr,p.censorship,p.resolution_label,p.folder,p.tags AS tag_list,p.actors AS actor_list,p.review,l.movie_key,l.version_key,l.part_no,f.first_rank,f.resume_rank,s.part_count,s.total_size,s.total_duration,s.min_height,s.all_watched,s.max_position,s.all_missing,s.any_missing,s.preferred,health.needs_update,health.auto_pending,
  m.version_count,m.movie_favorite,m.movie_mtime,m.collection_root,cs.collection_count,r.id AS resume_id,
  CASE WHEN s.all_missing=0 AND (preferred_link.version_key=f.version_key) THEN 0 WHEN s.all_missing=0 AND pref.version_key=f.version_key THEN 1 ELSE 2 END AS preference_rank,
- health.higher_local AS higher_local
+ health.higher_local AS higher_local,s.version_mtime,
+ CASE WHEN s.part_count=1 THEN f.id ELSE (SELECT MIN(vs.id) FROM media_links ls JOIN videos vs ON vs.id=ls.video_id JOIN browse_projection ps ON ps.video_id=vs.id AND ps.visible=1 WHERE ls.movie_key=s.movie_key AND ls.version_key=s.version_key AND vs.mtime IS s.version_mtime) END AS version_first_id
  FROM files f JOIN videos v ON v.id=f.id JOIN browse_projection p ON p.video_id=f.id JOIN media_links l ON l.video_id=f.id JOIN stats s ON s.movie_key=f.movie_key AND s.version_key=f.version_key
  JOIN movie_stats m ON m.movie_key=f.movie_key
  JOIN movie_health health ON health.movie_key=s.movie_key
