@@ -66,3 +66,5 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 `python scripts/benchmark_movie_details.py --counts 10000 50000 --output report.json`用独立进程覆盖单作品的极多分段和极多版本。每场景先记录索引准备，再测首次详情及20次暖HTTP、响应字节、每请求呈现文件数、进程峰值；禁止全作品hierarchy，超大编辑必须在加载前拒绝。HTTP不是浏览器绘制；较慢压力场景不靠删测或改目标放行。
 
 `python -m unittest test_detail_navigation test_library_query test_movie_details test_movie_detail_view test_server_browse -q`覆盖关闭确认的取消/放弃/Esc、演员/标签跳转、确认过期后不关另一文件，以及非代表分段的演员/标签/厂商/标题命中、跨版本标签隔离、排除目录和旧匹配快照失效。Node用例执行实际内联处理器；不等于真实视频播放或浏览器原生离页提示验证。质量备注等其它表单、全部管理/历史入口仍需分别审计。
+
+`python -m unittest test_presentation_identity test_library_query test_movie_details test_library_query_core -q`还覆盖列表窄投影的384组合与人工标题保护、旧自定义完整展示回调、HTTP主库恢复后重新查询、NULL/缺列升级及匹配/选择结果。完整展示的Git基线差分在开发checkout核对；不是只比较两个同用新helper的实现。benchmark_browse计入首次投影与范围构建，不预热后再冒充冷启动。

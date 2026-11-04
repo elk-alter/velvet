@@ -23,9 +23,10 @@ def tokens(value):return [part.strip() for part in re.split(r'[,，;；\n]',str(
 
 
 class LibraryQuery:
-    def __init__(self,db,core,libraries,policy,config=lambda:{}):
+    def __init__(self,db,core,libraries,policy,config=lambda:{},project=None):
         self.db,self.core,self.libraries,self.policy=db,core,libraries,policy
         self.config=config
+        self.project=project if project is not None else lambda row,path:self.core.present(row)
         libraries.exclusions();policy.ensure()
         with db() as c:
             c.execute('CREATE TABLE IF NOT EXISTS browse_projection(video_id INTEGER PRIMARY KEY,title TEXT,vr INTEGER,censorship TEXT,resolution_label TEXT,folder TEXT,visible INTEGER,tags TEXT,actors TEXT,review TEXT)')
@@ -108,7 +109,7 @@ class LibraryQuery:
                 records={r['video_id']:dict(r) for r in c.execute('SELECT * FROM file_reviews WHERE video_id IN ('+slots+')',ids)}
                 values=[]
                 for raw in batch:
-                    row=dict(raw);present=self.core.present(row);path=canonical(row['path'],short_prefixes);owner=self.libraries.owner(path,policies)
+                    row=dict(raw);raw_path=Path(row['path']);present=self.project(row,raw_path);path=canonical(raw_path,short_prefixes);owner=self.libraries.owner(path,policies)
                     policy=next((p for p in policies if p['path']==owner),None)
                     visible=not any(path.is_relative_to(canonical(root)) for root in excluded) and (not policy or self.libraries.included(path,policy,row['size'] or 0))
                     review=FileReview.describe(row,records.get(row['id'],{}),target)
@@ -267,7 +268,7 @@ class LibraryQuery:
                 ident=uuid.uuid4().hex;where,args=self.matching(criteria)
                 if covers is not None:
                     c.execute('CREATE TEMP TABLE cached_covers(id INTEGER PRIMARY KEY)');c.executemany('INSERT INTO cached_covers VALUES(?)',((vid,) for vid in covers))
-                selected=self.QUERY_CTE+", ranked AS (SELECT v.*,ROW_NUMBER() OVER(PARTITION BY movie_key ORDER BY all_missing,preference_rank,preferred DESC,min_height DESC,total_size DESC,version_key) AS chosen FROM versions v WHERE "+where+")"
+                selected=self.QUERY_CTE+", ranked AS (SELECT v.movie_key,v.version_key,v.resume_id,v.display_title,v.part_count,v.total_size,v.collection_root,v.collection_count,v.movie_mtime,v.rating,v.total_duration,ROW_NUMBER() OVER(PARTITION BY movie_key ORDER BY all_missing,preference_rank,preferred DESC,min_height DESC,total_size DESC,version_key) AS chosen FROM versions v WHERE "+where+")"
                 c.execute('CREATE TEMP TABLE browse_matches AS '+selected+' SELECT * FROM ranked WHERE chosen=1',args)
                 selected='WITH matched AS (SELECT * FROM browse_matches)'
                 grouped=criteria['collections']=='on' and not criteria['collection']

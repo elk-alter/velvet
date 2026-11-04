@@ -38,9 +38,20 @@ def identity_presentation(row,path=None):
          'censorship':kind,'censorship_source':reason}
 
 
+def display_title(row,path):
+ if row.get('source') in ('','filename') and not row.get('manual') and not row.get('amane_id') and 'title' not in json.loads(row.get('locked_fields') or '[]') and generic_name(row.get('title')):return fallback_title(path)
+ return row.get('title')
+
+
+def projection_presentation(row,path=None):
+ p=path if path is not None else Path(row['path']);traits=identity_presentation(row,p)
+ return {'title':display_title(row,p),'vr':traits['vr'],'censorship':traits['censorship'],'resolution_label':resolution_label(row.get('height'))}
+
+
 def presentation(row):
- row=dict(row);p=Path(row['path'])
- if row.get('source') in ('','filename') and not row.get('manual') and not row.get('amane_id') and 'title' not in json.loads(row.get('locked_fields') or '[]') and generic_name(row.get('title')):row['title']=fallback_title(p)
+ row=dict(row);p=Path(row['path']);title=display_title(row,p)
+ # Preserve absent title keys on sparse inputs used by legacy callers.
+ if 'title' in row or title is not None:row['title']=title
  row.update(identity_presentation(row,p))
  base=re.sub(PART_PATTERN,' ',p.stem);base=re.sub(r'[ ._\-]+',' ',base).strip().casefold()
  row['part_key']=str(p.parent).casefold()+'|'+base if re.search(PART_PATTERN,p.stem) else ''

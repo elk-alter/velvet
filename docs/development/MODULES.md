@@ -81,7 +81,9 @@
 - scripts/upgrade_fixture.py：alpha.5兼容合成资料、图片/OCR证据和队列样本，供Git历史升级演练及无Git的回归测试共用；不进入运行时，不处理生产数据，不修改已有源媒体。
 
 - media_presentation：从app抽出的只读展示与轻量identity_presentation，共用分段/VR/内容标记规则；app保留原名称导出。LibraryCore可注入identity_traits(row,path)，缺省沿用自定义presentation兼容旧调用者；恢复重建保留该回调。它不分配媒体UUID或改写人工关系。
+- projection_presentation(row,path)只返回列表投影所需的标题/VR/内容类型/分辨率，display_title与完整展示共用人工锁/NFO/来源保护及目录回退；不生成详情part_key等字段。LibraryQuery可注入project(row,raw_path)，缺省继续调用core.present，旧构造和自定义展示兼容。app初始及恢复重建均显式传入窄投影；raw_path保持原拼写，规范化路径仅用于权限/可见性，不反向改变命名依据。
 - library_query版本聚合的files中间集只带统计/排序必需列，代表版本再联结完整展示；持久读模型字段与查询/失效契约保持。
+- 匹配范围的ranked/browse_matches只保留身份、集合、排序/数量所需列，页面展示再按movie/version键读取；固定选择、默认/命中版本与总数不从当前页推断。查询契约及schema3不变，不能省略规则/排除/质量过滤以换速度。
 
 - movie_details：单作品/版本/分段分页、首选/续播、相邻分段与完整质量依据；无全图呈现，读取实例在HTTP恢复后换代。for_edit对全部索引成员先限制100，再兼容完整小图，保持应用DB互斥范围。
 - library_query的schema3版本聚合预计算最大可见mtime及该时间最小ID供详情排序；仅派生投影升级，业务字段/关系键不变。schema1/2复用逐文件投影，不能为性能隐藏预热成本。

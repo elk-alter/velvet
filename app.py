@@ -115,7 +115,7 @@ def run(args,timeout=90):
 def identify(stem):
  m=re.search(r'(?i)(?<![a-z0-9])([a-z]{2,10})[-_ ](\d{2,7})(?!\d)',stem)
  return (m[1]+'-'+m[2]).upper() if m else ''
-from media_presentation import censorship,presentation,identity_presentation
+from media_presentation import censorship,presentation,identity_presentation,projection_presentation
 
 sys.path.insert(0,str(ROOT))
 from resource_leases import ResourceLeases,ResourceBusy,path_resource,video_resources
@@ -144,7 +144,7 @@ INVENTORY_QUERY=InventoryQuery(INVENTORY)
 from storage_file_details import StorageFileDetails
 STORAGE_FILES=StorageFileDetails(INVENTORY,INVENTORY_QUERY,LEASES)
 from library_query import LibraryQuery,LibraryQueryChanged
-BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,config)
+BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,config,project=projection_presentation)
 from movie_details import MovieDetails
 MOVIE_DETAILS=MovieDetails(BROWSE,REVIEW)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
@@ -1117,7 +1117,7 @@ class Handler(BaseHTTPRequestHandler):
        result={key:report[key] for key in ('id','digest','ready','backup')}
        result.update(problems=report['problems'][:50],problem_count=len(report['problems']),verified_count=len(report['files']),retained_count=len(report['retained_files']),retained_files=[{'path':item['path']} for item in report['retained_files'][:50]])
       else:
-       rollback=CORE.restore(a['name'],a.get('reconciliation'));REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config);MOVIE_DETAILS.__init__(BROWSE,REVIEW);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+       rollback=CORE.restore(a['name'],a.get('reconciliation'));REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config,project=projection_presentation);MOVIE_DETAILS.__init__(BROWSE,REVIEW);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
        with db() as c:
         if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:

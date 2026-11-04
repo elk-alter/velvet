@@ -182,3 +182,8 @@ class MovieDetailHTTPTests(unittest.TestCase):
         self.assertEqual(status,200,result)
         self.assertEqual(self.request(path+'&revision='+before['detail']['revision'])[0],409)
         self.assertEqual(self.request(path)[0],200)
+        with self.app.db() as c:c.execute('UPDATE videos SET title=? WHERE id=?',('Synthetic restored title',self.ident))
+        with patch.object(self.app.CORE,'present',side_effect=AssertionError('Restore lost the list projection callback')):
+            status,page=self.request('/api/library/query?collections=off')
+        self.assertEqual(status,200,page)
+        self.assertEqual(page['items'][0]['title'],'Synthetic restored title')

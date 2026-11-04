@@ -9,7 +9,7 @@ from archive_policy import archive_roots,is_archive_path
 
 
 def canonical(path,short_prefixes=None):
-    path=Path(path)
+    path=path if isinstance(path,Path) else Path(path)
     if os.name!='nt' or '~' not in str(path):return path
     if short_prefixes is None:return path.resolve()
     # Query-local cache: expand only the last short-name prefix once. The
