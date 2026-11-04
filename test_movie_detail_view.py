@@ -21,6 +21,8 @@ const movie=view.movie(data),files=movie._versions.flatMap(v=>v._parts);
 assert.equal(movie._versions.length,12);assert.equal(files.length,21);assert.equal(files.filter(p=>p.id===50).length,1);assert.equal(movie._edit_file_count,10000);
 view.show(data);
 for(const id of [50,51,60,1,105])assert.equal(view.parameters(id).version_offset,20);
+assert.equal(view.parameters(50,{preservePartPage:true}).part_offset,0);
+assert.equal(view.parameters(51,{preservePartPage:true}).part_offset,undefined);
 assert.equal(Object.keys(view.parameters(999)).length,0);
 '''.replace('SOURCE',json.dumps(str(source)))
         with tempfile.TemporaryDirectory() as root:

@@ -7,6 +7,23 @@ from pathlib import Path
 
 
 class DetailNavigationTests(unittest.TestCase):
+    def test_actor_history_restores_context_title_and_position(self):
+        source=Path(__file__).with_name('index.html')
+        script=r'''
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+const handler=fs.readFileSync(SOURCE,'utf8').split(/\r?\n/).find(line=>line.startsWith('function applyView('));assert.ok(handler);
+const nodes={pageTitle:{textContent:'All videos'},actor:{disabled:false},q:{value:''}};let rendered=0,loaded=0,position=0;
+const context={window:{serverBrowse:{restoreCollection(){}},scrollTo(x,y){position=typeof x==='object'?x.top:y}},$:id=>nodes[id]||(nodes[id]={value:''}),viewIds:['q'],activeTags:new Set(),currentActor:'',actorsView:false,
+ setMode(){context.currentActor='';nodes.pageTitle.textContent='All videos'},renderActorProfile(){rendered++},loadActors(){loaded++},render(){},showActors(){},requestAnimationFrame:fn=>fn()};
+vm.createContext(context);vm.runInContext(handler,context);
+context.applyView({mode:'all',actor:'Synthetic Actor',filters:{q:'saved query'},tags:[],page:3,pageSize:48,scroll:700});
+assert.equal(nodes.pageTitle.textContent,'参演影片');assert.equal(context.currentActor,'Synthetic Actor');assert.equal(nodes.actor.disabled,true);assert.equal(nodes.q.value,'saved query');assert.equal(context.page,3);assert.equal(position,700);assert.equal(rendered,1);assert.equal(loaded,1);
+'''.replace('SOURCE',json.dumps(str(source)))
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'actor-history.cjs';path.write_text(script,encoding='utf-8')
+            result=subprocess.run(['node',str(path)],capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_play_starts_loading_and_stale_metadata_does_not_seek_another_file(self):
         source=Path(__file__).with_name('index.html')
         script=r'''

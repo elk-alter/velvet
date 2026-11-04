@@ -224,3 +224,5 @@ html.privacyMode img,html.privacyMode video,html.privacyMode canvas{visibility:h
 .moviePinnedHint{font-size:10px;color:var(--muted);flex:1 1 100%}
 
 .exclusionDialog{width:min(560px,calc(100vw - 32px))}.exclusionDialog form{display:flex;flex-direction:column;max-height:calc(100vh - 64px)}.exclusionDialog .dialogBody{padding:20px;overflow:auto}.exclusionDialog .dialogBody p:first-child{margin-top:0}.exclusionPath{padding:12px;border:1px solid #8884;border-radius:10px;overflow-wrap:anywhere}.exclusionDialog .dialogChrome h2{font-size:18px}
+
+#player:fullscreen{width:100%;height:100%;max-height:none!important}

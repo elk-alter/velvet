@@ -23,7 +23,7 @@ imageDialog.addEventListener('keydown',event=>{if(event.key==='ArrowLeft'){event
 const previousOpenVideo=openVideo;
 openVideo=async function(id,exact=false){if(window.serverBrowse)return serverBrowse.openMovie(id,exact,showMovieDetail);return showMovieDetail(id,exact)};
 function showMovieDetail(id,exact=false){
- previousOpenVideo(id,exact);clearTimeout(artworkPollTimer);artworkPollRounds=0;const generation=++detailGeneration;editor.open=false;saveButton.hidden=true;playbackSection.hidden=true;artworkFilter='all';filmArtwork=[];
+ previousOpenVideo(id,exact);clearTimeout(artworkPollTimer);artworkPollRounds=0;const generation=++detailGeneration;editor.open=false;saveButton.hidden=true;saveButton.disabled=false;playbackSection.hidden=true;artworkFilter='all';filmArtwork=[];
  const v=selected;
  $('coverPreview').style.display='block';$('coverPreview').dataset.fallback='0';$('coverPreview').src='/thumb/'+v.id+'-poster.jpg';$('coverPreview').onerror=function(){if(this.dataset.fallback==='0'){this.dataset.fallback='1';this.src='/thumb/'+v.id+'-cover.jpg'}else this.style.display='none'};
  renderSelectedFilmSummary();
@@ -43,10 +43,17 @@ function renderFilmArtwork(){
  $('shots').innerHTML=filmArtwork.filter(item=>artworkFilter==='all'||item.kind===artworkFilter).map(item=>`<figure><button onclick="openArtwork(${filmArtwork.indexOf(item)})" aria-label="放大${esc(item.label)}"><img src="${esc(item.url)}" loading="lazy" alt="${esc(item.label)}" onerror="this.closest('figure').hidden=true"></button><figcaption>${esc(item.label)}</figcaption></figure>`).join('')||'<div class="galleryEmpty">暂无这类图片。刮削有图片的来源或安装 FFmpeg 后扫描，可补充剧照与本地截图。</div>';
 }
 const previousInternalPlay=internalPlay;
-internalPlay=function(){playbackSection.hidden=false;previousInternalPlay();playbackSection.scrollIntoView({behavior:'smooth',block:'start'})};
+function fitPlayerToDetail(){
+ if(!detail.open||playbackSection.hidden)return;
+ const body=getComputedStyle(detailBody),hint=getComputedStyle(playbackHint),number=value=>parseFloat(value)||0;
+ const available=detailBody.clientHeight-number(body.paddingTop)-number(body.paddingBottom)-playbackHint.offsetHeight-number(hint.marginTop)-number(hint.marginBottom)-24;
+ const maximum=Math.max(72,Math.floor(available))+'px';if($('player').style.maxHeight!==maximum)$('player').style.maxHeight=maximum;
+}
+internalPlay=function(){playbackSection.hidden=false;fitPlayerToDetail();previousInternalPlay();playbackSection.scrollIntoView({behavior:'smooth',block:'start'})};
+if(typeof ResizeObserver==='function')new ResizeObserver(fitPlayerToDetail).observe(detailBody);else window.addEventListener('resize',fitPlayerToDetail);
 async function retryFilmArtwork(){try{await api('/api/artwork-retry',{id:selected.id});toast('已加入剧照下载队列；不重新刮削文字资料');artworkPollRounds=0;loadFilmArtwork(selected.id,detailGeneration)}catch(e){toast(e.message)}}
 
 function renderSelectedFilmSummary(){const v=selected;$('filmSummary').innerHTML=`<div class="filmEyebrow">${esc(v.code||'本地收藏')} ${v.date?' · '+esc(v.date):''}</div><h2>${esc(v.title)}</h2><div class="filmFacts"><span>${esc(v.resolution_label||'画质待解析')}</span>${v.vr?'<span>VR</span>':''}${v.height>=2160?'<span class="premiumFact">✦ 精品</span>':''}<span>${esc(v.censorship_label||'类型未知')}</span><span>${duration(v.duration)}</span>${v.rating?'<span>★ '+v.rating+'</span>':''}</div><p class="filmStudio">${esc(v.studio||'厂商资料待补全')}</p><p class="filmPlot">${esc(v.plot||'暂无简介。可以在刮削中心补全资料，或展开下方编辑区手动整理。')}</p>`;}
-const previousSaveVideo=saveVideo;saveVideo=async function(){await previousSaveVideo();renderSelectedFilmSummary()};
+
 
 const physicalFileButton=document.createElement('button');physicalFileButton.id='filmPhysicalFiles';physicalFileButton.textContent='物理文件与副本';physicalFileButton.onclick=()=>DiskFileView.fromVideo(selected.id);playbackActions.append(physicalFileButton);

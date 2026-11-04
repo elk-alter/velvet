@@ -20,10 +20,10 @@ window.MovieDetailView=(()=>{
   detail.querySelector('.dialogTools').hidden=d.versions.total<2&&d.parts.total<2;
  }
  function show(data){cancelPending();current=data;render()}
- function parameters(id){
+ function parameters(id,{preservePartPage=false}={}){
   if(!current)return {};const d=current;id=Number(id);
   const known=d.selected.id===id||d.next?.id===id||d.default_version?.resume_id===id||d.active_version.resume_id===id||d.parts.items.some(p=>p.id===id)||d.versions.items.some(v=>v.resume_id===id);
-  return known?{version_offset:d.versions.offset,version_limit:d.versions.limit,part_limit:d.parts.limit}:{};
+  return known?{version_offset:d.versions.offset,version_limit:d.versions.limit,part_limit:d.parts.limit,...(preservePartPage&&d.selected.id===id?{part_offset:d.parts.offset}:{})}:{};
  }
  async function chooseVersion(select){if(!select.value)return;const success=await openVideo(Number(select.value),true);if(success===false)render()}
  async function prefer(){
