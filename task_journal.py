@@ -4,7 +4,7 @@ import time
 import uuid
 
 STATES = {'queued', 'waiting', 'running', 'done', 'partial', 'failed', 'cancelled', 'interrupted'}
-KINDS = {'scan', 'scrape', 'sync', 'images', 'review', 'duplicates', 'inventory', 'plan'}
+KINDS = {'scan', 'scrape', 'sync', 'images', 'review', 'duplicates', 'inventory', 'plan', 'organize'}
 
 
 class TaskJournal:

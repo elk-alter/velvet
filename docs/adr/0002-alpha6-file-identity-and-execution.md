@@ -21,3 +21,9 @@ media_locations当前是独立数据层原型，尚未挂HTTP或启动迁移。�
 本次开发仅在TemporaryDirectory合成媒体中写入/改名/断盘模拟。生产原目录仍只读；产品的写能力只限用户明确批准的计划及其拥有的暂存/归档位置。无需用户批准每次合成测试，但不能将开发目标当成真实硬盘的执行授权。
 
 验证需要设备更换、源变化、内容不一致、绑定幂等、元数据保护、故障状态边界、恢复/撤销及真实NTFS/exFAT证据。当前仅完成数据层测试，不代替执行器、浏览器、性能或设备验收。
+
+## 批准及日志实现补充
+
+organization_drafts保存不可变草稿及内容摘要；organization_jobs以approval_digest唯一去重；organization_steps及events保存每个状态边界；organization_leases以设备资源唯一约束互斥，事务失败回滚部分获取。copying→verified→committing→committed→binding→done分开记录，不能以文件已复制代替已绑定。
+
+recover仅在持有整个数据目录DataGuard的启动阶段调用，不允许活跃执行器运行时清除租约。当前仅组织模块消费租约；扫描/媒体检查/恢复尚未接入，后续集成门槛仍保留。原生文件操作、资源伴随文件、移动批准与执行暂未实现。
