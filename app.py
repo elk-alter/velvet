@@ -934,9 +934,9 @@ class Handler(BaseHTTPRequestHandler):
     job=ORGANIZATION.control(a.get('id'),a.get('action'));ORGANIZATION.start()
     return self.send({'ok':True,'state':job['state']})
    elif path=='/api/organization/undo-preview':
-    return self.send({'ok':True,'id':ORGANIZATION.move.prepare_undo(a.get('id'))['id']})
+    return self.send({'ok':True,'id':ORGANIZATION.prepare_inverse(a.get('id'))['id']})
    elif path=='/api/organization/undo-approve':
-    if a.get('confirmed') is not True:raise ValueError('请核对并确认反向移动计划')
+    if a.get('confirmed') is not True:raise ValueError('请核对并确认本次撤销计划')
     job=ORGANIZATION.approve_inverse(a.get('id'),a.get('digest'));ORGANIZATION.start()
     return self.send({'ok':True,'id':job})
    elif path=='/api/organization/cleanup-preview':return self.send(ORGANIZATION.cleanup.preview(a.get('id')))

@@ -58,6 +58,7 @@ class OrganizationJobs:
             c.execute('CREATE TABLE IF NOT EXISTS organization_control(job_id TEXT PRIMARY KEY,cancel_requested INTEGER DEFAULT 0)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_leases(resource TEXT PRIMARY KEY,job_id TEXT)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_maintenance(job_id TEXT PRIMARY KEY)')
+            c.execute('CREATE TABLE IF NOT EXISTS organization_superseded(job_id TEXT PRIMARY KEY,replacement_draft TEXT,original_job TEXT)')
             if 'pause_requested' not in {r[1] for r in c.execute('PRAGMA table_info(organization_control)')}:
                 c.execute('ALTER TABLE organization_control ADD COLUMN pause_requested INTEGER DEFAULT 0')
 
@@ -101,6 +102,7 @@ class OrganizationJobs:
         if existing:return existing['id']
         payload=json.loads(draft['payload'])
         if digest(payload)!=expected_digest:raise ValueError('Stored approval content changed')
+        if any(entry['operation'] not in ('copy','move') for entry in payload['entries']):raise ValueError('此计划需要使用对应撤销批准入口')
         sources={destination_key(e['source']) for e in payload['entries']}
         for entry in payload['entries']:
             source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
@@ -130,6 +132,7 @@ class OrganizationJobs:
         resources=sorted({e[key] for e in job['payload']['entries'] for key in ('source_device','target_device')})
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
+            if c.execute('SELECT 1 FROM organization_superseded WHERE job_id=?',(job_id,)).fetchone():raise ValueError('撤销计划已重新审阅，请使用新任务')
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? AND inverse_job_id IS NOT NULL',(job_id,)).fetchone():raise ValueError('Rollback approved; original execution cannot resume')
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
             state=c.execute('SELECT state FROM organization_jobs WHERE id=?',(job_id,)).fetchone()[0]
@@ -139,7 +142,7 @@ class OrganizationJobs:
                 allowed={'reconcile:'+job_id}
                 if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone():
                     allowed.update('reconcile:'+row[0] for row in c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)))
-                if any(row['kind']!='organize-reconcile' for row in claims) or not any(row['owner'] in allowed for row in claims):raise ResourceBusy()
+                if any(row['kind']!='organize-reconcile' or row['owner'] not in allowed for row in claims):raise ResourceBusy()
             c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',('organize:'+job_id,'organize','write',time.time()))
             for resource in resources:
                 owner=c.execute('SELECT job_id FROM organization_leases WHERE resource=?',(resource,)).fetchone()
@@ -227,6 +230,7 @@ class OrganizationJobs:
     def resume(self,job_id):
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
+            if c.execute('SELECT 1 FROM organization_superseded WHERE job_id=?',(job_id,)).fetchone():raise ValueError('撤销计划已重新审阅，请使用新任务')
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? AND inverse_job_id IS NOT NULL',(job_id,)).fetchone():raise ValueError('Rollback approved; original execution cannot resume')
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
             changed=c.execute("UPDATE organization_jobs SET state='queued',updated=? WHERE id=? AND state IN ('cancelled','interrupted','partial','failed','waiting')",(time.time(),job_id)).rowcount

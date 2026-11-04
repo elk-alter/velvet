@@ -20,3 +20,5 @@
 - [0001：alpha.5可靠性与只读计划](0001-alpha5-reliability-and-readonly-plans.md)
 
 - [0003：移除与恢复后不复用数字视频ID](0003-monotonic-video-ids.md)
+
+- [0004：复制绑定撤销并保留文件](0004-copy-binding-undo.md)

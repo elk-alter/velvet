@@ -11,6 +11,7 @@ from organization_jobs import OrganizationJobs,identify,no_links
 from organization_executor import CopyExecutor
 from organization_moves import MoveExecutor
 from organization_cleanup import CopyCleanup
+from organization_copy_undo import CopyUndo
 from resource_leases import ResourceBusy
 from restore_safety import require_reconciled_files
 
@@ -24,6 +25,7 @@ class OrganizationService:
         self.resources=CompanionBindings(db,device_identity)
         self.move=MoveExecutor(self.jobs,self.bind_moves)
         self.cleanup=CopyCleanup(self.jobs)
+        self.copy_undo=CopyUndo(self.jobs,self.locations)
         with db() as c:c.execute('CREATE TABLE IF NOT EXISTS organization_draft_origins(draft_id TEXT PRIMARY KEY,preview_id TEXT)')
         self.wake=threading.Event();self.stopping=threading.Event()
         self.dispatch=threading.Lock();self.thread=None
@@ -92,7 +94,13 @@ class OrganizationService:
         return self.locations.bind_moves(media,job_id,apply)|resource_bindings
 
     def approve_inverse(self,job_id,expected_digest):
-        inverse=self.move.approve_undo(job_id,expected_digest);self.wake.set();return inverse
+        job=self.jobs.get(job_id)
+        inverse=(self.copy_undo.approve if job['payload']['entries'][0]['operation']=='copy' else self.move.approve_undo)(job_id,expected_digest)
+        self.wake.set();return inverse
+
+    def prepare_inverse(self,job_id):
+        job=self.jobs.get(job_id)
+        return (self.copy_undo.prepare if job['payload']['entries'][0]['operation']=='copy' else self.move.prepare_undo)(job_id)
 
     def approve(self,draft_id,expected_digest):
         with self.db() as c:existing=c.execute('SELECT j.id FROM organization_jobs j JOIN organization_drafts d ON d.digest=j.approval_digest WHERE d.id=? AND d.digest=?',(draft_id,expected_digest)).fetchone()
@@ -134,6 +142,7 @@ class OrganizationService:
                 return False
             if operations=={'copy'}:return self.copy.run(job_id,draining)
             if operations=={'move'}:return self.move.run(job_id,draining)
+            if operations=={'unbind_copy'}:return self.copy_undo.run(job_id,draining)
             raise ValueError('Unsupported approved operation')
         except ResourceBusy:
             self.jobs.finish(job_id,'waiting')
@@ -207,6 +216,8 @@ class OrganizationService:
         job=self.jobs.get(job_id);offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
         entries=[dict(entry,step=step) for entry,step in zip(job['payload']['entries'],job['steps'])]
         with self.db() as c:
-            inverse=c.execute('SELECT i.inverse_job_id,j.state FROM organization_inverses i LEFT JOIN organization_jobs j ON j.id=i.inverse_job_id WHERE i.original_job_id=?',(job_id,)).fetchone()
+            inverse=c.execute('SELECT i.inverse_job_id,j.state,COALESCE(control.pause_requested,0) AS paused FROM organization_inverses i LEFT JOIN organization_jobs j ON j.id=i.inverse_job_id LEFT JOIN organization_control control ON control.job_id=j.id WHERE i.original_job_id=?',(job_id,)).fetchone()
             inverse_of=c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)).fetchone()
-        return {'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}
+            superseded=c.execute('SELECT * FROM organization_superseded WHERE job_id=?',(job_id,)).fetchone()
+            if superseded:inverse_of=(superseded['original_job'],)
+        return {'superseded':dict(superseded) if superseded else None,'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}

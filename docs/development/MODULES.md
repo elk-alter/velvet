@@ -57,3 +57,5 @@
 - server_browse.js：分页请求/取消、固定选择、合集URL/返回、按作品资料缓存、范围刮削及有限筛选/关系建议；index/browse的交互处理器显式调用，替代主页面全量bootstrap。
 
 - video_ids：数字视频ID的原子旧表迁移、缓存/本地历史引用水位及备份恢复预迁移；只读应用缓存，不改原媒体。见[ADR0003](../adr/0003-monotonic-video-ids.md)。library_query的分页前端已由server_browse接入，前文“旧前端尚未切换”仅描述第十批历史状态。
+
+- organization_copy_undo：复制绑定撤销的固定审阅/专用批准/原子元数据事务，与既有队列、控制、租约和反向任务关系共用；不写物理媒体。

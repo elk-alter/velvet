@@ -27,7 +27,7 @@ limit上限100，offset为非负；未提供时预览/草稿/详情50，任务�
 |POST /api/organization/prepare|id（盘点预览）、digest、selected、operation|完整复检并建立不可变执行草稿；operation为copy或move|
 |POST /api/organization/approve|id（草稿）、digest、confirmed:true|幂等批准并唤醒队列，返回任务id|
 |POST /api/organization/control|id（任务）、action|pause、cancel或resume，控制状态持久化|
-|POST /api/organization/undo-preview|id（同盘移动任务）|生成只读反向草稿；不执行撤销|
+|POST /api/organization/undo-preview|id（已停止的移动/复制任务）|移动生成反向文件草稿；复制生成保留文件的绑定撤销草稿；均不执行|
 |POST /api/organization/undo-approve|id（原任务）、digest、confirmed:true|批准原任务对应的反向草稿并唤醒队列|
 |POST /api/organization/cleanup-preview|id（已停止复制任务）|核对残片并返回固定清理摘要|
 |POST /api/organization/cleanup|id、digest、confirmed:true|持有任务/设备/全局互斥后，仅清理已证明归属的残片|
@@ -35,7 +35,7 @@ limit上限100，offset为非负；未提供时预览/草稿/详情50，任务�
 
 selected可以是预览中的index数组、all或eligible；后两者由服务端按这份固定预览展开。重复index、越界、空范围或摘要变化拒绝。eligible仅排除已记录冲突，仍须重新校验实际设备和源文件。
 
-目标修改继续使用POST /api/storage/revise，生成新的盘点预览，再prepare和approve。不存在修改已批准清单的接口。反向移动不是永久删除，也不能用作复制绑定撤销。
+目标修改继续使用POST /api/storage/revise，生成新的盘点预览，再prepare和approve。不存在修改已批准清单的接口。反向移动不是永久删除。复制撤销使用专用unbind_copy草稿，复用undo-preview/undo-approve；普通approve不能批准这种草稿。执行仅解除本任务拥有的绑定，物理文件全部保留。默认目标须有现场验证通过且不在解除范围的替代位置；变化后须从原任务重新预览。见[ADR0004](../adr/0004-copy-binding-undo.md)。
 
 ## 状态与现场保护
 
