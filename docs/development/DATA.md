@@ -115,3 +115,6 @@ organization_drafts/jobs.payload新增可选preflight（version=1、targets的de
 restore_reconciliation检查两端organization_jobs/steps/inverses的清单摘要与完整步骤，以卷/文件身份重放位置链并完整校验应用改动的现存文件。无业务表迁移。私有restore-plans/<id>.json存固定计划，restore-audits/<uuid>.json存恢复前的双方日志/文件证明/回滚位置；均可能含私人路径，不进Git。实际恢复重新审计，绑定归档SHA、配置和权威DB签名；运行租约/已知派生缓存不入签名，不能用HTTP布尔值放行。
 
 兼容终止状态的keep/unbind_copy可作为纯资料恢复；物理移动须匹配备份所需位置，通常先确认反向。副本留盘，不能为回滚资料删除副本。遗留暂存/未完日志/文件不可验证仍拒绝。主库先完整备份旧DB，完整恢复保留原目录并携带回执；重复恢复旧快照也不抹去本机回执。数字ID水位规则保持。旧文中“所有已执行步骤均拒绝”为此前门禁，现由本节及ADR0009替代，不表示全部升级/灾难恢复已验收。
+
+
+第二十三批性能调整不新增业务表/字段，不改变movie/version/part哈希、分段命名或人工优先规则。browse_version_rows最终字段/值保持；中间窗口采用窄行，现有派生行可继续使用，无需通过全库改写来升级。LibraryCore恢复重建保留已注入的轻量身份回调，旧三参数构造仍兼容。

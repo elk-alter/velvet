@@ -5,8 +5,9 @@ from restore_safety import require_reconciled_files
 from video_ids import ensure_video_ids,high_watermark
 from pathlib import Path
 class LibraryCore:
- def __init__(self,db,data,presentation):
+ def __init__(self,db,data,presentation,identity_traits=None):
   self.db,self.data,self.present=db,data,presentation
+  self.identity_traits=identity_traits
   with db() as c:
    c.execute('CREATE TABLE IF NOT EXISTS media_links(video_id INTEGER PRIMARY KEY,movie_key TEXT,version_key TEXT,part_no INTEGER,manual INTEGER DEFAULT 0)')
    c.execute('CREATE TRIGGER IF NOT EXISTS media_link_forget AFTER DELETE ON videos BEGIN DELETE FROM media_links WHERE video_id=OLD.id; END')
@@ -27,7 +28,7 @@ class LibraryCore:
    for action in ('INSERT','DELETE'):
     c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_link_'+action+' AFTER '+action+' ON media_links BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
  def infer(self,row):
-  p=Path(row['path']);r=self.present(row);code=row.get('code','').strip().upper()
+  p=Path(row['path']);r=self.identity_traits(row,p) if self.identity_traits else self.present(row);code=row.get('code','').strip().upper()
   stem=re.sub(r'(?i)(?<![a-z0-9])(?:part|pt|cd|disc|disk)[ ._-]*\d{1,2}(?![a-z0-9])|第\s*\d{1,2}\s*(?:部分|段|集)','',p.stem)
   movie='code:'+code if code else 'local:'+hashlib.sha256((str(p.parent)+stem).casefold().encode()).hexdigest()[:20]
   version='v:'+hashlib.sha256((movie+'|'+str(p.parent).casefold()+'|'+stem.casefold()+'|'+str(row.get('height',0))+'|'+str(row.get('codec',''))+'|'+r['censorship']+'|'+str(r['vr'])).encode()).hexdigest()[:20]
@@ -209,5 +210,5 @@ class LibraryCore:
    for filename in ('settings.json','tag_rules.json'):
     if filename in z.namelist():(self.data/filename).write_bytes(z.read(filename))
     else:(self.data/filename).unlink(missing_ok=True)
-  self.__init__(self.db,self.data,self.present)
+  self.__init__(self.db,self.data,self.present,identity_traits=self.identity_traits)
   return rollback

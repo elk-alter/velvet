@@ -56,3 +56,6 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 `python scripts/rehearse_upgrade.py`当前默认从alpha.5发布提交44f7373取源码，重复迁移后复制/移动/反向，恢复前完整对账、保留副本与回执，再启动旧程序核对18类资料、4张内置库表、两份配置及6个图片/OCR证据缓存。核对每一步人工决定，受控模拟执行队列且禁止外部请求，详见[升级验收](../ALPHA6-UPGRADE-VALIDATION.md)。可用--baseline指定兼容alpha.5模式的历史，不承诺任意旧版本；不是实际OCR识别或灾难恢复矩阵。源码包没有Git历史，演练从checkout运行，不能冒充包内测试。默认提交依据本地Git历史，不假设存在版本标签。
 
 `python -m unittest test_upgrade_preservation -q`不依赖Git，覆盖已改变的人工资料/图像/内置缓存完整恢复与重启队列规则，随默认全量测试执行。scripts/upgrade_fixture.py仅用于合成演练，不导入生产数据。
+
+
+`python -m unittest test_presentation_identity test_features test_library_query_core test_library_query test_server_browse test_location_core test_upgrade_preservation -q`核对身份/展示一致性、人工字段锁与查询/位置/恢复。历史键与聚合比对、同机HTTP计时的实际证据见ALPHA6-PERFORMANCE；没有浏览器绘制时不宣称首屏验收。

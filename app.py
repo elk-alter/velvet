@@ -114,41 +114,7 @@ def run(args,timeout=90):
 def identify(stem):
  m=re.search(r'(?i)(?<![a-z0-9])([a-z]{2,10})[-_ ](\d{2,7})(?!\d)',stem)
  return (m[1]+'-'+m[2]).upper() if m else ''
-def censorship(row,metadata=None):
- override=row.get('censor_override','auto')
- if override in ('censored','uncensored','unknown'):return override,'手动指定'
- p=Path(row['path']);text=p.stem+' '+p.parent.name
- uncensored=bool(re.search(r'无码|無碼|无修正|無修正|无码破解|無碼破解|(?i:\buncensored\b)',text))
- censored=bool(re.search(r'有码|有碼|(?i:\bcensored\b)',text))
- if uncensored and censored:return 'unknown','文件名或目录标记冲突，请手动确认'
- if uncensored:return 'uncensored','文件名/目录明确标记'
- if censored:return 'censored','文件名/目录明确标记'
- if metadata is None:
-  try:metadata=json.loads(row.get('amane_snapshot') or '{}')
-  except ValueError:metadata={}
- kind=metadata.get('content_type')
- if kind in ('censored','uncensored'):return kind,'Amane 内容类型（未验证实际画面）'
- return 'unknown','缺少可靠资料，请手动确认'
-
-def presentation(row):
- row=dict(row);p=Path(row['path'])
- if row.get('source') in ('','filename') and not row.get('manual') and not row.get('amane_id') and 'title' not in json.loads(row.get('locked_fields') or '[]') and generic_name(row.get('title')):row['title']=fallback_title(p)
- pattern=r'(?i)(?<![a-z0-9])(?:part|pt|cd|disc|disk)[ ._-]*(\d{1,2})(?![a-z0-9])|第\s*(\d{1,2})\s*(?:部分|段|集)'
- match=re.search(pattern,p.stem)
- row['part_index']=int(match[1] or match[2]) if match else 0
- base=re.sub(pattern,' ',p.stem);base=re.sub(r'[ ._\-]+',' ',base).strip().casefold()
- row['part_key']=str(p.parent).casefold()+'|'+base if match else ''
- try:metadata=json.loads(row.get('amane_snapshot') or '{}')
- except ValueError:metadata={}
- named=bool(re.search(r'(?i)(?<![a-z])vr(?![a-z])|虚拟现实|虛擬實境',p.stem+' '+p.parent.name))
- row['vr']=bool(metadata.get('vr')) or named
- row['vr_source']='Amane' if metadata.get('vr') else '文件名/目录' if named else ''
- row['censorship'],row['censorship_source']=censorship(row,metadata)
- row['censorship_label']={'censored':'有码','uncensored':'无码','unknown':'未知'}[row['censorship']]
- h=int(row.get('height') or 0)
- row.pop('amane_snapshot',None)
- row['resolution_label']='8K' if h>=4320 else '4K' if h>=2160 else '1440p' if h>=1440 else '1080p' if h>=1080 else '720p' if h>=720 else str(h)+'p' if h else '画质待解析'
- return row
+from media_presentation import censorship,presentation,identity_presentation
 
 sys.path.insert(0,str(ROOT))
 from resource_leases import ResourceLeases,ResourceBusy,path_resource,video_resources
@@ -156,7 +122,7 @@ LEASES=ResourceLeases(db)
 ARTWORK.leases=LEASES
 if __name__=='__main__':LEASES.recover()
 from library_core import LibraryCore
-CORE=LibraryCore(db,DATA,presentation)
+CORE=LibraryCore(db,DATA,presentation,identity_traits=identity_presentation)
 CORE.excluded=LIBRARIES.exclusions
 CORE.filter_rows=LIBRARIES.filter_rows
 from file_review import FileReview

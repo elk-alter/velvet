@@ -139,7 +139,7 @@ class LibraryQuery:
         return criteria
 
     CTE="""WITH files AS (
- SELECT v.id,v.path,v.size,v.mtime,v.duration,v.favorite,v.tags,v.error,v.code,v.actors,v.studio,v.date,v.width,v.height,v.codec,v.missing,v.watched,v.rating,v.source,v.source_tags,v.amane_id,v.auto_tags,v.position,p.title AS display_title,p.vr,p.censorship,p.resolution_label,p.folder,p.tags AS tag_list,p.actors AS actor_list,p.review,l.movie_key,l.version_key,l.part_no,
+ SELECT v.id,v.size,v.mtime,v.duration,v.height,v.missing,v.watched,v.position,v.favorite,p.folder,p.review,l.movie_key,l.version_key,l.part_no,
  ROW_NUMBER() OVER(PARTITION BY l.movie_key,l.version_key ORDER BY v.missing,l.part_no,v.id) AS first_rank,
  ROW_NUMBER() OVER(PARTITION BY l.movie_key,l.version_key ORDER BY v.missing,CASE WHEN v.watched=0 AND v.position>0 THEN 0 WHEN v.watched=0 THEN 1 ELSE 2 END,l.part_no,v.id) AS resume_rank
  FROM videos v JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 JOIN media_links l ON l.video_id=v.id
@@ -158,11 +158,11 @@ class LibraryQuery:
  movie_health AS (SELECT s.movie_key,MAX(s.needs_update OR (s.open_parts AND s.min_height<COALESCE(a.best_height,0))) AS needs_update,MAX(s.min_height<COALESCE(a.best_height,0)) AS higher_local,MAX(s.auto_pending) AS auto_pending FROM stats s LEFT JOIN available_heights a ON a.movie_key=s.movie_key GROUP BY s.movie_key),
  collection_stats AS (SELECT collection_root,COUNT(*) AS collection_count FROM movie_stats GROUP BY collection_root),
  versions AS (
- SELECT f.*,s.part_count,s.total_size,s.total_duration,s.min_height,s.all_watched,s.max_position,s.all_missing,s.any_missing,s.preferred,health.needs_update,health.auto_pending,
+ SELECT v.id,v.path,v.size,v.mtime,v.duration,v.favorite,v.tags,v.error,v.code,v.actors,v.studio,v.date,v.width,v.height,v.codec,v.missing,v.watched,v.rating,v.source,v.source_tags,v.amane_id,v.auto_tags,v.position,p.title AS display_title,p.vr,p.censorship,p.resolution_label,p.folder,p.tags AS tag_list,p.actors AS actor_list,p.review,l.movie_key,l.version_key,l.part_no,f.first_rank,f.resume_rank,s.part_count,s.total_size,s.total_duration,s.min_height,s.all_watched,s.max_position,s.all_missing,s.any_missing,s.preferred,health.needs_update,health.auto_pending,
  m.version_count,m.movie_favorite,m.movie_mtime,m.collection_root,cs.collection_count,r.id AS resume_id,
  CASE WHEN s.all_missing=0 AND (preferred_link.version_key=f.version_key) THEN 0 WHEN s.all_missing=0 AND pref.version_key=f.version_key THEN 1 ELSE 2 END AS preference_rank,
  health.higher_local AS higher_local
- FROM files f JOIN stats s ON s.movie_key=f.movie_key AND s.version_key=f.version_key
+ FROM files f JOIN videos v ON v.id=f.id JOIN browse_projection p ON p.video_id=f.id JOIN media_links l ON l.video_id=f.id JOIN stats s ON s.movie_key=f.movie_key AND s.version_key=f.version_key
  JOIN movie_stats m ON m.movie_key=f.movie_key
  JOIN movie_health health ON health.movie_key=s.movie_key
  JOIN collection_stats cs ON cs.collection_root=m.collection_root

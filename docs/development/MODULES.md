@@ -79,3 +79,6 @@
 - library_core：主库恢复预览和最终门禁/回滚备份；app负责全局独占、后台静止及有限HTTP结果。full_backup复用审计，持DataGuard离线恢复并保留旧目录/私有回执。index/manager_routes显示问题和留盘副本、传计划令牌，不自己推断安全。详见ADR0009。
 
 - scripts/upgrade_fixture.py：alpha.5兼容合成资料、图片/OCR证据和队列样本，供Git历史升级演练及无Git的回归测试共用；不进入运行时，不处理生产数据，不修改已有源媒体。
+
+- media_presentation：从app抽出的只读展示与轻量identity_presentation，共用分段/VR/内容标记规则；app保留原名称导出。LibraryCore可注入identity_traits(row,path)，缺省沿用自定义presentation兼容旧调用者；恢复重建保留该回调。它不分配媒体UUID或改写人工关系。
+- library_query版本聚合的files中间集只带统计/排序必需列，代表版本再联结完整展示；持久读模型字段与查询/失效契约保持。
