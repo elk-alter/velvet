@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from media_locations import fingerprint
 from organization_jobs import no_links,digest
-from organization_executor import CopyCancelled,file_identity,publish_no_replace
+from organization_executor import CopyCancelled,CopyPaused,file_identity,publish_no_replace
 
 
 class MoveExecutor:
@@ -33,6 +33,7 @@ class MoveExecutor:
         self.jobs.claim(job_id);current=None
         def check():
             if cancel() or self.jobs.cancel_requested(job_id):raise CopyCancelled()
+            if self.jobs.pause_requested(job_id):raise CopyPaused()
         try:
             # Stage every source first, so cyclic destinations are vacant before publishing.
             for ordinal,entry in enumerate(job['payload']['entries']):
@@ -84,6 +85,7 @@ class MoveExecutor:
                 step=self.jobs.get(job_id)['steps'][ordinal]
                 if step['state']=='binding':self.jobs.transition(job_id,ordinal,'binding','done',dict(step['details'],binding_id=bindings[entry['video_id']]))
             self.jobs.finish(job_id,'done')
+        except CopyPaused:self.jobs.finish(job_id,'waiting')
         except CopyCancelled:self.jobs.finish(job_id,'cancelled')
         except Exception as error:
             states=[step['state'] for step in self.jobs.get(job_id)['steps']]

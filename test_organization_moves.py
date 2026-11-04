@@ -105,3 +105,16 @@ class MoveTests(unittest.TestCase):
         draft=self.executor.prepare_undo(job);undo=self.executor.approve_undo(job,draft['digest'])
         self.assertEqual(self.executor.run(undo)['state'],'done')
         self.assertEqual(self.source.read_bytes(),b'synthetic media');self.assertEqual(target.read_bytes(),b'external')
+
+    def test_pause_after_staging_keeps_recoverable_location_and_resumes(self):
+        target=self.root/'renamed.mp4';job=self.approve([(1,self.source,target)])
+        def pause(stage,*args):
+            if stage=='staged':self.jobs.request_pause(job)
+        result=MoveExecutor(self.jobs,self.repository.bind_moves,pause).run(job)
+        self.assertEqual(result['state'],'waiting')
+        self.assertFalse(self.source.exists());self.assertFalse(target.exists())
+        self.assertTrue(Path(result['steps'][0]['details']['temporary']).exists())
+        self.jobs.resume(job)
+        self.assertEqual(self.executor.run(job)['state'],'done')
+        self.assertEqual(self.jobs.progress(job)['bytes_processed'],0)
+        self.assertEqual(self.jobs.progress(job)['bytes_committed'],15)

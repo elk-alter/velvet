@@ -94,3 +94,32 @@ class ExecutorTests(unittest.TestCase):
         self.jobs.request_cancel(self.job)
         result=CopyExecutor(self.jobs,self.bind).run(self.job)
         self.assertEqual(result['state'],'cancelled');self.assertFalse(self.target_root.exists());self.assert_source()
+
+    def test_pause_is_persistent_distinct_from_cancel_and_resumes(self):
+        def pause(stage,*args):
+            if stage=='copying':self.jobs.request_pause(self.job)
+        result=CopyExecutor(self.jobs,self.bind,pause).run(self.job)
+        self.assertEqual(result['state'],'waiting');self.assertFalse(self.target.exists())
+        self.assertFalse(self.jobs.cancel_requested(self.job));self.assertTrue(self.jobs.pause_requested(self.job))
+        restarted=OrganizationJobs(self.db,lambda path:'volume')
+        self.assertTrue(restarted.pause_requested(self.job))
+        self.assertEqual(restarted.journal.list()[0]['summary']['reason'],'user_paused')
+        restarted.resume(self.job)
+        self.assertEqual(CopyExecutor(restarted,self.bind).run(self.job)['state'],'done')
+        self.assert_source()
+
+    def test_batch_progress_counts_committed_files_and_never_double_counts_retry(self):
+        second=self.scope/'two.mp4';second.write_bytes(b'more data')
+        with self.db() as c:c.execute('INSERT INTO videos VALUES(2,?,9,0,0,?)',(str(second),'[]'))
+        self.repository.migrate()
+        entries=[{'video_id':vid,'source':str(source),'destination':str(target),'operation':'copy'} for vid,source,target in [(1,self.source,self.target),(2,second,self.target_root/'two.mp4')]]
+        draft=self.jobs.prepare(entries,self.scope,self.target_root);job=self.jobs.approve(draft['id'],draft['digest'])
+        def crash(stage,*args):
+            if stage=='done':raise SystemExit('synthetic crash between files')
+        with self.assertRaises(SystemExit):CopyExecutor(self.jobs,self.bind,crash).run(job)
+        progress=self.jobs.progress(job)
+        self.assertEqual((progress['processed'],progress['bytes_processed'],progress['bytes_total']),(1,15,24))
+        self.jobs.recover()
+        self.assertEqual(CopyExecutor(self.jobs,self.bind).run(job)['state'],'done')
+        progress=self.jobs.progress(job)
+        self.assertEqual((progress['processed'],progress['bytes_processed'],progress['bytes_verified'],progress['bytes_committed']),(2,24,24,24))

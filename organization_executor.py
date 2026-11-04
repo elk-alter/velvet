@@ -11,6 +11,7 @@ from organization_jobs import digest, no_links
 
 
 class CopyCancelled(Exception):pass
+class CopyPaused(Exception):pass
 
 
 def publish_no_replace(temporary,target):
@@ -43,7 +44,7 @@ class CopyExecutor:
             changed=c.execute('UPDATE organization_steps SET details=?,updated=? WHERE job_id=? AND ordinal=? AND state=?',
                               (json.dumps(details),time.time(),job_id,ordinal,state)).rowcount
             if changed!=1:raise ValueError('Execution checkpoint changed')
-        self.jobs.journal.observe('organize',job_id,'running',{'phase':state,'bytes_processed':details.get('bytes',0),'reason':details.get('error','executor_checkpoint'),'cancellable':True})
+        self.jobs.observe_progress(job_id,phase=state,reason=details.get('error','executor_checkpoint'))
 
     def check_paths(self,entry):
         source=no_links(entry['source']);target=no_links(entry['destination'])
@@ -68,8 +69,8 @@ class CopyExecutor:
         reserve=max(100*1024*1024,int(entry['fingerprint']['size']*.05))
         if shutil.disk_usage(parent).free<entry['fingerprint']['size']+reserve:raise OSError('Insufficient target space')
         temporary=target.with_name('.velvet-'+job_id+'-'+uuid.uuid4().hex+'.partial')
-        previous=details.get('previous_temporaries',[])+([details['temporary']] if details.get('temporary') else [])
-        details={'temporary':str(temporary),'bytes':0,'previous_temporaries':previous}
+        previous=details.get('previous_temporaries',[])+([{'path':details['temporary'],'file_identity':details.get('file_identity'),'bytes':details.get('bytes'), 'sha256':details.get('partial_sha256')}] if details.get('temporary') else [])
+        details={'temporary':str(temporary),'bytes':0,'partial_sha256':hashlib.sha256().hexdigest(),'previous_temporaries':previous}
         self.jobs.transition(job_id,ordinal,'pending','copying',details)
         target.parent.mkdir(parents=True,exist_ok=True)
         self.check_paths(entry)
@@ -83,7 +84,7 @@ class CopyExecutor:
                 while True:
                     check();block=input_file.read(4*1024*1024)
                     if not block:break
-                    output.write(block);digest_copy.update(block);details['bytes']+=len(block)
+                    output.write(block);digest_copy.update(block);details['bytes']+=len(block);details['partial_sha256']=digest_copy.hexdigest()
                     self.save_details(job_id,ordinal,'copying',details)
                     self.checkpoint('copying',job_id,ordinal)
             output.flush();os.fsync(output.fileno())
@@ -147,18 +148,23 @@ class CopyExecutor:
         if digest(job['payload'])!=job['approval_digest']:raise ValueError('Approved manifest changed')
         self.jobs.claim(job_id)
         external_cancel=cancel
-        cancel=lambda:external_cancel() or self.jobs.cancel_requested(job_id)
-        cancelled=False
+        def cancel():
+            if external_cancel() or self.jobs.cancel_requested(job_id):return True
+            if self.jobs.pause_requested(job_id):raise CopyPaused()
+            return False
+        cancelled=paused=False
         for step in job['steps']:
             if step['state']=='done':continue
-            if cancel():cancelled=True;break
-            try:self.execute_step(job_id,step,job['payload']['entries'][step['ordinal']],cancel)
+            try:
+                if cancel():cancelled=True;break
+                self.execute_step(job_id,step,job['payload']['entries'][step['ordinal']],cancel)
+            except CopyPaused:paused=True;break
             except CopyCancelled:cancelled=True;break
             except Exception as error:
                 current=self.jobs.get(job_id)['steps'][step['ordinal']]
                 details=dict(current['details'],error=type(error).__name__)
                 self.save_details(job_id,step['ordinal'],current['state'],details)
         states=[step['state'] for step in self.jobs.get(job_id)['steps']]
-        outcome='done' if all(state=='done' for state in states) else 'cancelled' if cancelled else 'partial' if any(state in ('committed','binding','needs_binding','done') for state in states) else 'failed'
+        outcome='done' if all(state=='done' for state in states) else 'cancelled' if cancelled else 'waiting' if paused else 'partial' if any(state in ('committed','binding','needs_binding','done') for state in states) else 'failed'
         self.jobs.finish(job_id,outcome)
         return self.jobs.get(job_id)

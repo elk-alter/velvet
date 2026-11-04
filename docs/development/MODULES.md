@@ -41,6 +41,7 @@
 - media_locations：稳定文件身份与经过验证的位置绑定。
 - organization_jobs：不可变批准、执行步骤、互斥租约、持久取消与启动对账。
 - organization_executor：已批准copy计划的暂存、完整校验、不覆盖提交与绑定回调。
+- organization_cleanup：已停止copy任务的残片清理预览、日志及Windows句柄安全删除；不清理移动暂存或已提交目标。
 - organization_moves：已批准同盘move计划的全批暂存、循环改名、绑定及重新批准的反向任务；伴随资源和HTTP/UI尚未接入。
 
 当前证据与缺口见[alpha.6进度](../ALPHA6-PROGRESS.md)。接生产初始化时须同步Docker资源、关系稳定策略及跨执行器租约。

@@ -55,6 +55,9 @@ class OrganizationJobs:
             c.execute('CREATE TABLE IF NOT EXISTS organization_step_events(sequence INTEGER PRIMARY KEY,job_id TEXT,ordinal INTEGER,state TEXT,created REAL)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_control(job_id TEXT PRIMARY KEY,cancel_requested INTEGER DEFAULT 0)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_leases(resource TEXT PRIMARY KEY,job_id TEXT)')
+            c.execute('CREATE TABLE IF NOT EXISTS organization_maintenance(job_id TEXT PRIMARY KEY)')
+            if 'pause_requested' not in {r[1] for r in c.execute('PRAGMA table_info(organization_control)')}:
+                c.execute('ALTER TABLE organization_control ADD COLUMN pause_requested INTEGER DEFAULT 0')
 
     def prepare(self,entries,source_root,target_root,rules_version=1):
         if type(rules_version) is not int or rules_version<1:raise ValueError('Invalid rule version')
@@ -124,6 +127,7 @@ class OrganizationJobs:
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? AND inverse_job_id IS NOT NULL',(job_id,)).fetchone():raise ValueError('Rollback approved; original execution cannot resume')
+            if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
             state=c.execute('SELECT state FROM organization_jobs WHERE id=?',(job_id,)).fetchone()[0]
             if state=='running' or state in TERMINAL:raise ValueError('Job already claimed or finished')
             for resource in resources:
@@ -151,18 +155,49 @@ class OrganizationJobs:
             if state=='done' and any(value!='done' for value in rows):raise ValueError('Unfinished files cannot be reported as complete')
             c.execute('UPDATE organization_jobs SET state=?,updated=? WHERE id=?',(state,time.time(),job_id))
             c.execute('DELETE FROM organization_leases WHERE job_id=?',(job_id,))
-        self.journal.observe('organize',job_id,state,{'processed':rows.count('done'),'total':len(rows)})
+        self.observe_progress(job_id,state)
 
     def request_cancel(self,job_id):
         self.get(job_id)
-        with self.db() as c:c.execute('INSERT OR REPLACE INTO organization_control VALUES(?,1)',(job_id,))
+        with self.db() as c:c.execute('INSERT INTO organization_control(job_id,cancel_requested) VALUES(?,1) ON CONFLICT(job_id) DO UPDATE SET cancel_requested=1',(job_id,))
 
     def cancel_requested(self,job_id):
         with self.db() as c:row=c.execute('SELECT cancel_requested FROM organization_control WHERE job_id=?',(job_id,)).fetchone()
         return bool(row and row[0])
 
+    def request_pause(self,job_id):
+        job=self.get(job_id)
+        if job['state'] in TERMINAL:raise ValueError('Finished jobs cannot be paused')
+        with self.db() as c:c.execute('INSERT INTO organization_control(job_id,pause_requested) VALUES(?,1) ON CONFLICT(job_id) DO UPDATE SET pause_requested=1',(job_id,))
+
+    def pause_requested(self,job_id):
+        with self.db() as c:row=c.execute('SELECT pause_requested FROM organization_control WHERE job_id=?',(job_id,)).fetchone()
+        return bool(row and row[0])
+
+    def progress(self,job_id):
+        job=self.get(job_id);counts={};copied=verified=committed=0
+        for entry,step in zip(job['payload']['entries'],job['steps']):
+            state=step['state'];size=entry['fingerprint']['size'];counts[state]=counts.get(state,0)+1
+            full=state in ('verified','committing','committed','binding','needs_binding','done')
+            if entry['operation']=='copy':
+                copied+=size if full else min(size,max(0,step['details'].get('bytes',0))) if state=='copying' else 0
+            if full:verified+=size
+            if state in ('committed','binding','needs_binding','done'):committed+=size
+        return {'total':len(job['steps']),'processed':counts.get('done',0),'bytes_total':sum(e['fingerprint']['size'] for e in job['payload']['entries']),
+                'bytes_processed':copied,'bytes_verified':verified,'bytes_committed':committed,'phases':counts}
+
+    def observe_progress(self,job_id,state='running',phase=None,reason=None):
+        summary=self.progress(job_id);summary.pop('phases')
+        if phase:summary['phase']=phase
+        if reason:summary['reason']=reason
+        elif state=='waiting' and self.pause_requested(job_id):summary['reason']='user_paused'
+        summary['cancellable']=state in ('queued','running','waiting')
+        self.journal.observe('organize',job_id,state,summary)
+
     def resume(self,job_id):
         with self.db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
             changed=c.execute("UPDATE organization_jobs SET state='queued',updated=? WHERE id=? AND state IN ('cancelled','interrupted','partial','failed','waiting')",(time.time(),job_id)).rowcount
             if changed!=1:raise ValueError('Only stopped jobs can be resumed')
             c.execute('DELETE FROM organization_control WHERE job_id=?',(job_id,))
@@ -174,5 +209,6 @@ class OrganizationJobs:
             jobs=[r[0] for r in c.execute("SELECT id FROM organization_jobs WHERE state='running'")]
             c.execute("UPDATE organization_jobs SET state='interrupted' WHERE state='running'")
             c.execute('DELETE FROM organization_leases')
+            c.execute('DELETE FROM organization_maintenance')
         for job_id in jobs:self.journal.observe('organize',job_id,'interrupted',{'reason':'restart_reconciliation_required'})
         return jobs

@@ -21,7 +21,7 @@ class TaskJournal:
         if kind not in KINDS or state not in STATES:
             raise ValueError('Unknown task kind or state')
         # No filenames, paths, source exceptions, credentials or OCR text.
-        allowed = {'processed', 'bytes_processed', 'total', 'failed', 'skipped', 'phase', 'reason', 'cancellable'}
+        allowed = {'processed', 'bytes_processed', 'bytes_total', 'bytes_verified', 'bytes_committed', 'total', 'failed', 'skipped', 'phase', 'reason', 'cancellable'}
         summary = {k: v for k, v in (summary or {}).items() if k in allowed}
         stamp = json.dumps(summary, sort_keys=True)
         external = kind + ':' + str(key)
