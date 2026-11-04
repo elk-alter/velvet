@@ -135,6 +135,8 @@ class LibraryQuery:
         except (ValueError,TypeError):raise ValueError('标签筛选应为JSON数组')
         if not isinstance(tags,list) or len(tags)>50 or not all(isinstance(t,str) and 0<len(t)<=200 for t in tags):raise ValueError('标签筛选无效')
         criteria['tags']=sorted(set(tags))
+        # Keep persisted result sets from older matching semantics out of reuse.
+        criteria['_match_schema']=2
         if any(len(value)>500 for value in criteria.values() if isinstance(value,str)):raise ValueError('筛选内容过长')
         return criteria
 
@@ -179,22 +181,25 @@ class LibraryQuery:
  ), versions AS (SELECT * FROM browse_version_rows)"""
 
     def matching(self,criteria):
+        def member(condition):
+            return 'EXISTS(SELECT 1 FROM media_links lf JOIN videos vf ON vf.id=lf.video_id JOIN browse_projection pf ON pf.video_id=vf.id AND pf.visible=1 WHERE lf.movie_key=v.movie_key AND lf.version_key=v.version_key AND ('+condition+'))'
         where=['v.all_missing='+('1' if criteria['mode']=='missing' else '0')];args=[]
         for key,column in [('favorite','v.movie_favorite'),('unwatched','NOT v.all_watched'),('recent','(v.max_position>0 AND NOT v.all_watched)')]:
             if criteria['mode']==key:where.append(column)
         if criteria['q']:
-            where.append("(instr(fold(v.display_title||' '||v.code||' '||v.actors||' '||v.studio||' '||v.tags||' '||v.auto_tags),?)>0 OR EXISTS(SELECT 1 FROM files p WHERE p.movie_key=v.movie_key AND instr(fold(p.path),?)>0))");args.extend([fold(criteria['q'])]*2)
+            metadata="instr(fold(COALESCE(pf.title,'')||' '||COALESCE(vf.code,'')||' '||COALESCE(vf.actors,'')||' '||COALESCE(vf.studio,'')||' '||COALESCE(vf.tags,'')||' '||COALESCE(vf.auto_tags,'')),?)>0"
+            where.append('('+member(metadata)+" OR EXISTS(SELECT 1 FROM files p WHERE p.movie_key=v.movie_key AND instr(fold(p.path),?)>0))");args.extend([fold(criteria['q'])]*2)
         if criteria['length']!='all':where.append('v.total_duration>0 AND v.total_duration'+('<1200' if criteria['length']=='short' else '>=1200'))
         if criteria['censorship']:where.append('v.censorship=?');args.append(criteria['censorship'])
         where.append('v.min_height>=?');args.append(int(criteria['height']))
         if criteria['vr']:where.append('v.vr=?');args.append(criteria['vr']=='vr')
         if criteria['tags']:
             tests=[]
-            for tag in criteria['tags']:tests.append('EXISTS(SELECT 1 FROM json_each(v.tag_list) WHERE value=?)');args.append(tag)
+            for tag in criteria['tags']:tests.append(member('EXISTS(SELECT 1 FROM json_each(pf.tags) WHERE value=?)'));args.append(tag)
             where.append('(' + (' AND ' if criteria['tag_logic']=='all' else ' OR ').join(tests)+')')
-        if criteria['exclude_tag']:where.append('NOT EXISTS(SELECT 1 FROM json_each(v.tag_list) WHERE value=?)');args.append(criteria['exclude_tag'])
-        if criteria['actor']:where.append('EXISTS(SELECT 1 FROM json_each(v.actor_list) WHERE value=?)');args.append(criteria['actor'])
-        if criteria['studio']:where.append('v.studio=?');args.append(criteria['studio'])
+        if criteria['exclude_tag']:where.append('NOT '+member('EXISTS(SELECT 1 FROM json_each(pf.tags) WHERE value=?)'));args.append(criteria['exclude_tag'])
+        if criteria['actor']:where.append(member('EXISTS(SELECT 1 FROM json_each(pf.actors) WHERE value=?)'));args.append(criteria['actor'])
+        if criteria['studio']:where.append(member('vf.studio=?'));args.append(criteria['studio'])
         source=criteria['source']
         if source=='matched':where.append("v.source IN ('nfo','online','amane')")
         elif source=='pending':where.append("v.source NOT IN ('nfo','online','amane')")
@@ -345,6 +350,7 @@ class LibraryQuery:
         row=c.execute('SELECT created,revision,criteria FROM browse_queries WHERE id=?',(snapshot,)).fetchone();revision=c.execute('SELECT revision FROM browse_state WHERE id=1').fetchone()[0]
         if not row or time.time()-row['created']>1800 or row['revision']!=revision:raise LibraryQueryChanged('查询范围已变化，请重新查询')
         criteria=json.loads(row['criteria'])
+        if criteria.get('_match_schema')!=2:raise LibraryQueryChanged('筛选规则已更新，请重新查询')
         if '_covers' in criteria and criteria['_covers']!=hashlib.sha256(json.dumps(sorted(self.cover_ids())).encode()).hexdigest():raise LibraryQueryChanged('封面缓存已变化，请重新查询')
 
     def random(self,snapshot):

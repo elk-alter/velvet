@@ -6,6 +6,8 @@
 
 参数：q；mode=all/favorite/unwatched/recent/missing；length=all/short/long（1200秒分界）；censorship空/censored/uncensored/unknown/mixed；vr空/vr/flat；height=0/720/1080/1440/2160/4320；tags为最多50项JSON数组；tag_logic=all/any；exclude_tag；actor；studio；source空/matched/pending/error/partial；quality；sort=new/title/duration/rating/size；collections=on/off；collection为集合ID；offset≥0；limit=1–96（默认48）；可选snapshot。
 
+演员、厂商、标签与q的资料搜索检查候选版本的全部可见分段，不只第一段；精确演员/标签不作子串匹配。多标签all可以在同一版本的不同分段满足，不能把不同版本的标签拼为命中；exclude_tag排除含该标签的版本，其它版本仍可命中。排除目录成员不贡献这些条件。q的路径搜索沿用整作品可见路径范围，画质/时长等仍按候选版本计算。criteria中的_match_schema为服务端内部匹配契约标识，客户端不能覆盖；旧语义快照返回409，重新查询不复用旧结果，不改业务字段或人工资料。
+
 quality支持no_cover以及needs_update（或update）、watermark/damaged/replace、suspected_watermark/suspected_black/suspected_freeze、decode_error、below_target/higher_local、auto_pending/auto_error/auto_unchecked、unchecked/active/inspection、pending/metadata_error/incomplete、accepted/ignored。实际封面集合变化会使缺封面查询及选择失效。质量命中与徽标看整作品各版本的文件，不因低质量替代版本而切换默认播放版本。
 
 响应：items、total（归组后卡片数）、movies（命中作品数）、bytes、offset/limit、snapshot、criteria、revision。电影卡片kind=movie及稳定key、默认或命中版本的播放id/作品键/版本键、展示/技术/评分收藏进度、part_count/version_count和质量摘要；不含简介、完整版本/分段、锁或来源原JSON。合集卡片kind=collection及稳定id/key、title、hit_count/total_count、封面候选ID、size。集合筛选可保留其它条件查看命中，也可清条件看全集；独立页面已接，完整返回/并发边界仍待验收。

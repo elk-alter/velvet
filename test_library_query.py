@@ -50,6 +50,32 @@ class LibraryQueryTests(unittest.TestCase):
         self.assertEqual(query.query({'collections':'off'})['items'][0]['id'],b)
         self.assertTrue(self.app.CORE.hierarchy()[0]['_versions'])
 
+    def test_metadata_on_nonrepresentative_part_is_searchable_without_cross_version_leak(self):
+        a=self.video('A/DEMO-1 part1.mp4','DEMO-1',height=2160,title='First',tags='Common')
+        b=self.video('A/DEMO-1 part2.mp4','DEMO-1',height=2160,title='Unique needle',actors='Synthetic Actor',tags='Rare',studio='Synthetic Studio')
+        lower=self.video('B/DEMO-1.mp4','DEMO-1',height=720,tags='Archive')
+        query=self.query_service()
+        for criteria in ({'actor':'Synthetic Actor'},{'studio':'Synthetic Studio'},{'q':'Unique needle'},{'tags':'["Rare"]'},{'tags':'["Rare","Common"]'}):
+            result=query.query({'collections':'off',**criteria})
+            self.assertEqual(result['total'],1,criteria)
+            self.assertEqual(result['items'][0]['id'],a,criteria)
+        self.assertEqual(query.query({'actor':'Synthetic'})['total'],0)
+        self.assertEqual(query.query({'tags':'["Rare","Archive"]'})['total'],0)
+        self.assertEqual(query.query({'exclude_tag':'Rare'})['items'][0]['id'],lower)
+        with self.app.db() as c:
+            c.execute('INSERT INTO excluded_directories VALUES(?)',(str(self.root/'A'),))
+        for criteria in ({'actor':'Synthetic Actor'},{'studio':'Synthetic Studio'},{'q':'Unique needle'},{'tags':'["Rare"]'}):
+            self.assertEqual(query.query(criteria)['total'],0,criteria)
+
+    def test_old_matching_snapshot_is_not_reused_after_query_semantics_change(self):
+        self.video('one.mp4','DEMO-1');query=self.query_service();first=query.query({})
+        old=dict(first['criteria']);old.pop('_match_schema',None)
+        with self.app.db() as c:c.execute('UPDATE browse_queries SET criteria=? WHERE id=?',(json.dumps(old),first['snapshot']))
+        with self.assertRaises(LibraryQueryChanged):query.query({'snapshot':first['snapshot']})
+        with self.assertRaises(LibraryQueryChanged):query.selection(first['snapshot'],[first['items'][0]['key']])
+        with self.assertRaises(LibraryQueryChanged):query.random(first['snapshot'])
+        self.assertNotEqual(query.query({})['snapshot'],first['snapshot'])
+
     def test_collection_counts_are_full_membership_and_filtered_hits(self):
         a=self.video('Example Collection/episode1.mp4',title='Alpha',height=1080)
         self.video('Example Collection/episode2.mp4',title='Beta',height=1080)
