@@ -150,7 +150,7 @@ def presentation(row):
  return row
 
 sys.path.insert(0,str(ROOT))
-from resource_leases import ResourceLeases,ResourceBusy
+from resource_leases import ResourceLeases,ResourceBusy,path_resource,video_resources
 LEASES=ResourceLeases(db)
 ARTWORK.leases=LEASES
 if __name__=='__main__':LEASES.recover()
@@ -246,7 +246,9 @@ def retag_all():
  return len(rows)
 
 def scan(force=False,folder_path=None,automatic=False):
- lease=LEASES.try_acquire('scan')
+ if RESTORING.is_set() or SHUTTING_DOWN.is_set():return
+ policies=[policy for policy in LIBRARIES.policies() if (not folder_path or policy['path']==folder_path) and (not automatic or policy['automation']!='off')]
+ lease=LEASES.try_acquire('scan',resources=[path_resource(policy['path'],tree=True) for policy in policies] or ['metadata'])
  if lease is None:return
  try:
   if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not LOCK.acquire(False):return
@@ -255,7 +257,6 @@ def scan(force=False,folder_path=None,automatic=False):
   SCAN_CANCEL.clear()
   STATUS.update(running=True,message='扫描目录…',processed=0,errors=0)
   try:
-   policies=LIBRARIES.policies()
    for policy in policies:
     folder=policy['path']
     if folder_path and folder!=folder_path:continue
@@ -664,9 +665,10 @@ def amane_watcher():
   try:
    with LEASES.hold('scrape-poll'):
     poll_scrapes();JOURNAL.reconcile_sources()
-   if not REVIEW.cancel.is_set():REVIEW.resume()
-   for engine in BUILTIN_ENGINES.values():engine.start()
   except Exception as e:AMANE_STATUS.update(connected=False,message=str(e)[:200])
+  # A blocked metadata poll must not stall independent file-review/cache queues.
+  if not REVIEW.cancel.is_set():REVIEW.resume()
+  for engine in BUILTIN_ENGINES.values():engine.start()
   if time.time()-last>=60 and not AMANE_LOCK.locked():
    threading.Thread(target=background_sync,daemon=True).start();last=time.time()
   if time.time()-auto_last>=60:
@@ -674,7 +676,7 @@ def amane_watcher():
    except Exception as e:AUTO_STATUS['message']='自动刮削等待连接：'+str(e)[:150]
    try:
     if not LOCK.locked():
-     with LEASES.hold('automatic-review'):REVIEW.auto_tick()
+     with LEASES.hold('automatic-review',resources=['metadata']):REVIEW.auto_tick()
    except Exception:pass
    auto_last=time.time()
   time.sleep(15)
@@ -863,7 +865,7 @@ class Handler(BaseHTTPRequestHandler):
     payload=file.read_bytes();kind='image/png' if payload.startswith(b'\x89PNG') else 'image/webp' if payload.startswith(b'RIFF') else 'image/jpeg'
     return self.send(payload,kind)
    if path.startswith('/media/'):
-    with LEASES.hold('playback'):
+    with LEASES.hold('playback',resources=video_resources(db,[path.split('/')[-1]])):
      row=self.video(path.split('/')[-1]);p=Path(row['path']);size=p.stat().st_size
      start,end=0,size-1;header=self.headers.get('Range')
      if header:
@@ -896,7 +898,8 @@ class Handler(BaseHTTPRequestHandler):
    path=urlparse(self.path).path
    if path.startswith('/api/organization/') or path in ('/api/runtime/stop','/api/runtime/resume','/api/task-cancel'):
     return self._post()
-   with LEASES.hold('restore' if path=='/api/restore' else 'backup' if path=='/api/backup' else 'http-change','write' if path in ('/api/restore','/api/backup') else 'read'):
+   dispatch=path in ('/api/scan','/api/library-scan','/api/storage/scan','/api/file-review/check','/api/file-review/resume','/api/artwork-retry')
+   with LEASES.hold('restore' if path=='/api/restore' else 'backup' if path=='/api/backup' else 'http-change','write' if path in ('/api/restore','/api/backup') else 'read',resources=['metadata'] if dispatch else None):
     return self._post()
   except ResourceBusy as error:return self.send({'error':str(error)},status=409)
   finally:

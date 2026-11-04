@@ -154,6 +154,7 @@ class OrganizationService:
                 if job['state']=='done':return self.jobs.get(job_id)
                 if action=='pause' and job['state'] not in ('queued','waiting','running'):raise ValueError('Only active jobs can be paused')
                 column='pause_requested' if action=='pause' else 'cancel_requested'
+                c.execute('DELETE FROM resource_waiters WHERE owner=?',('organize:'+job_id,))
                 c.execute('INSERT INTO organization_control(job_id,'+column+') VALUES(?,1) ON CONFLICT(job_id) DO UPDATE SET '+column+'=1',(job_id,))
                 if job['state']!='running':
                     state='waiting' if action=='pause' else 'cancelled'
@@ -200,16 +201,18 @@ class OrganizationService:
     def work(self):
         while not self.stopping.is_set():
             with self.db() as c:
-                row=c.execute("SELECT j.id FROM organization_jobs j LEFT JOIN organization_control c ON c.job_id=j.id WHERE j.state IN ('queued','waiting') AND COALESCE(c.pause_requested,0)=0 ORDER BY CASE WHEN j.state='queued' THEN 0 ELSE 1 END,j.created,j.id LIMIT 1").fetchone()
-            if not row:self.wake.wait(1);self.wake.clear();continue
-            try:result=self.run_once(row['id'])
-            except Exception as error:
-                current=self.jobs.get(row['id'])
-                if current['state'] in ('done','cancelled') or self.jobs.pause_requested(row['id']):continue
-                self.jobs.finish(row['id'],'failed')
-                self.jobs.observe_progress(row['id'],'failed',reason=type(error).__name__)
-                continue
-            if result['state']=='waiting':self.wake.wait(1);self.wake.clear()
+                rows=c.execute("SELECT j.id FROM organization_jobs j LEFT JOIN organization_control control ON control.job_id=j.id WHERE j.state IN ('queued','waiting') AND COALESCE(control.pause_requested,0)=0 ORDER BY j.created,j.id").fetchall()
+            progressed=False
+            for row in rows:
+                if self.stopping.is_set():break
+                try:result=self.run_once(row['id'])
+                except Exception as error:
+                    current=self.jobs.get(row['id'])
+                    if current['state'] in ('done','cancelled') or self.jobs.pause_requested(row['id']):continue
+                    self.jobs.finish(row['id'],'failed');self.jobs.observe_progress(row['id'],'failed',reason=type(error).__name__)
+                    progressed=True;continue
+                if result['state']!='waiting':progressed=True;break
+            if not progressed:self.wake.wait(1);self.wake.clear()
 
     def before_restore(self):
         with self.db() as c:require_reconciled_files(c)

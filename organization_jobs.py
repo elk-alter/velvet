@@ -8,7 +8,7 @@ from pathlib import Path
 from media_locations import fingerprint
 from storage_inventory import volume_identity, destination_key, safe_component
 from task_journal import TaskJournal
-from resource_leases import ResourceLeases,ResourceBusy
+from resource_leases import ResourceLeases,ResourceBusy,path_resource
 from archive_policy import ARCHIVE_NAME
 
 TERMINAL={'done','cancelled'}
@@ -140,6 +140,17 @@ class OrganizationJobs:
         for step in result['steps']:step['details']=json.loads(step['details'])
         return result
 
+    def resources(self,job,c=None):
+        values=set()
+        for entry in job['payload']['entries']:
+            values.update(path_resource(entry[key]) for key in ('source','destination'))
+            values.update('device:'+entry[key] for key in ('source_device','target_device'))
+            if entry.get('video_id') is not None:values.add('video:'+str(entry['video_id']))
+            for key in ('asset_id','parent_asset_id'):
+                if entry.get(key):values.add('asset:'+entry[key])
+            if entry.get('archive_guard'):values.add(path_resource(entry['archive_guard']['path']))
+        return sorted(values)
+
     def claim(self,job_id):
         job=self.get(job_id)
         resources=sorted({e[key] for e in job['payload']['entries'] for key in ('source_device','target_device')})
@@ -150,18 +161,17 @@ class OrganizationJobs:
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
             state=c.execute('SELECT state FROM organization_jobs WHERE id=?',(job_id,)).fetchone()[0]
             if state=='running' or state in TERMINAL:raise ValueError('Job already claimed or finished')
-            claims=[dict(row) for row in c.execute('SELECT * FROM resource_claims')]
-            if claims:
-                allowed={'reconcile:'+job_id}
-                if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone():
-                    allowed.update('reconcile:'+row[0] for row in c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)))
-                if any(row['kind']!='organize-reconcile' or row['owner'] not in allowed for row in claims):raise ResourceBusy()
-            c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',('organize:'+job_id,'organize','write',time.time()))
-            for resource in resources:
-                owner=c.execute('SELECT job_id FROM organization_leases WHERE resource=?',(resource,)).fetchone()
-                if owner and owner['job_id']!=job_id:raise ValueError('Device is leased by another job')
-                c.execute('INSERT OR REPLACE INTO organization_leases VALUES(?,?)',(resource,job_id))
-            c.execute("UPDATE organization_jobs SET state='running',updated=? WHERE id=?",(time.time(),job_id))
+            allowed={'reconcile:'+job_id}
+            if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone():
+                allowed.update('reconcile:'+row[0] for row in c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)))
+            held=self.leases.acquire_in(c,'organize','write','organize:'+job_id,self.resources(job,c),queue=True,allowed_reconcile=allowed)
+            if held:
+                for resource in resources:
+                    owner=c.execute('SELECT job_id FROM organization_leases WHERE resource=?',(resource,)).fetchone()
+                    if owner and owner['job_id']!=job_id:raise ValueError('Device is leased by another job')
+                    c.execute('INSERT OR REPLACE INTO organization_leases VALUES(?,?)',(resource,job_id))
+                c.execute("UPDATE organization_jobs SET state='running',updated=? WHERE id=?",(time.time(),job_id))
+        if not held:raise ResourceBusy()
         self.journal.observe('organize',job_id,'running',{'total':len(job['steps']),'cancellable':True})
 
     def transition(self,job_id,ordinal,expected,state,details=None):
@@ -183,6 +193,8 @@ class OrganizationJobs:
             c.execute('UPDATE organization_jobs SET state=?,updated=? WHERE id=?',(state,time.time(),job_id))
             c.execute('DELETE FROM organization_leases WHERE job_id=?',(job_id,))
             c.execute('DELETE FROM resource_claims WHERE owner=?',('organize:'+job_id,))
+            paused=c.execute('SELECT pause_requested FROM organization_control WHERE job_id=?',(job_id,)).fetchone()
+            if state!='waiting' or paused and paused[0]:c.execute('DELETE FROM resource_waiters WHERE owner=?',('organize:'+job_id,))
             self.refresh_reconciliation(c)
         self.observe_progress(job_id,state)
 
@@ -201,11 +213,15 @@ class OrganizationJobs:
                 operation=entries[step['ordinal']]['operation'];state=step['state']
                 if state in ('committing','committed','binding','needs_binding') or (operation in ('move','archive') and state in ('staging','staged','interrupted')):
                     uncertain=True;break
-            if uncertain:c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',('reconcile:'+job['id'],'organize-reconcile','write',time.time()))
+            if uncertain:
+                owner='reconcile:'+job['id'];c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',(owner,'organize-reconcile','write',time.time()))
+                c.executemany('INSERT INTO resource_scopes VALUES(?,?)',((owner,resource) for resource in self.resources({'payload':{'entries':entries}},c)))
 
     def request_cancel(self,job_id):
         self.get(job_id)
-        with self.db() as c:c.execute('INSERT INTO organization_control(job_id,cancel_requested) VALUES(?,1) ON CONFLICT(job_id) DO UPDATE SET cancel_requested=1',(job_id,))
+        with self.db() as c:
+            c.execute('INSERT INTO organization_control(job_id,cancel_requested) VALUES(?,1) ON CONFLICT(job_id) DO UPDATE SET cancel_requested=1',(job_id,))
+            c.execute('DELETE FROM resource_waiters WHERE owner=?',('organize:'+job_id,))
 
     def cancel_requested(self,job_id):
         with self.db() as c:row=c.execute('SELECT cancel_requested FROM organization_control WHERE job_id=?',(job_id,)).fetchone()
@@ -214,7 +230,9 @@ class OrganizationJobs:
     def request_pause(self,job_id):
         job=self.get(job_id)
         if job['state'] in TERMINAL:raise ValueError('Finished jobs cannot be paused')
-        with self.db() as c:c.execute('INSERT INTO organization_control(job_id,pause_requested) VALUES(?,1) ON CONFLICT(job_id) DO UPDATE SET pause_requested=1',(job_id,))
+        with self.db() as c:
+            c.execute('INSERT INTO organization_control(job_id,pause_requested) VALUES(?,1) ON CONFLICT(job_id) DO UPDATE SET pause_requested=1',(job_id,))
+            c.execute('DELETE FROM resource_waiters WHERE owner=?',('organize:'+job_id,))
 
     def pause_requested(self,job_id):
         with self.db() as c:row=c.execute('SELECT pause_requested FROM organization_control WHERE job_id=?',(job_id,)).fetchone()
@@ -258,6 +276,7 @@ class OrganizationJobs:
             c.execute("UPDATE organization_jobs SET state='interrupted' WHERE state='running'")
             c.execute('DELETE FROM organization_leases')
             c.execute('DELETE FROM organization_maintenance')
+            c.execute("DELETE FROM resource_waiters WHERE owner LIKE 'organize:%'")
             c.execute("DELETE FROM resource_claims WHERE kind IN ('organize','cleanup')")
             self.refresh_reconciliation(c)
         for job_id in jobs:self.journal.observe('organize',job_id,'interrupted',{'reason':'restart_reconciliation_required'})

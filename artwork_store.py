@@ -45,7 +45,7 @@ class ArtworkStore:
         if video_id is not None:self.priority=video_id
         if not self.lock.acquire(False):return
         leases=getattr(self,'leases',None)
-        resource_owner=leases.try_acquire('images') if leases else None
+        resource_owner=leases.try_acquire('images',resources=['metadata']) if leases else None
         if leases and resource_owner is None:self.lock.release();return
         if self.priority is not None:video_id=self.priority;self.priority=None
         self.status.update(running=True,processed=0,failed=0)
@@ -60,19 +60,26 @@ class ArtworkStore:
                 jobs=[dict(row) for row in c.execute("SELECT * FROM artwork_jobs WHERE active=1 AND (status='queued' OR (status='failed' AND updated<?))"+scope+" ORDER BY updated,video_id,ordinal LIMIT ?",parameters)]
             for row in jobs:
                 if cancel.is_set() or time.monotonic()-started>45:break
-                if not getattr(self,'allowed',lambda vid:True)(row['video_id']):
-                    with self.db() as c:c.execute("UPDATE artwork_jobs SET status='cancelled',error='目录已排除' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
-                    continue
-                with self.db() as c:c.execute("UPDATE artwork_jobs SET status='running' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
-                getattr(self,'observe',lambda *args:None)(row['video_id'],row['ordinal'],'running')
-                try:ok=self.fetcher(row['url'],self.target(row['video_id'],row['ordinal']),row['engine'],row['referer'])
-                except Exception:ok=False
-                if not getattr(self,'allowed',lambda vid:True)(row['video_id']):
-                    with self.db() as c:c.execute("UPDATE artwork_jobs SET status='cancelled',error='目录已排除，结果跳过' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
-                    continue
-                with self.db() as c:c.execute('UPDATE artwork_jobs SET status=?,error=?,updated=? WHERE video_id=? AND ordinal=? AND url=? AND engine=?',('done' if ok else 'failed','' if ok else '剧照下载失败，可单独重试',time.time(),row['video_id'],row['ordinal'],row['url'],row['engine']))
-                getattr(self,'observe',lambda *args:None)(row['video_id'],row['ordinal'],'done' if ok else 'failed')
-                self.status['processed']+=1;self.status['failed']+=int(not ok)
+                from resource_leases import video_resources
+                item_owner=leases.try_acquire('image-file',resources=video_resources(self.db,[row['video_id']])) if leases else None
+                if leases and item_owner is None:continue
+                try:
+                    if not getattr(self,'allowed',lambda vid:True)(row['video_id']):
+                        with self.db() as c:c.execute("UPDATE artwork_jobs SET status='cancelled',error='目录已排除' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
+                        continue
+                    with self.db() as c:c.execute("UPDATE artwork_jobs SET status='running' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
+                    getattr(self,'observe',lambda *args:None)(row['video_id'],row['ordinal'],'running')
+                    try:ok=self.fetcher(row['url'],self.target(row['video_id'],row['ordinal']),row['engine'],row['referer'])
+                    except Exception:ok=False
+                    if not getattr(self,'allowed',lambda vid:True)(row['video_id']):
+                        with self.db() as c:c.execute("UPDATE artwork_jobs SET status='cancelled',error='目录已排除，结果跳过' WHERE video_id=? AND ordinal=?",(row['video_id'],row['ordinal']))
+                        continue
+                    with self.db() as c:c.execute('UPDATE artwork_jobs SET status=?,error=?,updated=? WHERE video_id=? AND ordinal=? AND url=? AND engine=?',('done' if ok else 'failed','' if ok else '剧照下载失败，可单独重试',time.time(),row['video_id'],row['ordinal'],row['url'],row['engine']))
+                    getattr(self,'observe',lambda *args:None)(row['video_id'],row['ordinal'],'done' if ok else 'failed')
+                    self.status['processed']+=1;self.status['failed']+=int(not ok)
+                finally:
+                    if leases:leases.release(item_owner)
+
         finally:
             self.status['running']=False
             if leases:leases.release(resource_owner)

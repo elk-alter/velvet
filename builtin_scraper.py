@@ -134,7 +134,7 @@ class Engine:
     def start(self):
         if not self.paused.is_set() and self.worker_lock.acquire(False):
             leases=getattr(self,'leases',None)
-            self.resource_owner=leases.try_acquire('scrape') if leases else None
+            self.resource_owner=leases.try_acquire('scrape',resources=['cache:'+str(self.path.absolute())]) if leases else None
             if leases and self.resource_owner is None:self.worker_lock.release();return
             try:threading.Thread(target=self.work, daemon=True).start()
             except BaseException:

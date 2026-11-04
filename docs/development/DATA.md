@@ -84,3 +84,10 @@ archive沿用move状态及未完成物理操作对账隔离，不能将暂停/�
 inventory_query_items.ordinal是查询内成员序号，不是永久文件ID。选择必须结合所属snapshot校验；temp选择表避免大量参数的SQLite变量上限，条目不存在则拒绝。已生成计划保存source_devices、逐项device_id/file_snapshot/root及选择摘要，不能后续重选最新盘点。
 
 执行草稿新增可选source_roots/target_roots数组及每项根；路径必须属于清单内根，复制目标不得嵌套任一所选来源。旧单根日志继续用原字符串。反向任务和源归档按每项根处理，不使用跨盘字符串commonpath；归档旧草稿缺每项target_root时仍可批准。完整契约见[ADR0006](../adr/0006-fixed-query-multi-root-plans.md)。
+
+
+### 文件范围与写入排队
+
+resource_scopes(owner,resource)记录活动claim的文件/目录、资产、视频或设备范围；旧claim缺scope仍按全局处理。resource_waiters(ticket,owner,kind,mode,resources,created)保存不可变范围的稳定写入owner，冲突读者及较晚写者不得插队。领取失败也需提交等待票号；暂停/取消删除票号但不提前释放活动租约。删除claim的触发器清其scope；启动独占recover才清过期运行态，禁止时间到期清锁。
+
+任务范围只取固定批准，不随原始资产进入片库而增加视频ID；读者补资产UUID范围保持冲突。reconcile也保存范围，保留原任务/反向修复豁免。备份恢复仍全局独占和原文件日志门禁；部分工作流仍保守全局，详见[ADR0007](../adr/0007-scoped-leases-writer-admission.md)。

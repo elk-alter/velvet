@@ -200,7 +200,7 @@ class FileReview:
         if not self.lock.acquire(False):
             return
         leases=getattr(self,'leases',None)
-        self.resource_owner=leases.try_acquire('review') if leases else None
+        self.resource_owner=leases.try_acquire('review',resources=['metadata']) if leases else None
         if leases and self.resource_owner is None:
             self.lock.release();return
         self.wake.clear()
@@ -309,52 +309,69 @@ class FileReview:
             return data
 
     def run(self):
+        blocked=False;item_owner=None
+        leases=getattr(self,'leases',None)
         try:
             while not self.cancel.is_set():
                 with self.db() as c:
-                    item = c.execute("SELECT r.video_id,r.mode FROM file_reviews r JOIN videos v ON v.id=r.video_id WHERE r.status='queued' ORDER BY CASE WHEN r.mode='auto' THEN 1 ELSE 0 END,r.updated LIMIT 1").fetchone()
-                    if not item:
-                        break
-                    row = dict(c.execute('SELECT * FROM videos WHERE id=?', (item['video_id'],)).fetchone())
-                    c.execute("UPDATE file_reviews SET status='running' WHERE video_id=?", (row['id'],))
-                getattr(self,'observe',lambda *args:None)(row['id'],'running','')
-                analysis = None
-                analysis_error = ''
+                    candidates=c.execute("SELECT r.video_id,r.mode FROM file_reviews r JOIN videos v ON v.id=r.video_id WHERE r.status='queued' ORDER BY CASE WHEN r.mode='auto' THEN 1 ELSE 0 END,r.updated").fetchall()
+                item=None
+                for candidate in candidates:
+                    from resource_leases import video_resources
+                    item_owner=leases.try_acquire('review-file',resources=video_resources(self.db,[candidate['video_id']])) if leases else None
+                    if leases and item_owner is None:continue
+                    with self.db() as c:
+                        current=c.execute("SELECT v.* FROM videos v JOIN file_reviews r ON r.video_id=v.id WHERE v.id=? AND r.status='queued'",(candidate['video_id'],)).fetchone()
+                        if current:
+                            row=dict(current);item=candidate
+                            c.execute("UPDATE file_reviews SET status='running' WHERE video_id=?",(row['id'],))
+                    if item:break
+                    if leases:leases.release(item_owner);item_owner=None
+                if not item:
+                    blocked=bool(candidates);break
                 try:
+                    getattr(self,'observe',lambda *args:None)(row['id'],'running','')
+                    analysis = None
+                    analysis_error = ''
+                    try:
+                        if not getattr(self,'allowed',lambda row:True)(row):
+                            result,detail='cancelled','文件位于排除范围，跳过检查'
+                        else:result, detail = self.inspect(row, item['mode'])
+                        if result in ('passed', 'decode_error'):
+                            current = Path(row['path']).stat()
+                            if current.st_size != row['size'] or abs(current.st_mtime - row['mtime']) > .01:
+                                result, detail = 'changed', '检查期间文件变化，请重新扫描再检查'
+                        if item['mode'] == 'auto' and result == 'passed':
+                            try:
+                                analysis = self.analyze(row)
+                                if analysis is None:result, detail = 'cancelled','视觉识别已取消'
+                            except Exception as error:
+                                analysis_error = str(error)[:300]
+                    except Exception as error:
+                        result, detail = 'error', '检查未完成：' + type(error).__name__
                     if not getattr(self,'allowed',lambda row:True)(row):
-                        result,detail='cancelled','文件位于排除范围，跳过检查'
-                    else:result, detail = self.inspect(row, item['mode'])
-                    if result in ('passed', 'decode_error'):
-                        current = Path(row['path']).stat()
-                        if current.st_size != row['size'] or abs(current.st_mtime - row['mtime']) > .01:
-                            result, detail = 'changed', '检查期间文件变化，请重新扫描再检查'
-                    if item['mode'] == 'auto' and result == 'passed':
-                        try:
-                            analysis = self.analyze(row)
-                            if analysis is None:result, detail = 'cancelled','视觉识别已取消'
-                        except Exception as error:
-                            analysis_error = str(error)[:300]
-                except Exception as error:
-                    result, detail = 'error', '检查未完成：' + type(error).__name__
-                if not getattr(self,'allowed',lambda row:True)(row):
-                    result,detail,analysis='cancelled','文件已排除，检查结果丢弃',None
-                with self.db() as c:
-                    if item['mode'] == 'auto':
-                        if analysis is not None:
-                            old = json.loads(c.execute('SELECT auto_findings FROM file_reviews WHERE video_id=?',(row['id'],)).fetchone()[0] or '[]')
-                            added = {i['code'] for i in analysis['findings']} - {i['code'] for i in old}
-                            c.execute("UPDATE file_reviews SET auto_findings=?,auto_generation=?,auto_status='done',auto_error='',auto_updated=?,auto_attempts=auto_attempts+1,decision=CASE WHEN ? THEN 'open' ELSE decision END WHERE video_id=?",(json.dumps(analysis['findings'],ensure_ascii=False),analysis['generation'],time.time(),bool(added),row['id']))
-                            detail += '；'+analysis['summary']
-                        else:
-                            c.execute("UPDATE file_reviews SET auto_status=?,auto_error=?,auto_updated=?,auto_attempts=auto_attempts+1 WHERE video_id=?",('cancelled' if result=='cancelled' else 'stale' if result=='changed' or '文件已变化' in analysis_error else 'error',analysis_error or detail,time.time(),row['id']))
-                    c.execute("UPDATE file_reviews SET status=?,result=?,detail=?,updated=?,decision=CASE WHEN ?='decode_error' THEN 'open' ELSE decision END WHERE video_id=?",
-                              ('cancelled' if result == 'cancelled' else 'done', result, detail[:3000], time.time(), result, row['id']))
-                getattr(self,'observe',lambda *args:None)(row['id'],'cancelled' if result=='cancelled' else 'done',result)
+                        result,detail,analysis='cancelled','文件已排除，检查结果丢弃',None
+                    with self.db() as c:
+                        if item['mode'] == 'auto':
+                            if analysis is not None:
+                                old = json.loads(c.execute('SELECT auto_findings FROM file_reviews WHERE video_id=?',(row['id'],)).fetchone()[0] or '[]')
+                                added = {i['code'] for i in analysis['findings']} - {i['code'] for i in old}
+                                c.execute("UPDATE file_reviews SET auto_findings=?,auto_generation=?,auto_status='done',auto_error='',auto_updated=?,auto_attempts=auto_attempts+1,decision=CASE WHEN ? THEN 'open' ELSE decision END WHERE video_id=?",(json.dumps(analysis['findings'],ensure_ascii=False),analysis['generation'],time.time(),bool(added),row['id']))
+                                detail += '；'+analysis['summary']
+                            else:
+                                c.execute("UPDATE file_reviews SET auto_status=?,auto_error=?,auto_updated=?,auto_attempts=auto_attempts+1 WHERE video_id=?",('cancelled' if result=='cancelled' else 'stale' if result=='changed' or '文件已变化' in analysis_error else 'error',analysis_error or detail,time.time(),row['id']))
+                        c.execute("UPDATE file_reviews SET status=?,result=?,detail=?,updated=?,decision=CASE WHEN ?='decode_error' THEN 'open' ELSE decision END WHERE video_id=?",
+                                  ('cancelled' if result == 'cancelled' else 'done', result, detail[:3000], time.time(), result, row['id']))
+                    getattr(self,'observe',lambda *args:None)(row['id'],'cancelled' if result=='cancelled' else 'done',result)
+                finally:
+                    if leases:leases.release(item_owner)
+                    item_owner=None
+
         finally:
             with self.db() as c:
                 pending = c.execute("SELECT 1 FROM file_reviews r JOIN videos v ON v.id=r.video_id WHERE status='queued' LIMIT 1").fetchone()
             leases=getattr(self,'leases',None)
-            if leases:leases.release(self.resource_owner)
+            if leases:leases.release(item_owner);leases.release(self.resource_owner)
             self.lock.release()
-            if not self.cancel.is_set() and (pending or self.wake.is_set()):
+            if not self.cancel.is_set() and ((pending and not blocked) or self.wake.is_set()):
                 self.resume()

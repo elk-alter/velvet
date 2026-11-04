@@ -26,3 +26,6 @@
 - [0005：受控可恢复源归档](0005-controlled-source-archive.md)
 
 - [0006：固定查询与多来源整理计划](0006-fixed-query-multi-root-plans.md)
+
+
+- [0007：文件范围租约与持久写入排队](0007-scoped-leases-writer-admission.md)
