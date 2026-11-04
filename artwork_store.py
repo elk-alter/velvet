@@ -44,6 +44,9 @@ class ArtworkStore:
     def process(self,cancel,limit=24,video_id=None):
         if video_id is not None:self.priority=video_id
         if not self.lock.acquire(False):return
+        leases=getattr(self,'leases',None)
+        resource_owner=leases.try_acquire('images') if leases else None
+        if leases and resource_owner is None:self.lock.release();return
         if self.priority is not None:video_id=self.priority;self.priority=None
         self.status.update(running=True,processed=0,failed=0)
         started=time.monotonic()
@@ -70,7 +73,10 @@ class ArtworkStore:
                 with self.db() as c:c.execute('UPDATE artwork_jobs SET status=?,error=?,updated=? WHERE video_id=? AND ordinal=? AND url=? AND engine=?',('done' if ok else 'failed','' if ok else '剧照下载失败，可单独重试',time.time(),row['video_id'],row['ordinal'],row['url'],row['engine']))
                 getattr(self,'observe',lambda *args:None)(row['video_id'],row['ordinal'],'done' if ok else 'failed')
                 self.status['processed']+=1;self.status['failed']+=int(not ok)
-        finally:self.status['running']=False;self.lock.release()
+        finally:
+            self.status['running']=False
+            if leases:leases.release(resource_owner)
+            self.lock.release()
 
     def target(self,video_id,ordinal):return self.data/f'{video_id}-still-{ordinal}.jpg'
 

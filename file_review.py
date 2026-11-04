@@ -193,9 +193,16 @@ class FileReview:
         self.wake.set()
         if not self.lock.acquire(False):
             return
+        leases=getattr(self,'leases',None)
+        self.resource_owner=leases.try_acquire('review') if leases else None
+        if leases and self.resource_owner is None:
+            self.lock.release();return
         self.wake.clear()
         self.cancel.clear()
-        threading.Thread(target=self.run, daemon=True).start()
+        try:threading.Thread(target=self.run, daemon=True).start()
+        except BaseException:
+            if leases:leases.release(self.resource_owner)
+            self.lock.release();raise
 
     def command(self, args, timeout):
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
@@ -340,6 +347,8 @@ class FileReview:
         finally:
             with self.db() as c:
                 pending = c.execute("SELECT 1 FROM file_reviews r JOIN videos v ON v.id=r.video_id WHERE status='queued' LIMIT 1").fetchone()
+            leases=getattr(self,'leases',None)
+            if leases:leases.release(self.resource_owner)
             self.lock.release()
             if not self.cancel.is_set() and (pending or self.wake.is_set()):
                 self.resume()

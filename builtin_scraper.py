@@ -133,7 +133,13 @@ class Engine:
 
     def start(self):
         if not self.paused.is_set() and self.worker_lock.acquire(False):
-            threading.Thread(target=self.work, daemon=True).start()
+            leases=getattr(self,'leases',None)
+            self.resource_owner=leases.try_acquire('scrape') if leases else None
+            if leases and self.resource_owner is None:self.worker_lock.release();return
+            try:threading.Thread(target=self.work, daemon=True).start()
+            except BaseException:
+                if leases:leases.release(self.resource_owner)
+                self.worker_lock.release();raise
 
     def work(self):
         try:
@@ -161,6 +167,8 @@ class Engine:
             self.current_task_id=None
             # Serialize releasing the worker lease with queue submission: no lost wakeup.
             with self.lock:
+                leases=getattr(self,'leases',None)
+                if leases:leases.release(self.resource_owner)
                 self.worker_lock.release()
                 with self.connect() as db:
                     pending = db.execute("SELECT 1 FROM tasks WHERE status='queued'").fetchone()

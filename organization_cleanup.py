@@ -53,6 +53,8 @@ class CopyCleanup:
             if not job or job['state'] in ('running','queued'):raise ValueError('Stop the task before cleaning fragments')
             resources=sorted({e['target_device'] for e in json.loads(job['payload'])['entries']})
             c.execute('INSERT INTO organization_maintenance VALUES(?)',(job_id,))
+            if c.execute('SELECT 1 FROM resource_claims').fetchone():raise ValueError('Media resource in use')
+            c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',(owner,'cleanup','write',time.time()))
             for resource in resources:
                 if c.execute('SELECT 1 FROM organization_leases WHERE resource=?',(resource,)).fetchone():raise ValueError('Device in use')
                 c.execute('INSERT INTO organization_leases VALUES(?,?)',(resource,owner))
@@ -60,6 +62,7 @@ class CopyCleanup:
         finally:
             with self.jobs.db() as c:
                 c.execute('DELETE FROM organization_leases WHERE job_id=?',(owner,))
+                c.execute('DELETE FROM resource_claims WHERE owner=?',(owner,))
                 c.execute('DELETE FROM organization_maintenance WHERE job_id=?',(job_id,))
 
     def verify(self,job_id,entry,record):

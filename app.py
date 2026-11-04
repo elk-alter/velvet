@@ -144,12 +144,17 @@ def presentation(row):
  return row
 
 sys.path.insert(0,str(ROOT))
+from resource_leases import ResourceLeases,ResourceBusy
+LEASES=ResourceLeases(db)
+ARTWORK.leases=LEASES
+if __name__=='__main__':LEASES.recover()
 from library_core import LibraryCore
 CORE=LibraryCore(db,DATA,presentation)
 CORE.excluded=LIBRARIES.exclusions
 CORE.filter_rows=LIBRARIES.filter_rows
 from file_review import FileReview
 REVIEW=FileReview(db,binary,DATA)
+REVIEW.leases=LEASES
 REVIEW.excluded=LIBRARIES.exclusions
 REVIEW.allowed=lambda row:bool(LIBRARIES.filter_rows([row]))
 from task_journal import TaskJournal
@@ -228,88 +233,93 @@ def retag_all():
  return len(rows)
 
 def scan(force=False,folder_path=None,automatic=False):
- if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not LOCK.acquire(False):return
- try:task_key=JOURNAL.start('scan')
- except BaseException:LOCK.release();raise
- SCAN_CANCEL.clear()
- STATUS.update(running=True,message='扫描目录…',processed=0,errors=0)
+ lease=LEASES.try_acquire('scan')
+ if lease is None:return
  try:
-  policies=LIBRARIES.policies()
-  for policy in policies:
-   folder=policy['path']
-   if folder_path and folder!=folder_path:continue
-   if automatic and policy['automation']=='off':continue
-   if not Path(folder).is_dir():LIBRARIES.finish(folder,'目录离线或不可访问，保留现有记录');continue
-   seen=set()
-   walk_errors=[]
-   for base,dirs,files in os.walk(folder,onerror=lambda error:walk_errors.append('目录读取失败')):
-    dirs[:]=[d for d in dirs if not any((Path(base)/d).is_relative_to(Path(root)) for root in policy.get('excluded_directories',[]))]
-    for name in files:
-     if SCAN_CANCEL.is_set():STATUS['message']='扫描已取消（已完成项目保留）';return
-     p=Path(base)/name
-     if p.suffix.lower() not in {'.mp4','.mkv','.avi','.mov','.webm','.wmv','.m4v','.ts','.flv','.mpeg','.mpg'}:continue
-     seen.add(str(p))
-     try:
-      stat=p.stat()
-      if LIBRARIES.owner(p,policies)!=folder:continue
-      if not LIBRARIES.included(p,policy,stat.st_size) or time.time()-stat.st_mtime<policy['settle_seconds']:continue
-      if not LIBRARIES.filter_rows([{'path':str(p),'size':stat.st_size}]):continue
-      with db() as c:
-       old=c.execute('SELECT * FROM videos WHERE path=?',(str(p),)).fetchone()
-       c.execute('INSERT INTO videos(path,title,size,mtime) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,missing=0',(str(p),p.stem,stat.st_size,stat.st_mtime))
-       vid=c.execute('SELECT id FROM videos WHERE path=?',(str(p),)).fetchone()[0]
-      unchanged=old and old['mtime']==stat.st_mtime and old['size']==stat.st_size
-      sidecar=p.with_suffix('.nfo');stamp=str(sidecar.stat().st_mtime_ns) if sidecar.exists() else ''
-      if unchanged and old['metadata_stamp']==stamp and not force and old['scraped'] and time.time()-old['scraped']<86400 and (not binary('ffmpeg') or (DATA/f'{vid}-5.jpg').exists()):continue
-      STATUS['message']='正在整理：'+p.name
-      err=[]
-      try:meta=read_metadata(p)
+  if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not LOCK.acquire(False):return
+  try:task_key=JOURNAL.start('scan')
+  except BaseException:LOCK.release();raise
+  SCAN_CANCEL.clear()
+  STATUS.update(running=True,message='扫描目录…',processed=0,errors=0)
+  try:
+   policies=LIBRARIES.policies()
+   for policy in policies:
+    folder=policy['path']
+    if folder_path and folder!=folder_path:continue
+    if automatic and policy['automation']=='off':continue
+    if not Path(folder).is_dir():LIBRARIES.finish(folder,'目录离线或不可访问，保留现有记录');continue
+    seen=set()
+    walk_errors=[]
+    for base,dirs,files in os.walk(folder,onerror=lambda error:walk_errors.append('目录读取失败')):
+     dirs[:]=[d for d in dirs if not any((Path(base)/d).is_relative_to(Path(root)) for root in policy.get('excluded_directories',[]))]
+     for name in files:
+      if SCAN_CANCEL.is_set():STATUS['message']='扫描已取消（已完成项目保留）';return
+      p=Path(base)/name
+      if p.suffix.lower() not in {'.mp4','.mkv','.avi','.mov','.webm','.wmv','.m4v','.ts','.flv','.mpeg','.mpg'}:continue
+      seen.add(str(p))
+      try:
+       stat=p.stat()
+       if LIBRARIES.owner(p,policies)!=folder:continue
+       if not LIBRARIES.included(p,policy,stat.st_size) or time.time()-stat.st_mtime<policy['settle_seconds']:continue
+       if not LIBRARIES.filter_rows([{'path':str(p),'size':stat.st_size}]):continue
+       with db() as c:
+        old=c.execute('SELECT * FROM videos WHERE path=?',(str(p),)).fetchone()
+        c.execute('INSERT INTO videos(path,title,size,mtime) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,missing=0',(str(p),p.stem,stat.st_size,stat.st_mtime))
+        vid=c.execute('SELECT id FROM videos WHERE path=?',(str(p),)).fetchone()[0]
+       unchanged=old and old['mtime']==stat.st_mtime and old['size']==stat.st_size
+       sidecar=p.with_suffix('.nfo');stamp=str(sidecar.stat().st_mtime_ns) if sidecar.exists() else ''
+       if unchanged and old['metadata_stamp']==stamp and not force and old['scraped'] and time.time()-old['scraped']<86400 and (not binary('ffmpeg') or (DATA/f'{vid}-5.jpg').exists()):continue
+       STATUS['message']='正在整理：'+p.name
+       err=[]
+       try:meta=read_metadata(p)
+       except Exception as e:
+        meta={'code':identify(p.stem) or identify(p.parent.name),'title':fallback_title(p),'source':'filename'};err.append('NFO 读取失败：'+str(e))
+       if meta['source']!='nfo':
+        try:meta.update(remote_metadata(meta['code']))
+        except Exception as e:err.append('联网匹配失败：'+str(e))
+       probe=binary('ffprobe');ff=binary('ffmpeg');duration=old['duration'] if old else 0
+       technical={}
+       if probe and (force or not unchanged or not duration):
+        r=run([probe,'-v','error','-show_format','-show_streams','-of','json',str(p)],45)
+        if r.returncode:raise ValueError('无法解析视频')
+        info=json.loads(r.stdout);duration=float(info.get('format',{}).get('duration',0));technical['duration']=duration
+        stream=next((s for s in info.get('streams',[]) if s.get('codec_type')=='video'),{})
+        technical.update(width=stream.get('width',0),height=stream.get('height',0),codec=stream.get('codec_name',''))
+       if ff:
+        for i in range(6):
+         target=DATA/(f'{vid}.jpg' if i==0 else f'{vid}-{i}.jpg')
+         if unchanged and not force and target.exists():continue
+         r=run([ff,'-y','-loglevel','error','-ss',str(duration*(i+1)/8),'-i',str(p),'-frames:v','1','-vf','scale=640:-2',str(target)])
+         if r.returncode:err.append('截图失败');break
+       else:err.append('缺少 FFmpeg：截图与媒体信息不可用')
+       # 本地同名海报和 Kodi 风格海报优先。
+       cover=next((x for x in [p.with_suffix('.jpg'),p.with_name(p.stem+'-poster.jpg'),p.parent/'poster.jpg'] if x.is_file()),None)
+       if cover and not (old and old['poster_origin']):shutil.copyfile(cover,DATA/f'{vid}-poster.jpg')
+       if old and (old['manual'] or old['source']=='amane'):meta={}
+       elif old:
+        protected=set(json.loads(old['locked_fields'] or '[]'));meta={k:v for k,v in meta.items() if k not in protected}
+       updates=meta|technical|{'scraped':time.time(),'metadata_stamp':stamp,'error':'; '.join(err)}
+       if not LIBRARIES.filter_rows([{'path':str(p),'size':stat.st_size}]):continue
+       merged=(dict(old) if old else {'path':str(p)})|updates
+       tags,reasons=classify(merged);updates.update(auto_tags=tags,tag_reasons=reasons)
+       with db() as c:c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),vid])
+       STATUS['processed']+=1
+       if err:STATUS['errors']+=1
       except Exception as e:
-       meta={'code':identify(p.stem) or identify(p.parent.name),'title':fallback_title(p),'source':'filename'};err.append('NFO 读取失败：'+str(e))
-      if meta['source']!='nfo':
-       try:meta.update(remote_metadata(meta['code']))
-       except Exception as e:err.append('联网匹配失败：'+str(e))
-      probe=binary('ffprobe');ff=binary('ffmpeg');duration=old['duration'] if old else 0
-      technical={}
-      if probe and (force or not unchanged or not duration):
-       r=run([probe,'-v','error','-show_format','-show_streams','-of','json',str(p)],45)
-       if r.returncode:raise ValueError('无法解析视频')
-       info=json.loads(r.stdout);duration=float(info.get('format',{}).get('duration',0));technical['duration']=duration
-       stream=next((s for s in info.get('streams',[]) if s.get('codec_type')=='video'),{})
-       technical.update(width=stream.get('width',0),height=stream.get('height',0),codec=stream.get('codec_name',''))
-      if ff:
-       for i in range(6):
-        target=DATA/(f'{vid}.jpg' if i==0 else f'{vid}-{i}.jpg')
-        if unchanged and not force and target.exists():continue
-        r=run([ff,'-y','-loglevel','error','-ss',str(duration*(i+1)/8),'-i',str(p),'-frames:v','1','-vf','scale=640:-2',str(target)])
-        if r.returncode:err.append('截图失败');break
-      else:err.append('缺少 FFmpeg：截图与媒体信息不可用')
-      # 本地同名海报和 Kodi 风格海报优先。
-      cover=next((x for x in [p.with_suffix('.jpg'),p.with_name(p.stem+'-poster.jpg'),p.parent/'poster.jpg'] if x.is_file()),None)
-      if cover and not (old and old['poster_origin']):shutil.copyfile(cover,DATA/f'{vid}-poster.jpg')
-      if old and (old['manual'] or old['source']=='amane'):meta={}
-      elif old:
-       protected=set(json.loads(old['locked_fields'] or '[]'));meta={k:v for k,v in meta.items() if k not in protected}
-      updates=meta|technical|{'scraped':time.time(),'metadata_stamp':stamp,'error':'; '.join(err)}
-      if not LIBRARIES.filter_rows([{'path':str(p),'size':stat.st_size}]):continue
-      merged=(dict(old) if old else {'path':str(p)})|updates
-      tags,reasons=classify(merged);updates.update(auto_tags=tags,tag_reasons=reasons)
-      with db() as c:c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),vid])
-      STATUS['processed']+=1
-      if err:STATUS['errors']+=1
-     except Exception as e:
-      STATUS['errors']+=1
-      with db() as c:c.execute('UPDATE videos SET error=? WHERE path=?',(str(e)[:500],str(p)))
-   with db() as c:
-    for row in LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT id,path,size FROM videos').fetchall()]):
-     try:inside=Path(row['path']).is_relative_to(Path(folder))
-     except ValueError:inside=False
-     if inside and LIBRARIES.owner(row['path'],policies)==folder and row['path'] not in seen and not walk_errors and Path(folder).is_dir():c.execute('UPDATE videos SET missing=1 WHERE id=?',(row['id'],))
-   LIBRARIES.finish(folder,'部分目录读取失败，未更新缺失标记' if walk_errors else '')
-  STATUS['message']='扫描完成'
- finally:
-  try:JOURNAL.observe('scan',task_key,'cancelled' if SCAN_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if STATUS['errors'] else 'done',{'processed':STATUS['processed'],'failed':STATUS['errors']})
-  finally:STATUS['running']=False;LOCK.release()
+       STATUS['errors']+=1
+       with db() as c:c.execute('UPDATE videos SET error=? WHERE path=?',(str(e)[:500],str(p)))
+    with db() as c:
+     for row in LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT id,path,size FROM videos').fetchall()]):
+      try:inside=Path(row['path']).is_relative_to(Path(folder))
+      except ValueError:inside=False
+      if inside and LIBRARIES.owner(row['path'],policies)==folder and row['path'] not in seen and not walk_errors and Path(folder).is_dir():c.execute('UPDATE videos SET missing=1 WHERE id=?',(row['id'],))
+    LIBRARIES.finish(folder,'部分目录读取失败，未更新缺失标记' if walk_errors else '')
+   STATUS['message']='扫描完成'
+  finally:
+   try:JOURNAL.observe('scan',task_key,'cancelled' if SCAN_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if STATUS['errors'] else 'done',{'processed':STATUS['processed'],'failed':STATUS['errors']})
+   finally:STATUS['running']=False;LOCK.release()
+ finally:LEASES.release(lease)
+
 AMANE_STATUS={'connected':False,'synced':0,'message':'等待连接','last_sync':0}
 AMANE_LOCK=threading.Lock()
 SUBMIT_LOCK=threading.Lock()
@@ -321,7 +331,8 @@ def builtin_engine():
  from builtin_scraper import Engine
  with BUILTIN_LOCK:
   key=str(DATA)
-  if key not in BUILTIN_ENGINES:BUILTIN_ENGINES[key]=Engine(DATA,config)
+  if key not in BUILTIN_ENGINES:
+   BUILTIN_ENGINES[key]=Engine(DATA,config);BUILTIN_ENGINES[key].leases=LEASES
   return BUILTIN_ENGINES[key]
 def amane_headers():
  cfg=config();token=cfg.get('amane_token','')
@@ -400,48 +411,52 @@ def download_still(url,target,engine,referer):
  except (OSError,ValueError):return False
 
 def sync_amane():
- if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not AMANE_LOCK.acquire(False):return AMANE_STATUS['synced']
- try:task_key=JOURNAL.start('sync')
- except BaseException:AMANE_LOCK.release();raise
- SYNC_CANCEL.clear();WORK_STATUS['sync'].update(running=True,phase='metadata');WORK_STATUS['images'].update(running=False,failed=0)
- synced=0;offset=0;posters=[];covers=[];stills=[]
+ lease=LEASES.try_acquire('sync')
+ if lease is None:return AMANE_STATUS['synced']
  try:
-  while True:
-   if SYNC_CANCEL.is_set():AMANE_STATUS['message']='同步已取消';return synced
-   page=amane_request('metadata?limit=200&offset='+str(offset));items=page.get('items',[])
-   with db() as c:
-    for item in items:
-     if not item.get('title') or not item.get('field_sources'):continue
-     rows=c.execute('SELECT * FROM videos WHERE UPPER(code)=?',(str(item['number']).upper(),)).fetchall()
-     for old in LIBRARIES.filter_rows([dict(r) for r in rows]):
-      updates={'source_tags':', '.join(dict.fromkeys(item.get('tags') or [])),'amane_id':item['id'],'amane_snapshot':json.dumps(dict(item,_velvet_engine=config().get('scrape_engine','external')),ensure_ascii=False),'source':'amane'}
-      locked=set(json.loads(old['locked_fields'] or '[]'))
-      if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
-      values={'code':item['number'],'title':item['title'],'actors':', '.join(item.get('actors') or []),'studio':item.get('studio') or '', 'date':item.get('release') or '', 'plot':item.get('plot') or ''}
-      updates.update({k:v for k,v in values.items() if k not in locked and v})
-      tags,reasons=classify(dict(old)|updates);updates.update(auto_tags=tags,tag_reasons=reasons)
-      c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),old['id']]);synced+=1
-      if item.get('poster_url'):posters.append((item['poster_url'],old['id']))
-      if item.get('thumb_url') or item.get('poster_url'):covers.append((item.get('thumb_url') or item['poster_url'],old['id']))
-      stills.append((old['id'],item))
-   offset+=len(items)
-   if not items or offset>=page.get('total',0):break
-  WORK_STATUS['sync']['phase']='images';WORK_STATUS['images']['running']=True
-  for vid,item in stills:ARTWORK.queue(vid,item,config().get('scrape_engine','external'))
-  cached=covered=0
-  for art,images in [('poster',posters),('cover',covers)]:
-   for url,vid in images:
-    if SYNC_CANCEL.is_set():AMANE_STATUS['message']='图片同步已取消';return synced
-    ok=cache_artwork(url,vid,art)
-    if art=='poster':cached+=bool(ok)
-    else:covered+=bool(ok)
-    if not ok:WORK_STATUS['images']['failed']+=1
-  ARTWORK.process(SYNC_CANCEL)
-  AMANE_STATUS.update(connected=True,synced=synced,message=f'封面 {covered}/{len(covers)} · 海报 {cached}/{len(posters)} · 本批剧照 {ARTWORK.status["processed"]-ARTWORK.status["failed"]}/{ARTWORK.status["processed"]}',last_sync=time.time())
-  return synced
- finally:
-  try:JOURNAL.observe('sync',task_key,'cancelled' if SYNC_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if WORK_STATUS['images']['failed'] else 'done',{'failed':WORK_STATUS['images']['failed']})
-  finally:WORK_STATUS['sync'].update(running=False,phase='idle');WORK_STATUS['images']['running']=False;AMANE_LOCK.release()
+  if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not AMANE_LOCK.acquire(False):return AMANE_STATUS['synced']
+  try:task_key=JOURNAL.start('sync')
+  except BaseException:AMANE_LOCK.release();raise
+  SYNC_CANCEL.clear();WORK_STATUS['sync'].update(running=True,phase='metadata');WORK_STATUS['images'].update(running=False,failed=0)
+  synced=0;offset=0;posters=[];covers=[];stills=[]
+  try:
+   while True:
+    if SYNC_CANCEL.is_set():AMANE_STATUS['message']='同步已取消';return synced
+    page=amane_request('metadata?limit=200&offset='+str(offset));items=page.get('items',[])
+    with db() as c:
+     for item in items:
+      if not item.get('title') or not item.get('field_sources'):continue
+      rows=c.execute('SELECT * FROM videos WHERE UPPER(code)=?',(str(item['number']).upper(),)).fetchall()
+      for old in LIBRARIES.filter_rows([dict(r) for r in rows]):
+       updates={'source_tags':', '.join(dict.fromkeys(item.get('tags') or [])),'amane_id':item['id'],'amane_snapshot':json.dumps(dict(item,_velvet_engine=config().get('scrape_engine','external')),ensure_ascii=False),'source':'amane'}
+       locked=set(json.loads(old['locked_fields'] or '[]'))
+       if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
+       values={'code':item['number'],'title':item['title'],'actors':', '.join(item.get('actors') or []),'studio':item.get('studio') or '', 'date':item.get('release') or '', 'plot':item.get('plot') or ''}
+       updates.update({k:v for k,v in values.items() if k not in locked and v})
+       tags,reasons=classify(dict(old)|updates);updates.update(auto_tags=tags,tag_reasons=reasons)
+       c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),old['id']]);synced+=1
+       if item.get('poster_url'):posters.append((item['poster_url'],old['id']))
+       if item.get('thumb_url') or item.get('poster_url'):covers.append((item.get('thumb_url') or item['poster_url'],old['id']))
+       stills.append((old['id'],item))
+    offset+=len(items)
+    if not items or offset>=page.get('total',0):break
+   WORK_STATUS['sync']['phase']='images';WORK_STATUS['images']['running']=True
+   for vid,item in stills:ARTWORK.queue(vid,item,config().get('scrape_engine','external'))
+   cached=covered=0
+   for art,images in [('poster',posters),('cover',covers)]:
+    for url,vid in images:
+     if SYNC_CANCEL.is_set():AMANE_STATUS['message']='图片同步已取消';return synced
+     ok=cache_artwork(url,vid,art)
+     if art=='poster':cached+=bool(ok)
+     else:covered+=bool(ok)
+     if not ok:WORK_STATUS['images']['failed']+=1
+   ARTWORK.process(SYNC_CANCEL)
+   AMANE_STATUS.update(connected=True,synced=synced,message=f'封面 {covered}/{len(covers)} · 海报 {cached}/{len(posters)} · 本批剧照 {ARTWORK.status["processed"]-ARTWORK.status["failed"]}/{ARTWORK.status["processed"]}',last_sync=time.time())
+   return synced
+  finally:
+   try:JOURNAL.observe('sync',task_key,'cancelled' if SYNC_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if WORK_STATUS['images']['failed'] else 'done',{'failed':WORK_STATUS['images']['failed']})
+   finally:WORK_STATUS['sync'].update(running=False,phase='idle');WORK_STATUS['images']['running']=False;AMANE_LOCK.release()
+ finally:LEASES.release(lease)
 
 def submit_scrapes(ids,use_cache=False):
  if not SUBMIT_LOCK.acquire(False):raise ValueError('另一批提交进行中，请稍后重试')
@@ -534,37 +549,41 @@ def auto_scrape_tick():
 DUP_STATUS={'running':False,'processed':0,'total':0,'errors':0,'message':'尚未检测'}
 DUP_LOCK=threading.Lock()
 def detect_duplicates():
- if RESTORING.is_set() or not DUP_LOCK.acquire(False):return
- try:task_key=JOURNAL.start('duplicates')
- except BaseException:DUP_LOCK.release();raise
- DUP_CANCEL.clear()
- DUP_STATUS.update(running=True,processed=0,total=0,errors=0,message='查找大小相同的文件…')
+ lease=LEASES.try_acquire('duplicates')
+ if lease is None:return
  try:
-  with db() as c:
-   rows=c.execute('SELECT * FROM videos WHERE missing=0 AND size IN (SELECT size FROM videos WHERE missing=0 GROUP BY size HAVING COUNT(*)>1)').fetchall()
-  rows=LIBRARIES.filter_rows([dict(r) for r in rows])
-  DUP_STATUS['total']=len(rows)
-  for row in rows:
-   if not LIBRARIES.filter_rows([dict(row)]):continue
-   if DUP_CANCEL.is_set():DUP_STATUS['message']='重复校验已取消';return
-   try:
-    p=Path(row['path']);before=p.stat();stamp=f'{before.st_size}:{before.st_mtime_ns}'
-    if row['hash_stamp']!=stamp or not row['file_hash']:
-     h=hashlib.sha256()
-     with p.open('rb') as f:
-      for block in iter(lambda:f.read(4194304),b''):
-       if DUP_CANCEL.is_set():DUP_STATUS['message']='重复校验已取消';return
-       h.update(block)
-     after=p.stat()
-     if before.st_size!=after.st_size or before.st_mtime_ns!=after.st_mtime_ns:raise ValueError('文件读取期间发生变化')
-     if not LIBRARIES.filter_rows([dict(row)]):continue
-     with db() as c:c.execute('UPDATE videos SET file_hash=?,hash_stamp=? WHERE id=?',(h.hexdigest(),stamp,row['id']))
-    DUP_STATUS['processed']+=1;DUP_STATUS['message']='正在校验重复候选 '+str(DUP_STATUS['processed'])+'/'+str(len(rows))
-   except (OSError,ValueError):DUP_STATUS['errors']+=1
-  DUP_STATUS['message']='检测完成；同编号组仅为疑似重复，分集与多版本请人工核对'
- finally:
-  try:JOURNAL.observe('duplicates',task_key,'cancelled' if DUP_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if DUP_STATUS['errors'] else 'done',{'processed':DUP_STATUS['processed'],'total':DUP_STATUS['total'],'failed':DUP_STATUS['errors']})
-  finally:DUP_STATUS['running']=False;DUP_LOCK.release()
+  if RESTORING.is_set() or not DUP_LOCK.acquire(False):return
+  try:task_key=JOURNAL.start('duplicates')
+  except BaseException:DUP_LOCK.release();raise
+  DUP_CANCEL.clear()
+  DUP_STATUS.update(running=True,processed=0,total=0,errors=0,message='查找大小相同的文件…')
+  try:
+   with db() as c:
+    rows=c.execute('SELECT * FROM videos WHERE missing=0 AND size IN (SELECT size FROM videos WHERE missing=0 GROUP BY size HAVING COUNT(*)>1)').fetchall()
+   rows=LIBRARIES.filter_rows([dict(r) for r in rows])
+   DUP_STATUS['total']=len(rows)
+   for row in rows:
+    if not LIBRARIES.filter_rows([dict(row)]):continue
+    if DUP_CANCEL.is_set():DUP_STATUS['message']='重复校验已取消';return
+    try:
+     p=Path(row['path']);before=p.stat();stamp=f'{before.st_size}:{before.st_mtime_ns}'
+     if row['hash_stamp']!=stamp or not row['file_hash']:
+      h=hashlib.sha256()
+      with p.open('rb') as f:
+       for block in iter(lambda:f.read(4194304),b''):
+        if DUP_CANCEL.is_set():DUP_STATUS['message']='重复校验已取消';return
+        h.update(block)
+      after=p.stat()
+      if before.st_size!=after.st_size or before.st_mtime_ns!=after.st_mtime_ns:raise ValueError('文件读取期间发生变化')
+      if not LIBRARIES.filter_rows([dict(row)]):continue
+      with db() as c:c.execute('UPDATE videos SET file_hash=?,hash_stamp=? WHERE id=?',(h.hexdigest(),stamp,row['id']))
+     DUP_STATUS['processed']+=1;DUP_STATUS['message']='正在校验重复候选 '+str(DUP_STATUS['processed'])+'/'+str(len(rows))
+    except (OSError,ValueError):DUP_STATUS['errors']+=1
+   DUP_STATUS['message']='检测完成；同编号组仅为疑似重复，分集与多版本请人工核对'
+  finally:
+   try:JOURNAL.observe('duplicates',task_key,'cancelled' if DUP_CANCEL.is_set() else 'failed' if sys.exc_info()[0] else 'partial' if DUP_STATUS['errors'] else 'done',{'processed':DUP_STATUS['processed'],'total':DUP_STATUS['total'],'failed':DUP_STATUS['errors']})
+   finally:DUP_STATUS['running']=False;DUP_LOCK.release()
+ finally:LEASES.release(lease)
 
 def actor_library():
  with db() as c:
@@ -625,7 +644,11 @@ def amane_watcher():
  last=0;auto_last=0
  while True:
   if RESTORING.is_set() or SHUTTING_DOWN.is_set():time.sleep(1);continue
-  try:poll_scrapes();JOURNAL.reconcile_sources()
+  try:
+   with LEASES.hold('scrape-poll'):
+    poll_scrapes();JOURNAL.reconcile_sources()
+   if not REVIEW.cancel.is_set():REVIEW.resume()
+   for engine in BUILTIN_ENGINES.values():engine.start()
   except Exception as e:AMANE_STATUS.update(connected=False,message=str(e)[:200])
   if time.time()-last>=60 and not AMANE_LOCK.locked():
    threading.Thread(target=background_sync,daemon=True).start();last=time.time()
@@ -633,7 +656,8 @@ def amane_watcher():
    try:auto_scrape_tick()
    except Exception as e:AUTO_STATUS['message']='自动刮削等待连接：'+str(e)[:150]
    try:
-    if not LOCK.locked():REVIEW.auto_tick()
+    if not LOCK.locked():
+     with LEASES.hold('automatic-review'):REVIEW.auto_tick()
    except Exception:pass
    auto_last=time.time()
   time.sleep(15)
@@ -643,7 +667,8 @@ def watcher():
   try:
    if not RESTORING.is_set() and not SHUTTING_DOWN.is_set():
     scan(automatic=True)
-    if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
+    if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):
+     with LEASES.hold('backup','write'):CORE.backup('auto-'+time.strftime('%Y%m%d'))
   except Exception as e:STATUS['message']='扫描失败：'+str(e)
   time.sleep(max(30,int(config()['interval'])))
 PICKER_LOCK=threading.Lock()
@@ -792,32 +817,40 @@ class Handler(BaseHTTPRequestHandler):
     payload=file.read_bytes();kind='image/png' if payload.startswith(b'\x89PNG') else 'image/webp' if payload.startswith(b'RIFF') else 'image/jpeg'
     return self.send(payload,kind)
    if path.startswith('/media/'):
-    row=self.video(path.split('/')[-1]);p=Path(row['path']);size=p.stat().st_size
-    start,end=0,size-1;header=self.headers.get('Range')
-    if header:
-     m=re.fullmatch(r'bytes=(\d*)-(\d*)',header)
-     if not m or not any(m.groups()):return self.send({},status=416)
-     if not m[1]:start=max(0,size-int(m[2]))
-     else:start=int(m[1]);end=min(end,int(m[2])) if m[2] else end
-     if start>end or start>=size:
-      self.send_response(416);self.send_header('Content-Range',f'bytes */{size}');self.end_headers();return
-    self.send_response(206 if header else 200);self.send_header('Content-Type',mimetypes.guess_type(p.name)[0] or 'application/octet-stream');self.send_header('Accept-Ranges','bytes');self.send_header('Content-Length',str(end-start+1))
-    if header:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
-    self.end_headers()
-    with p.open('rb') as f:
-     f.seek(start);remaining=end-start+1
-     while remaining:
-      chunk=f.read(min(262144,remaining))
-      if not chunk:break
-      self.wfile.write(chunk);remaining-=len(chunk)
-    return
+    with LEASES.hold('playback'):
+     row=self.video(path.split('/')[-1]);p=Path(row['path']);size=p.stat().st_size
+     start,end=0,size-1;header=self.headers.get('Range')
+     if header:
+      m=re.fullmatch(r'bytes=(\d*)-(\d*)',header)
+      if not m or not any(m.groups()):return self.send({},status=416)
+      if not m[1]:start=max(0,size-int(m[2]))
+      else:start=int(m[1]);end=min(end,int(m[2])) if m[2] else end
+      if start>end or start>=size:
+       self.send_response(416);self.send_header('Content-Range',f'bytes */{size}');self.end_headers();return
+     self.send_response(206 if header else 200);self.send_header('Content-Type',mimetypes.guess_type(p.name)[0] or 'application/octet-stream');self.send_header('Accept-Ranges','bytes');self.send_header('Content-Length',str(end-start+1))
+     if header:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+     self.end_headers()
+     with p.open('rb') as f:
+      f.seek(start);remaining=end-start+1
+      while remaining:
+       chunk=f.read(min(262144,remaining))
+       if not chunk:break
+       self.wfile.write(chunk);remaining-=len(chunk)
+     return
    return self.send({},status=404)
   except (BrokenPipeError,ConnectionResetError):pass
+  except ResourceBusy as error:self.send({'error':str(error)},status=409)
   except Exception as e:self.send({'error':str(e)},status=400)
  def do_POST(self):
   global ACTIVE_POSTS
   with POST_LEASE:ACTIVE_POSTS+=1
-  try:return self._post()
+  try:
+   path=urlparse(self.path).path
+   if path.startswith('/api/organization/') or path in ('/api/runtime/stop','/api/runtime/resume','/api/task-cancel'):
+    return self._post()
+   with LEASES.hold('restore' if path=='/api/restore' else 'backup' if path=='/api/backup' else 'http-change','write' if path in ('/api/restore','/api/backup') else 'read'):
+    return self._post()
+  except ResourceBusy as error:return self.send({'error':str(error)},status=409)
   finally:
    with POST_LEASE:ACTIVE_POSTS-=1
  def _post(self):
@@ -837,7 +870,7 @@ class Handler(BaseHTTPRequestHandler):
    if path=='/api/runtime/stop':
     SHUTTING_DOWN.set();SCAN_CANCEL.set();SYNC_CANCEL.set();DUP_CANCEL.set();REVIEW.cancel.set()
     for engine in BUILTIN_ENGINES.values():engine.paused.set()
-    busy=ACTIVE_POSTS>1 or RESTORING.is_set() or POLL_LOCK.locked() or ARTWORK.lock.locked() or LOCK.locked() or AMANE_LOCK.locked() or DUP_LOCK.locked() or SUBMIT_LOCK.locked() or REVIEW.lock.locked() or PEOPLE.state.get('running') or any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values())
+    busy=ACTIVE_POSTS>1 or bool(LEASES.active()) or RESTORING.is_set() or POLL_LOCK.locked() or ARTWORK.lock.locked() or LOCK.locked() or AMANE_LOCK.locked() or DUP_LOCK.locked() or SUBMIT_LOCK.locked() or REVIEW.lock.locked() or PEOPLE.state.get('running') or any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values())
     if busy:return self.send({'ok':False,'waiting':True})
     self.send({'ok':True,'waiting':False});threading.Thread(target=self.server.shutdown,daemon=True).start();return
    if SHUTTING_DOWN.is_set() and path!='/api/task-cancel':raise ValueError('服务正在安全停止，请稍后操作')
@@ -1006,7 +1039,7 @@ class Handler(BaseHTTPRequestHandler):
      with db() as c:
       if c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]:raise ValueError('仍有刮削任务，请先在任务中心取消并等待结束后恢复')
      with DB_MUTEX:
-      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure()
+      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover()
       with db() as c:
        if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:
@@ -1145,6 +1178,7 @@ def task_resources():
  reasons=[]
  if SHUTTING_DOWN.is_set():reasons.append('service_draining')
  if LOCK.locked():reasons.append('scan_resource_busy')
+ if any(row['mode']=='write' for row in LEASES.active()):reasons.append('media_resource_busy')
  if any(not Path(policy['path']).is_dir() for policy in LIBRARIES.policies()):reasons.append('library_offline')
  if not cfg.get('auto_scrape'):reasons.append('automatic_scrape_paused')
  if not binary('ffprobe'):reasons.append('ffprobe_missing')
@@ -1182,11 +1216,17 @@ def inventory_metadata(path):
 
 def run_inventory(task_key,device_id,hashing):
  try:
+  with LEASES.hold('inventory'):
+   return run_inventory_leased(task_key,device_id,hashing)
+ except ResourceBusy:JOURNAL.observe('inventory',task_key,'waiting',{'reason':'media_resource_busy'})
+ finally:LOCK.release()
+
+def run_inventory_leased(task_key,device_id,hashing):
+ try:
   progress=lambda **counts:JOURNAL.observe('inventory',task_key,'running',{**counts,'phase':'hashing' if hashing else 'metadata','cancellable':True})
   result=INVENTORY.scan(device_id,SCAN_CANCEL.is_set,progress,hashing)
   JOURNAL.observe('inventory',task_key,result['state'],{'processed':result['processed'],'failed':result['failed'],'bytes_processed':result['bytes_processed']})
  except Exception as error:JOURNAL.observe('inventory',task_key,'failed',{'reason':type(error).__name__})
- finally:LOCK.release()
 
 class LocalServer(ThreadingHTTPServer):
  allow_reuse_address=False

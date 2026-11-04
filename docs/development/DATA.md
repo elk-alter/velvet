@@ -31,3 +31,9 @@
 ## alpha.5新增契约
 
 [ADR0001](../adr/0001-alpha5-reliability-and-readonly-plans.md)记录任务、快照、计划、来源归属及数据锁。旧主库恢复须补新表与scrape_jobs.engine列；未知在途引擎进入人工核对。完整离线备份与在线主库备份范围不同，见[操作指南](../ALPHA5-OPERATIONS.md)。
+
+## alpha.6开发中的资源契约
+
+resource_claims是进程内线程和独立连接共享的持久读/写租约，整理与其它媒体工作流以此互斥；organization_leases补充执行器设备占用。任务持有租约期间不在数据库事务中等待网络或媒体子进程。不要在活跃任务运行时调用recover，也不要用时间过期清锁；仅DataGuard独占启动或完全停止其它工作的备份恢复中可对账旧租约。
+
+备份恢复可替换整个数据库，包括旧租约和整理日志，因此HTTP恢复保留RESTORING/POST/任务锁，在新库上重新ensure并对账。恢复数据库不撤销已经发生的物理操作；alpha.6完整回滚流程仍需文件日志核对，不可据此放行未验证的文件恢复。

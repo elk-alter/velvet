@@ -36,8 +36,9 @@
 
 数据取舍见[ADR0001](../adr/0001-alpha5-reliability-and-readonly-plans.md)，性能限制见[测量报告](../ALPHA5-PERFORMANCE.md)。
 
-## alpha.6开发模块（未接运行入口）
+## alpha.6开发模块（执行入口尚未开放）
 
+- resource_leases：跨工作流共享读/独占写租约；扫描、检查、刮削、同步、播放及备份恢复接入，当前采用整个媒体工作区粒度。
 - media_locations：稳定文件身份与经过验证的位置绑定。
 - organization_jobs：不可变批准、执行步骤、互斥租约、持久取消与启动对账。
 - organization_executor：已批准copy计划的暂存、完整校验、不覆盖提交与绑定回调。

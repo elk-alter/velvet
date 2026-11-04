@@ -8,6 +8,7 @@ from pathlib import Path
 from media_locations import fingerprint
 from storage_inventory import volume_identity, destination_key, safe_component
 from task_journal import TaskJournal
+from resource_leases import ResourceLeases,ResourceBusy
 
 TERMINAL={'done','cancelled'}
 TRANSITIONS={
@@ -48,6 +49,7 @@ class OrganizationJobs:
     def __init__(self,db,device_identity=identify):
         self.db,self.device_identity=db,device_identity
         self.journal=TaskJournal(db)
+        self.leases=ResourceLeases(db)
         with db() as c:
             c.execute('CREATE TABLE IF NOT EXISTS organization_drafts(id TEXT PRIMARY KEY,digest TEXT UNIQUE,payload TEXT,created REAL)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_jobs(id TEXT PRIMARY KEY,approval_digest TEXT UNIQUE,payload TEXT,state TEXT,created REAL,updated REAL)')
@@ -130,6 +132,8 @@ class OrganizationJobs:
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
             state=c.execute('SELECT state FROM organization_jobs WHERE id=?',(job_id,)).fetchone()[0]
             if state=='running' or state in TERMINAL:raise ValueError('Job already claimed or finished')
+            if c.execute('SELECT 1 FROM resource_claims').fetchone():raise ResourceBusy()
+            c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',('organize:'+job_id,'organize','write',time.time()))
             for resource in resources:
                 owner=c.execute('SELECT job_id FROM organization_leases WHERE resource=?',(resource,)).fetchone()
                 if owner and owner['job_id']!=job_id:raise ValueError('Device is leased by another job')
@@ -155,6 +159,7 @@ class OrganizationJobs:
             if state=='done' and any(value!='done' for value in rows):raise ValueError('Unfinished files cannot be reported as complete')
             c.execute('UPDATE organization_jobs SET state=?,updated=? WHERE id=?',(state,time.time(),job_id))
             c.execute('DELETE FROM organization_leases WHERE job_id=?',(job_id,))
+            c.execute('DELETE FROM resource_claims WHERE owner=?',('organize:'+job_id,))
         self.observe_progress(job_id,state)
 
     def request_cancel(self,job_id):
@@ -210,5 +215,6 @@ class OrganizationJobs:
             c.execute("UPDATE organization_jobs SET state='interrupted' WHERE state='running'")
             c.execute('DELETE FROM organization_leases')
             c.execute('DELETE FROM organization_maintenance')
+            c.execute("DELETE FROM resource_claims WHERE kind IN ('organize','cleanup')")
         for job_id in jobs:self.journal.observe('organize',job_id,'interrupted',{'reason':'restart_reconciliation_required'})
         return jobs
