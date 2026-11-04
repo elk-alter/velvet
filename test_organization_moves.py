@@ -97,11 +97,21 @@ class MoveTests(unittest.TestCase):
         self.assertEqual(len(self.repository.locations(1)),1)
         self.assertEqual(self.repository.locations(1)[0]['path'],str(target))
 
-    def test_target_occupied_after_approval_is_never_overwritten(self):
+    def test_target_occupied_before_staging_leaves_source_untouched(self):
         target=self.root/'renamed.mp4';job=self.approve([(1,self.source,target)])
         target.write_bytes(b'external')
-        self.assertEqual(self.executor.run(job)['state'],'partial')
-        self.assertEqual(target.read_bytes(),b'external')
+        result=self.executor.run(job)
+        self.assertEqual(result['state'],'failed');self.assertEqual(result['steps'][0]['state'],'pending')
+        self.assertEqual(self.source.read_bytes(),b'synthetic media');self.assertEqual(target.read_bytes(),b'external')
+        self.assertIn('target_exists',result['steps'][0]['details']['preflight'])
+        self.assertEqual(list(self.root.glob('.velvet-move-*')),[])
+
+    def test_target_occupied_after_staging_keeps_undo_available(self):
+        target=self.root/'renamed.mp4';job=self.approve([(1,self.source,target)])
+        def occupy(stage,*args):
+            if stage=='staged':target.write_bytes(b'external')
+        result=MoveExecutor(self.jobs,self.repository.bind_moves,occupy).run(job)
+        self.assertEqual(result['state'],'partial');self.assertEqual(target.read_bytes(),b'external')
         draft=self.executor.prepare_undo(job);undo=self.executor.approve_undo(job,draft['digest'])
         self.assertEqual(self.executor.run(undo)['state'],'done')
         self.assertEqual(self.source.read_bytes(),b'synthetic media');self.assertEqual(target.read_bytes(),b'external')

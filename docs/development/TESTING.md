@@ -40,3 +40,10 @@ release.py只检查Git跟踪/暂存文件；新增文件需先加入Git。它检
 Windows可选命令：`python scripts/rehearse_cross_volume.py --target-parent D:/`。来源默认系统临时目录，也可显式--source-parent；两父目录必须已存在且位于不同实际卷。只在两者下各新建唯一临时子目录，写合成字节视频/字幕/哨兵和独立应用库；退出清理这些自有临时目录，不读或整理已有文件。不使用-O，演练依赖断言。
 
 覆盖跨卷copy/完整哈希/提交检查点中断与恢复/绑定/复制解绑/同盘move及反向/选定人工资料与非任务文件保留，输出摘要不含路径/GUID。它不是物理拔盘、真正进程强杀、有效视频解码、exFAT或浏览器测试。仅选已有授权的测试位置，不用生产资料目录。
+
+
+### alpha.6预检测试
+
+test_organization_preflight使用独立临时文件，覆盖只读预检、大小写/Unicode、暂存名预算与UTF-16、原目录合法名称、所选资源整批容量、源证明及设备变化。Windows NTFS用可用pwsh/Windows PowerShell对自有临时目录/文件设置DACL，验证拒绝创建/读取后恢复原SDDL；输出不含账户SID或安全描述符。优先符号链接，当前机器无该权限时用自有目录junction验证拒绝，结束只移除自建链接。
+
+FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过。rehearse_cross_volume仍独立验证实际C/D NTFS，断点是合成SystemExit，不是物理拔盘。浏览器目标抢占使用自建外部哨兵，修正路径绕开，结束核对哨兵及源/目标哈希、mtime与受保护字段。

@@ -5,6 +5,7 @@ import time
 import uuid
 from pathlib import Path
 from storage_inventory import destination_conflicts,target_space
+from organization_preflight import owned_path
 
 
 class QueryPlanner:
@@ -24,7 +25,8 @@ class QueryPlanner:
             if not members['items']:raise ValueError('当前固定范围为空，请重新选择')
             grouped={}
             for item in members['items']:grouped.setdefault((item['device_id'],item['file_snapshot']),[]).append(item['relative_path'])
-            entries=[];devices={};roots=[];destinations=set();created=[]
+            entries=[];devices={};roots=[];destinations=set();created=[];path_cache={}
+            allowed_sources={owned_path(Path(item['root'])/item['relative_path']) for item in members['items']} if operation=='move' else set()
             for (device_id,file_snapshot),relatives in grouped.items():
                 child=self.inventory.plan(device_id,target,layout,operation,snapshot_id=file_snapshot,relatives=relatives,persist=False)
                 device=self.inventory.device(device_id);devices[device_id]={'root':device['root'],'identity':device['identity'],'alias':device['alias'],'file_snapshot':file_snapshot}
@@ -32,12 +34,12 @@ class QueryPlanner:
                 for entry in child['entries']:
                     entry.update(device_id=device_id,device_alias=device['alias'],source_root=child['source_root'],source_device_identity=device['identity'],file_snapshot=file_snapshot)
                     if operation!='keep':
-                        entry['conflicts']=list(dict.fromkeys(entry['conflicts']+destination_conflicts(Path(entry['destination']),destinations)))
+                        entry['conflicts']=list(dict.fromkeys([issue for issue in entry['conflicts'] if issue!='target_exists']+destination_conflicts(Path(entry['destination']),destinations,allowed=allowed_sources,cache=path_cache)))
                     entries.append(entry)
             # No expansion to a later inventory or changed annotation/device context.
             self.query.members(snapshot,selected)
             roots=list(dict.fromkeys(roots));target_path=roots[0] if operation=='keep' else str(Path(target).expanduser().resolve())
-            space={'required':0,'reserve':0,'sufficient':True,'files_unchanged':True} if operation=='keep' else target_space(entries,Path(target_path))
+            space={'required':0,'reserve':0,'sufficient':True,'files_unchanged':True} if operation=='keep' else target_space(entries,Path(target_path),operation)
             payload={'entries':entries,'bytes':members['bytes'],'source_roots':roots,'source_root':roots[0],'source_devices':devices,
                      'source_unchanged':not any(e['conflicts'] for e in entries),'device_id':'multi','device_alias':'跨位置固定选择',
                      'snapshot_created':min(created),'executable':False,'layout':layout,'space':space,

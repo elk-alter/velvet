@@ -96,3 +96,14 @@ storage/query的每项增加query_ordinal。POST /api/storage/selection：snapsh
 查询到期/设备/排除/建议变化或indexed占位被实际位置替换返回409；未知ID、越界成员、外来位置及不安全相对路径400；资源冲突409。查看期间持路径/资产/视频范围读租约，不打开媒体内容、不触发刮削、不生成执行清单。位置未盘点也可读已有索引；若要完整盘点/整理，需要另行登记和确认。
 
 前端地址storage-file保存m_snapshot/m_file或m_video/m_location，资源m_resource；storage-video使用m_source视频ID。文件列表原筛选/偏移及滚动/焦点保存在History状态，刷新详情可返回；查询过期时解释并回原筛选刷新，不扩大旧选择。物理位置与单作品版本/分段、目录合集分别展示。
+
+
+## 统一预检与原目录移动
+
+prepare/approve及copy/move执行边界都进行只读预检，不再依赖浏览器冲突标记。错误400含可读提示；已领取任务中的预检失败持久保存步骤details.preflight，job响应附preflight_messages。暂存前冲突保持源原位，暂存后继续按日志处理；不得清理移动暂存。
+
+preview.items附conflict_messages；space含required（新增量）、data_bytes（视频+明确归属资源数据量）、reserve、free和operation。共享/不可用资源不计入复制。move新增量0、预留16MiB；copy按同目标设备合并所有选择与资源，保留100MiB/最大单文件/5%中的最大值。draft可附preflight摘要（不含浮动free），旧草稿仍会重检。
+
+copy目标继续独立于全部所选源；move允许原盘点根或其子目录，修正大小写或对调只认本次选中的源。修改目标仍产生新计划/摘要。raw_target在规范化前拒绝链接/重解析点，普通路径可含合法隐藏目录。当前240 UTF-16单位限制同时包含随机暂存名；超过时缩短路径，不能仅看最终文件名长度。此规则不宣称已验证全部旧长路径恢复。
+
+已有源完整证明不能由新检测静默替换；完整校验期间设备变化拒绝，不登记到新卷。所有检查是当时条件，执行时继续核对归属/指纹，不覆盖外部文件。详见ADR0008。

@@ -101,3 +101,10 @@ resource_scopes(owner,resource)记录活动claim的文件/目录、资产、视�
 storage_file_details不新增业务表或迁移资产；固定成员复用inventory_query_items/file_snapshot，索引入口只解析属于视频ID的位置ID（旧索引占位indexed会在真实位置出现后失效）。查询定位可生成已有查询缓存，但不会更改作品关系、字段锁、偏好或质量结论。当前stat与历史大小/mtime/SHA分开，旧索引无盘点时间不伪造，未记录卷身份不宣称已核验。读取持文件/资产/视频范围租约。
 
 位置默认20/上限50，资源每页50；只返回当前文件字段白名单和当前绑定。History保存文件列表筛选/分页及滚动焦点，非永久服务端偏好，不进入公开发行附件；查询过期仍需重新选择，不能靠History延长批准。
+
+
+### 统一整理预检
+
+organization_drafts/jobs.payload新增可选preflight（version=1、targets的device/filesystem/required/reserve，或keep.files_unchanged）；进入原不可变摘要，不纳入浮动free。旧日志不改写，无字段也按当前规则在批准/执行重检。步骤details.preflight保存失败代码，响应额外preflight_messages为派生显示，不回写批准。
+
+源已有source_device/source_identity/fingerprint证明不得被新探测覆盖，完整哈希后复核设备/身份，盘点设备在资产登记前再核对。不增加业务表/后台系统。预检的目录名称/属性/权限缓存仅本次调用，后续执行用新结果；不通过清日志绕过历史长路径或未完成操作保护。详见[ADR0008](../adr/0008-organization-preflight.md)。

@@ -69,3 +69,7 @@
 
 - storage_file_details：固定盘点成员详情、已有索引/稳定位置详情和片库定位；只读stat与身份检查，历史证据/当前属性/作品关系分开。通过已有记录ID限定范围，无资产自动迁移/自动入库或文件执行。
 - disk_file_view.js：物理文件及位置视图、索引回退、资源分页与返回上下文；manager_routes持有地址、History滚动/焦点，film_detail提供入口。新资源与UI_ASSETS/HTML/Docker同步。
+
+
+- organization_preflight：只读名称/链接/权限/容量预检、合法名称验证和人类可读代码映射；草稿、批准、执行及提交边界接入。no_links在此实现，organization_jobs保留兼容导出；safe_component仍只负责生成名称。
+- storage_inventory/organization_planner：共用预检名称索引与按操作估算；copy保留独立目标，move可在原根内整理。organization_service回传预检摘要/提示并再次核对盘点设备，不自动采纳替换卷。

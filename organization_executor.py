@@ -1,4 +1,5 @@
 """Streaming copy executor for explicitly approved organization jobs."""
+from organization_preflight import validate_manifest,path_conflicts,PreflightError
 import ctypes
 import hashlib
 import os
@@ -67,6 +68,7 @@ class CopyExecutor:
         def check():
             if cancel():raise CopyCancelled()
         source,target=self.check_paths(entry);check()
+        validate_manifest([entry],self.jobs.device_identity)
         if fingerprint(source,check)!=entry['fingerprint']:raise ValueError('Source changed after approval')
         if target.exists():raise ValueError('Target appeared after approval')
         parent=target.parent
@@ -129,6 +131,8 @@ class CopyExecutor:
                 if file_identity(temporary)!=details['file_identity']:raise ValueError('Temporary ownership changed')
                 stamp=fingerprint(temporary)
                 if stamp['sha256']!=entry['fingerprint']['sha256'] or stamp['size']!=entry['fingerprint']['size']:raise ValueError('Temporary changed before commit')
+                issues=path_conflicts(target,set())
+                if issues:raise PreflightError(issues)
                 publish_no_replace(temporary,target)
             self.verify_target(entry,details)
             self.jobs.transition(job_id,ordinal,'committing','committed',details);state='committed'
@@ -169,7 +173,7 @@ class CopyExecutor:
             except CopyCancelled:cancelled=True;break
             except Exception as error:
                 current=self.jobs.get(job_id)['steps'][step['ordinal']]
-                details=dict(current['details'],error=type(error).__name__)
+                details=dict(current['details'],error=type(error).__name__,**({'preflight':error.codes} if isinstance(error,PreflightError) else {}))
                 self.save_details(job_id,step['ordinal'],current['state'],details)
         states=[step['state'] for step in self.jobs.get(job_id)['steps']]
         outcome='done' if all(state=='done' for state in states) else 'cancelled' if cancelled else 'waiting' if paused else 'partial' if any(state in ('committed','binding','needs_binding','done') for state in states) else 'failed'

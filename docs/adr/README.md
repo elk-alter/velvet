@@ -29,3 +29,6 @@
 
 
 - [0007：文件范围租约与持久写入排队](0007-scoped-leases-writer-admission.md)
+
+
+- [0008：统一整理预检与同盘原目录整理](0008-organization-preflight.md)

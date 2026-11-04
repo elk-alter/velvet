@@ -1,4 +1,5 @@
 """Same-device move staging, cyclic renames and explicitly approved inverse jobs."""
+from organization_preflight import validate_manifest,path_conflicts,PreflightError
 import os
 import uuid
 from pathlib import Path
@@ -39,6 +40,9 @@ class MoveExecutor:
             if cancel() or self.jobs.cancel_requested(job_id):raise CopyCancelled()
             if self.jobs.pause_requested(job_id):raise CopyPaused()
         try:
+            pending=[job['payload']['entries'][step['ordinal']] for step in job['steps'] if step['state']=='pending']
+            if pending:current=next(step['ordinal'] for step in job['steps'] if step['state']=='pending')
+            validate_manifest(pending,self.jobs.device_identity)
             # Stage every source first, so cyclic destinations are vacant before publishing.
             for ordinal,entry in enumerate(job['payload']['entries']):
                 check();current=ordinal;step=self.jobs.get(job_id)['steps'][ordinal]
@@ -65,7 +69,11 @@ class MoveExecutor:
                 if state=='committing':
                     if not target.exists():
                         temporary=Path(details['temporary']);self.verify(temporary,entry,check)
+                        issues=path_conflicts(target,set(),archive=entry['operation']=='archive')
+                        if issues:raise PreflightError(issues)
                         target.parent.mkdir(parents=True,exist_ok=True);self.target(entry)
+                        issues=path_conflicts(target,set(),archive=entry['operation']=='archive')
+                        if issues:raise PreflightError(issues)
                         publish_no_replace(temporary,target)
                         self.checkpoint('published',job_id,ordinal)
                     self.verify(target,entry,check)
@@ -98,7 +106,7 @@ class MoveExecutor:
                 import json
                 step=self.jobs.get(job_id)['steps'][current]
                 with self.jobs.db() as c:
-                    c.execute('UPDATE organization_steps SET details=? WHERE job_id=? AND ordinal=?',(json.dumps(dict(step['details'],error=type(error).__name__)),job_id,current))
+                    c.execute('UPDATE organization_steps SET details=? WHERE job_id=? AND ordinal=?',(json.dumps(dict(step['details'],error=type(error).__name__,**({'preflight':error.codes} if isinstance(error,PreflightError) else {}))),job_id,current))
             self.jobs.finish(job_id,'partial' if any(state!='pending' for state in states) else 'failed')
         return self.jobs.get(job_id)
 

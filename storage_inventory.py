@@ -10,6 +10,7 @@ import uuid
 import unicodedata
 from pathlib import Path
 from media_libraries import canonical
+from organization_preflight import no_links,owned_path
 from media_companions import discover
 from archive_policy import archive_roots,is_archive_path,ARCHIVE_NAME
 
@@ -46,28 +47,27 @@ def volume_details(root):
 def destination_key(path):return unicodedata.normalize('NFC',str(path)).casefold()
 
 
-def destination_conflicts(path, destinations, filesystem='unknown'):
-    key=destination_key(path);conflicts=[]
-    if key in destinations:conflicts.append('planned_collision')
-    if path.exists():conflicts.append('target_exists')
-    if len(str(path))>240:conflicts.append('long_path')
-    if any(safe_component(part)!=part for part in path.parts[1:]):conflicts.append('invalid_component')
-    destinations.add(key)
-    return conflicts
+def destination_conflicts(path, destinations, filesystem='unknown',allowed=(),cache=None):
+    from organization_preflight import path_conflicts
+    return path_conflicts(path,destinations,allowed=allowed,cache=cache)
 
 
-def target_space(entries,target):
+def target_space(entries,target,operation='copy'):
     parent=Path(target)
     while not parent.exists() and parent!=parent.parent:parent=parent.parent
     free=shutil.disk_usage(parent).free if parent.exists() else None
     volume=volume_details(parent);companions={}
     for entry in entries:
-        for resource in entry['companions']:companions[str(Path(entry['relative']).parent/resource['name'])]=resource.get('size',0) or 0
+        for resource in entry['companions']:
+            if resource.get('shared') or not resource.get('available',True):continue
+            companions[str(Path(entry.get('source',entry['relative'])).parent/resource['name'])]=resource.get('size',0) or 0
+            if volume['filesystem'].upper()=='FAT32' and (resource.get('size',0) or 0)>4294967295:entry['conflicts'].append('fat32_file_limit')
         if volume['read_only']:entry['conflicts'].append('target_read_only')
         if volume['filesystem'].upper()=='FAT32' and entry['size']>4294967295:entry['conflicts'].append('fat32_file_limit')
     estimated=sum(entry['size'] for entry in entries)+sum(companions.values())
-    reserve=max(100*1024*1024,max((entry['size'] for entry in entries),default=0),int(estimated*.05))
-    return {'filesystem':volume['filesystem'],'read_only':volume['read_only'],'free':free,'companions_bytes':sum(companions.values()),'required':estimated,'reserve':reserve,'sufficient':free is not None and free>=estimated+reserve}
+    required=0 if operation=='move' else estimated
+    reserve=16*1024*1024 if operation=='move' else max(100*1024*1024,max([entry['size'] for entry in entries]+list(companions.values()),default=0),int(required*.05))
+    return {'filesystem':volume['filesystem'],'read_only':volume['read_only'],'free':free,'companions_bytes':sum(companions.values()),'required':required,'data_bytes':estimated,'operation':operation,'reserve':reserve,'sufficient':free is not None and free>=required+reserve}
 
 
 def safe_component(value):
@@ -272,8 +272,8 @@ class StorageInventory:
             raise ValueError('未知整理模板')
         if not keeping and (not isinstance(raw_target,str) or not raw_target.strip()):raise ValueError('请填写独立目标目录')
         device = self.device(device_id); source = Path(device['root'])
-        target = source if keeping else Path(raw_target).expanduser().resolve()
-        if not keeping and (source.is_relative_to(target) or target.is_relative_to(source)):
+        target = source if keeping else no_links(raw_target)
+        if operation=='copy' and (source.is_relative_to(target) or target.is_relative_to(source)):
             raise ValueError('目标必须与源目录相互独立')
         with self.db() as c:
             latest = c.execute("SELECT * FROM inventory_snapshots WHERE device_id=? AND state IN ('done','partial')"+(' AND id=?' if snapshot_id else '')+' ORDER BY created DESC LIMIT 1', (device_id,snapshot_id) if snapshot_id else (device_id,)).fetchone()
@@ -282,7 +282,8 @@ class StorageInventory:
         if relatives is not None:
             allowed=set(relatives);rows=[row for row in rows if row['relative_path'] in allowed]
             if len(rows)!=len(allowed):raise ValueError('固定盘点中的所选条目已失效')
-        entries = []; destinations = set()
+        entries = []; destinations = set();path_cache={}
+        allowed_sources={owned_path(source/row['relative_path']) for row in rows} if operation=='move' else set()
         for row in rows:
             metadata = self.effective_metadata(row); relative = Path(row['relative_path'])
             title = metadata.get('organization_annotation',{}).get('title') or metadata.get('title') or relative.parent.name or relative.stem
@@ -290,7 +291,7 @@ class StorageInventory:
             if layout=='version':destination=target/safe_component(title)/safe_component(str(metadata.get('height') or 'unknown')+'p-'+str(metadata.get('codec') or 'unknown'))/safe_component(relative.name)
             if layout=='episode':destination=target/safe_component(metadata.get('relationship',{}).get('collection') or relative.parent.name or title)/('Episode '+str(metadata.get('relationship',{}).get('number') or 'unknown').zfill(2))/safe_component(relative.name)
             if keeping:destination=source/relative
-            conflicts=[] if keeping else destination_conflicts(destination,destinations)
+            conflicts=[] if keeping else destination_conflicts(destination,destinations,allowed=allowed_sources,cache=path_cache)
             try:
                 stamp=(source/relative).stat()
                 if (stamp.st_size,stamp.st_mtime_ns)!=(row['size'],row['mtime_ns']):conflicts.append('source_changed')
@@ -298,7 +299,7 @@ class StorageInventory:
             except OSError:conflicts.append('source_unavailable')
             entries.append({'relative': row['relative_path'], 'source':str(source/relative), 'destination': str(destination), 'size': row['size'], 'mtime_ns': row['mtime_ns'], 'digest': row['digest'], 'operation': 'keep_proposal_only' if keeping else 'copy_proposal_only', 'conflicts': conflicts,
                             'reason': 'keep_original_location' if keeping else 'preserve_original' if layout=='preserve' else 'metadata_or_directory_title', 'metadata_source':metadata.get('source','unknown'), 'needs_review': True, 'source_metadata':metadata, 'companions': json.loads(row['companions'])})
-        space={'required':0,'reserve':0,'sufficient':True,'files_unchanged':True} if keeping else target_space(entries,target)
+        space={'required':0,'reserve':0,'sufficient':True,'files_unchanged':True} if keeping else target_space(entries,target,operation)
         plan_id = uuid.uuid4().hex
         payload = {'entries': entries, 'bytes': sum(r['size'] for r in rows), 'source_unchanged': not any(any(issue in entry['conflicts'] for issue in ('source_changed','source_unavailable','device_mismatch')) for entry in entries), 'source_root':str(source),'device_id':device_id,'device_alias':device['alias'],'source_device_identity':device['identity'], 'snapshot_created':latest['created'], 'executable': False, 'layout': layout,'space':space}
         payload['operation']='keep' if keeping else 'relocate'
@@ -345,7 +346,8 @@ class StorageInventory:
         if not isinstance(selected,list) or not selected or any(type(i) is not int or not 0<=i<len(payload['entries']) for i in selected):raise ValueError('选择条目无效')
         edits=edits or {}
         if not isinstance(edits,dict):raise ValueError('目标修改无效')
-        root=Path(row['target']);entries=[];destinations=set()
+        root=Path(row['target']);entries=[];destinations=set();path_cache={}
+        allowed_sources={owned_path(payload['entries'][i]['source']) for i in set(selected)} if payload.get('requested_operation')=='move' else set()
         for i in sorted(set(selected)):
             entry=dict(payload['entries'][i]);replacement=edits.get(str(i))
             if replacement is not None:
@@ -355,7 +357,7 @@ class StorageInventory:
                 target=root/relative
                 if not target.resolve().is_relative_to(root.resolve()):raise ValueError('目标路径越界')
                 entry['destination']=str(target)
-            entry['conflicts']=destination_conflicts(Path(entry['destination']),destinations)
+            entry['conflicts']=destination_conflicts(Path(entry['destination']),destinations,allowed=allowed_sources,cache=path_cache)
             device=self.device(entry.get('device_id',row['device_id']));source=Path(device['root'])/entry['relative'];entry['source']=str(source)
             expected=entry.get('source_device_identity',payload.get('source_device_identity'))
             if device['identity']!=expected or (entry.get('source_root') and device['root']!=entry['source_root']):entry['conflicts'].append('device_mismatch')
@@ -365,7 +367,7 @@ class StorageInventory:
             except OSError:entry['conflicts'].append('source_unavailable')
             entries.append(entry)
         updated=dict(payload,entries=entries,bytes=sum(e['size'] for e in entries),parent_plan_id=plan_id)
-        updated['space']=target_space(entries,root)
+        updated['space']=target_space(entries,root,payload.get('requested_operation','copy'))
         if payload.get('selection'):updated['selection']=dict(payload['selection'],scope='revised',origin_total=payload['selection']['total'],total=len(entries),bytes=updated['bytes'])
         updated['source_unchanged']=not any(any(issue in entry['conflicts'] for issue in ('source_changed','source_unavailable','device_mismatch')) for entry in entries)
         updated['source_root']=payload['source_root'] if payload.get('source_devices') else self.device(row['device_id'])['root']

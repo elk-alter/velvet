@@ -185,3 +185,45 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.app.CORE.restore(backup)
         with self.app.db() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM videos').fetchone()[0],1)
         self.assertTrue(self.clip.exists())
+
+    def test_move_inside_original_root_renames_without_copy_and_can_undo(self):
+        plan=self.inventory.plan(self.device,str(self.source),operation='move')
+        self.assertEqual(plan['space']['required'],0)
+        self.assertEqual(plan['entries'][0]['conflicts'],[])
+        draft=self.service.prepare(plan['id'],plan['digest'],[0],'move')
+        target=Path(draft['payload']['entries'][0]['destination'])
+        job=self.approve(draft);self.assertEqual(self.service.run_once(job)['state'],'done')
+        self.assertFalse(self.clip.exists());self.assertEqual(target.read_bytes(),b'synthetic raw media')
+        inverse=self.service.prepare_inverse(job);undo=self.service.approve_inverse(job,inverse['digest'])
+        self.assertEqual(self.service.run_once(undo)['state'],'done')
+        self.assertEqual(self.clip.read_bytes(),b'synthetic raw media');self.assertFalse(target.exists())
+
+    def test_case_only_move_revision_uses_selected_source_ownership(self):
+        plan=self.inventory.plan(self.device,str(self.source),'preserve',operation='move')
+        revised=self.inventory.revise_plan(plan['id'],plan['digest'],[0],{'0':'PART1.mp4'})
+        self.assertEqual(revised['entries'][0]['conflicts'],[])
+        draft=self.service.prepare(revised['id'],revised['digest'],[0],'move');job=self.approve(draft)
+        self.assertEqual(self.service.run_once(job)['state'],'done')
+        self.assertIn('PART1.mp4',[p.name for p in self.source.iterdir()])
+
+    def test_move_revision_cannot_claim_an_unselected_existing_source(self):
+        other=self.source/'other.mp4';other.write_bytes(b'unselected synthetic media')
+        self.inventory.scan(self.device,hashing=True)
+        plan=self.inventory.plan(self.device,str(self.source),operation='move')
+        selected=next(i for i,entry in enumerate(plan['entries']) if entry['relative']=='part1.mp4')
+        revised=self.inventory.revise_plan(plan['id'],plan['digest'],[selected],{str(selected):'other.mp4'})
+        self.assertIn('target_exists',revised['entries'][0]['conflicts'])
+        self.assertEqual(other.read_bytes(),b'unselected synthetic media')
+        self.assertEqual(self.clip.read_bytes(),b'synthetic raw media')
+
+    def test_device_change_during_full_validation_does_not_adopt_new_volume(self):
+        plan=self.inventory.plan(self.device,str(self.target))
+        original=self.service.jobs.device_identity
+        def changed(path):return 'synthetic-replaced-volume' if Path(path)==self.clip else original(path)
+        self.service.jobs.device_identity=changed;self.service.locations.device_identity=changed
+        with self.assertRaises(ValueError):
+            self.service.prepare(plan['id'],plan['digest'],[0],'copy')
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM media_assets').fetchone()[0],0)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM organization_drafts').fetchone()[0],0)
+        self.assertFalse(self.target.exists());self.assertEqual(self.clip.read_bytes(),b'synthetic raw media')

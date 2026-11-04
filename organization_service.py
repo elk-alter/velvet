@@ -1,4 +1,5 @@
 """Organization application service: frozen inventory plans to persistent execution."""
+from organization_preflight import LABELS
 import json
 import hashlib
 import time
@@ -91,6 +92,9 @@ class OrganizationService:
             def register(entry,stamp,device_token):
                 source=str(no_links(entry['source']))
                 original=resource_records[source] if entry.get('role')=='companion' else originals[source]
+                media_original=originals[entry['metadata']['parent_source']] if entry.get('role')=='companion' else original
+                expected_device=media_original.get('source_device_identity',payload.get('source_device_identity'))
+                if device_token!=expected_device:raise ValueError('源设备在完整校验期间变化，请重新盘点并确认')
                 if (stamp['size'],stamp['mtime_ns'])!=(original['size'],original['mtime_ns']) or (original.get('digest') and original['digest']!=stamp['sha256']):raise ValueError('源文件已变化，请重新盘点')
                 if entry.get('role')=='companion':
                     entry['parent_asset_id']=assets[entry['metadata']['parent_source']];return None
@@ -222,7 +226,7 @@ class OrganizationService:
         if not row:raise ValueError('整理预览不存在')
         payload=json.loads(row['payload']);entries=payload['entries'];offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
         return {'id':row['id'],'digest':payload['digest'],'device_id':row['device_id'],'target':row['target'],'source_root':payload['source_root'],
-                'items':[dict(entry,index=index) for index,entry in enumerate(entries[offset:offset+limit],offset)],'total':len(entries),'offset':offset,'limit':limit,'bytes':payload['bytes'],'space':payload.get('space',{}),'operation':payload.get('requested_operation','copy')}
+                'items':[dict(entry,index=index,conflict_messages=[LABELS.get(code,code) for code in entry.get('conflicts',[])]) for index,entry in enumerate(entries[offset:offset+limit],offset)],'total':len(entries),'offset':offset,'limit':limit,'bytes':payload['bytes'],'space':payload.get('space',{}),'operation':payload.get('requested_operation','copy')}
 
     def selected(self,plan_id,scope):
         if isinstance(scope,list):return scope
@@ -242,7 +246,7 @@ class OrganizationService:
         payload=json.loads(row['payload']);entries=payload['entries'];offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
         return {'archive_of':archive[0] if archive else None,'preview_id':origin['preview_id'] if origin else None,'id':row['id'],'digest':row['digest'],'items':entries[offset:offset+limit],'total':len(entries),'bytes':sum(entry['fingerprint']['size'] for entry in entries),'offset':offset,'limit':limit,
                 'retained':payload.get('retained',[])[max(0,int(retained_offset)):max(0,int(retained_offset))+limit],'retained_total':len(payload.get('retained',[])),'retained_offset':max(0,int(retained_offset)),'operation':entries[0]['operation'],'inverse_of':inverse['original_job_id'] if inverse else None,
-                'media_count':sum(entry.get('role')!='companion' for entry in entries),'resource_count':sum(entry.get('role')=='companion' for entry in entries)}
+                'preflight':payload.get('preflight'),'media_count':sum(entry.get('role')!='companion' for entry in entries),'resource_count':sum(entry.get('role')=='companion' for entry in entries)}
 
     def listing(self,offset=0,limit=25):
         offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
@@ -254,6 +258,8 @@ class OrganizationService:
     def detail(self,job_id,offset=0,limit=50):
         job=self.jobs.get(job_id);offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
         entries=[dict(entry,step=step) for entry,step in zip(job['payload']['entries'],job['steps'])]
+        for entry in entries:
+            entry['step']['details']['preflight_messages']=[LABELS.get(code,code) for code in entry['step']['details'].get('preflight',[])]
         with self.db() as c:
             inverse=c.execute('SELECT i.inverse_job_id,j.state,COALESCE(control.pause_requested,0) AS paused FROM organization_inverses i LEFT JOIN organization_jobs j ON j.id=i.inverse_job_id LEFT JOIN organization_control control ON control.job_id=j.id WHERE i.original_job_id=?',(job_id,)).fetchone()
             inverse_of=c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)).fetchone()

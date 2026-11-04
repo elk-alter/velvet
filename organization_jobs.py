@@ -1,15 +1,14 @@
 """Immutable organization approvals, persistent steps and exclusive resource leases."""
 import hashlib
 import json
-import os
 import time
 import uuid
 from pathlib import Path
 from media_locations import fingerprint
-from storage_inventory import volume_identity, destination_key, safe_component
+from storage_inventory import volume_identity, destination_key
 from task_journal import TaskJournal
 from resource_leases import ResourceLeases,ResourceBusy,path_resource
-from archive_policy import ARCHIVE_NAME
+from organization_preflight import validate_manifest,no_links,valid_component,PreflightError
 
 TERMINAL={'done','cancelled'}
 TRANSITIONS={
@@ -26,14 +25,6 @@ TRANSITIONS={
  'interrupted':{'pending','verified','committed','needs_binding','cancelled'},
  'done':set(),'cancelled':set(),
 }
-
-
-def no_links(raw):
-    path=Path(raw).expanduser().absolute()
-    for part in (path,*path.parents):
-        if part.is_symlink() or (part.exists() and getattr(part.lstat(),'st_file_attributes',0)&1024):
-            raise ValueError('Linked paths require separate review')
-    return path.resolve()
 
 
 def identify(path):
@@ -77,6 +68,7 @@ class OrganizationJobs:
         if not moving and not keeping and any(source.is_relative_to(target) or target.is_relative_to(source) for source in source_roots for target in target_roots):raise ValueError('Copy target must be independent of source scope')
         sources={destination_key(no_links(entry['source'])) for entry in entries}
         if len(sources)!=len(entries):raise ValueError('Duplicate source location')
+        preflight=validate_manifest(entries,self.device_identity)
         checked=[];destinations=set()
         for entry in entries:
             source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
@@ -84,21 +76,24 @@ class OrganizationJobs:
             if entry_source not in source_roots or entry_target not in target_roots or not source.is_relative_to(entry_source) or not target.is_relative_to(entry_target):raise ValueError('Entry escapes approved roots')
             key=destination_key(target)
             if keeping and source!=target:raise ValueError('原位保留不能修改路径')
-            if not keeping and any(safe_component(part)!=part and not (operations=={'archive'} and part==ARCHIVE_NAME) for part in target.parts[1:]):raise ValueError('Invalid target path component')
+            if not keeping and any(not valid_component(part,operations=={'archive'}) for part in target.parts[1:]):raise ValueError('Invalid target path component')
             if (target.exists() and not keeping and not (moving and key in sources)) or key in destinations:raise ValueError('Target collision')
             source_device=self.device_identity(source);target_device=self.device_identity(target.parent)
             if moving and source_device!=target_device:raise ValueError('Cross-device moves must use verified copy first')
             destinations.add(key)
             stamp=fingerprint(source)
+            source_info=source.stat();source_identity=[source_info.st_dev,source_info.st_ino]
+            if self.device_identity(source)!=source_device or entry.get('source_device',source_device)!=source_device:raise PreflightError(['device_mismatch'])
+            if entry.get('fingerprint',stamp)!=stamp or entry.get('source_identity',source_identity)!=source_identity:raise PreflightError(['source_changed'])
             asset_id=register(entry,stamp,source_device) if register else entry.get('asset_id')
             checked.append({'source':str(source),'destination':str(target),'video_id':entry.get('video_id'),
-                            'operation':entry['operation'],'fingerprint':stamp,'source_identity':[source.stat().st_dev,source.stat().st_ino],'source_device':source_device,
+                            'operation':entry['operation'],'fingerprint':stamp,'source_identity':source_identity,'source_device':source_device,
                             'target_device':target_device,'asset_id':asset_id,'role':entry.get('role','media'),'parent_asset_id':entry.get('parent_asset_id'),'metadata':entry.get('metadata',{})})
             if multiple:checked[-1].update(source_root=str(entry_source),target_root=str(entry_target))
             if operations=={'archive'}:
                 if not isinstance(entry.get('archive_guard'),dict):raise ValueError('归档需要目标副本证明')
                 checked[-1]['archive_guard']=entry['archive_guard']
-        payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version,'retained':retained or []}
+        payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version,'retained':retained or [],'preflight':preflight}
         if multiple:payload.update(source_roots=[str(root) for root in source_roots],target_roots=[str(root) for root in target_roots])
         stamp=digest(payload);draft_id=uuid.uuid4().hex
         with self.db() as c:
@@ -115,6 +110,7 @@ class OrganizationJobs:
         payload=json.loads(draft['payload'])
         if digest(payload)!=expected_digest:raise ValueError('Stored approval content changed')
         if any(entry['operation'] not in ('copy','move','keep','archive') for entry in payload['entries']):raise ValueError('此计划需要使用对应撤销批准入口')
+        validate_manifest(payload['entries'],self.device_identity)
         sources={destination_key(e['source']) for e in payload['entries']}
         for entry in payload['entries']:
             source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
