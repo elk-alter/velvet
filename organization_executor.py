@@ -52,8 +52,13 @@ class CopyExecutor:
         if self.jobs.device_identity(source)!=entry['source_device'] or self.jobs.device_identity(target.parent)!=entry['target_device']:raise ValueError('Device identity changed')
         return source,target
 
+    def target_path(self,entry):
+        target=no_links(entry['destination'])
+        if str(target)!=entry['destination'] or self.jobs.device_identity(target.parent)!=entry['target_device']:raise ValueError('Approved target path or device changed')
+        return target
+
     def verify_target(self,entry,details):
-        _,target=self.check_paths(entry)
+        target=self.target_path(entry)
         if not details.get('file_identity') or file_identity(target)!=details['file_identity']:raise ValueError('Target ownership requires review')
         stamp=fingerprint(target)
         if (stamp['size'],stamp['sha256'])!=(entry['fingerprint']['size'],entry['fingerprint']['sha256']):raise ValueError('Committed target changed')
@@ -117,8 +122,9 @@ class CopyExecutor:
             self.jobs.transition(job_id,ordinal,'verified','committing',details);state='committing'
             self.checkpoint('committing',job_id,ordinal)
         if state=='committing':
-            _,target=self.check_paths(entry);temporary=Path(details['temporary'])
+            target=self.target_path(entry);temporary=Path(details['temporary'])
             if not target.exists():
+                self.check_paths(entry)
                 if fingerprint(entry['source'])!=entry['fingerprint']:raise ValueError('Source changed before commit')
                 if file_identity(temporary)!=details['file_identity']:raise ValueError('Temporary ownership changed')
                 stamp=fingerprint(temporary)
@@ -132,7 +138,8 @@ class CopyExecutor:
             if state!='binding':self.jobs.transition(job_id,ordinal,state,'binding',details)
             try:
                 if not self.binder:raise ValueError('Library binder not configured')
-                binding=self.binder(entry,job_id)
+                binding=self.binder(dict(entry,verified_identity=details['file_identity']),job_id)
+                self.verify_target(entry,details)
                 if not binding:raise ValueError('Library binding not confirmed')
             except Exception as error:
                 details['error']=type(error).__name__

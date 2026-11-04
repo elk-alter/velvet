@@ -61,7 +61,7 @@ class OrganizationJobs:
             if 'pause_requested' not in {r[1] for r in c.execute('PRAGMA table_info(organization_control)')}:
                 c.execute('ALTER TABLE organization_control ADD COLUMN pause_requested INTEGER DEFAULT 0')
 
-    def prepare(self,entries,source_root,target_root,rules_version=1):
+    def prepare(self,entries,source_root,target_root,rules_version=1,register=None):
         if type(rules_version) is not int or rules_version<1:raise ValueError('Invalid rule version')
         source_root=no_links(source_root);target_root=no_links(target_root)
         if not isinstance(entries,list) or not entries:raise ValueError('Choose files before approval')
@@ -81,9 +81,11 @@ class OrganizationJobs:
             source_device=self.device_identity(source);target_device=self.device_identity(target.parent)
             if moving and source_device!=target_device:raise ValueError('Cross-device moves must use verified copy first')
             destinations.add(key)
+            stamp=fingerprint(source)
+            asset_id=register(entry,stamp,source_device) if register else entry.get('asset_id')
             checked.append({'source':str(source),'destination':str(target),'video_id':entry.get('video_id'),
-                            'operation':entry['operation'],'fingerprint':fingerprint(source),'source_identity':[source.stat().st_dev,source.stat().st_ino],'source_device':source_device,
-                            'target_device':target_device})
+                            'operation':entry['operation'],'fingerprint':stamp,'source_identity':[source.stat().st_dev,source.stat().st_ino],'source_device':source_device,
+                            'target_device':target_device,'asset_id':asset_id,'metadata':entry.get('metadata',{})})
         payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version}
         stamp=digest(payload);draft_id=uuid.uuid4().hex
         with self.db() as c:
@@ -202,6 +204,7 @@ class OrganizationJobs:
     def resume(self,job_id):
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
+            if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? AND inverse_job_id IS NOT NULL',(job_id,)).fetchone():raise ValueError('Rollback approved; original execution cannot resume')
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
             changed=c.execute("UPDATE organization_jobs SET state='queued',updated=? WHERE id=? AND state IN ('cancelled','interrupted','partial','failed','waiting')",(time.time(),job_id)).rowcount
             if changed!=1:raise ValueError('Only stopped jobs can be resumed')

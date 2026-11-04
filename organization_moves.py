@@ -2,7 +2,7 @@
 import os
 import uuid
 from pathlib import Path
-from media_locations import fingerprint
+from media_locations import fingerprint,binding_key
 from organization_jobs import no_links,digest
 from organization_executor import CopyCancelled,CopyPaused,file_identity,publish_no_replace
 
@@ -75,7 +75,7 @@ class MoveExecutor:
             try:
                 if not self.binder:raise ValueError('Move binder not configured')
                 bindings=self.binder(job['payload']['entries'],job_id)
-                if not bindings or any(not bindings.get(e['video_id']) for e in job['payload']['entries']):raise ValueError('Move binding incomplete')
+                if not bindings or any(not bindings.get(binding_key(e)) for e in job['payload']['entries']):raise ValueError('Move binding incomplete')
             except Exception:
                 for step in self.jobs.get(job_id)['steps']:
                     if step['state']=='binding':self.jobs.transition(job_id,step['ordinal'],'binding','needs_binding',step['details'])
@@ -83,7 +83,7 @@ class MoveExecutor:
             self.checkpoint('bound',job_id,None)
             for ordinal,entry in enumerate(job['payload']['entries']):
                 step=self.jobs.get(job_id)['steps'][ordinal]
-                if step['state']=='binding':self.jobs.transition(job_id,ordinal,'binding','done',dict(step['details'],binding_id=bindings[entry['video_id']]))
+                if step['state']=='binding':self.jobs.transition(job_id,ordinal,'binding','done',dict(step['details'],binding_id=bindings[binding_key(entry)]))
             self.jobs.finish(job_id,'done')
         except CopyPaused:self.jobs.finish(job_id,'waiting')
         except CopyCancelled:self.jobs.finish(job_id,'cancelled')
@@ -117,7 +117,7 @@ class MoveExecutor:
                 except (OSError,ValueError):continue
                 location=candidate;break
             if not location:raise ValueError('Cannot prove rollback ownership; review required')
-            reverse.append({'video_id':entry['video_id'],'operation':'move','source':location,'destination':entry['source']})
+            reverse.append({'video_id':entry['video_id'],'asset_id':entry.get('asset_id'),'metadata':entry.get('metadata',{}),'operation':'move','source':location,'destination':entry['source']})
         common=Path(os.path.commonpath([job['payload']['source_root'],job['payload']['target_root']]))
         draft=self.jobs.prepare(reverse,common,common)
         with self.jobs.db() as c:c.execute('INSERT INTO organization_inverses VALUES(?,?,NULL)',(job_id,draft['id']))

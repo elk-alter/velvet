@@ -40,6 +40,7 @@
 
 - resource_leases：跨工作流共享读/独占写租约；扫描、检查、刮削、同步、播放及备份恢复接入，当前采用整个媒体工作区粒度。
 - media_locations：稳定文件身份与经过验证的位置绑定。
+- organization_service：盘点预览到身份注册/执行批准/后台调度/绑定的应用服务，支持未入库原文件；HTTP/UI及伴随资源执行尚未接入。
 - organization_jobs：不可变批准、执行步骤、互斥租约、持久取消与启动对账。
 - organization_executor：已批准copy计划的暂存、完整校验、不覆盖提交与绑定回调。
 - organization_cleanup：已停止copy任务的残片清理预览、日志及Windows句柄安全删除；不清理移动暂存或已提交目标。
