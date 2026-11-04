@@ -37,7 +37,7 @@
 |A5-29|确定性后端回归|通过（限定实测范围）|[验收记录](ALPHA5-VALIDATION.md)|Windows NTFS与合成/模拟故障；平台限制见记录|
 |A5-30|合成资料浏览器回归|通过（限定实测范围）|[验收记录](ALPHA5-VALIDATION.md)|Windows NTFS与合成/模拟故障；平台限制见记录|
 |A5-31|端到端运行场景|通过（限定实测范围）|[验收记录](ALPHA5-VALIDATION.md)|Windows NTFS与合成/模拟故障；平台限制见记录|
-|A5-32|可复核发布证据|发行时核验|[验收记录](ALPHA5-VALIDATION.md)|按最终标签目标、附件校验和及交付记录核验|
+|A5-32|可复核发布证据|通过|[验收记录](ALPHA5-VALIDATION.md)|标签44f7373；最终附件解压92项通过，GitHub下载校验一致|
 |ORG-01|我能登记多块硬盘并给它们起别名|通过（限定实测范围）|[验收记录](ALPHA5-VALIDATION.md)|Windows NTFS与合成/模拟故障；平台限制见记录|
 |ORG-02|我能选择盘点范围及排除目录|通过（限定实测范围）|[验收记录](ALPHA5-VALIDATION.md)|Windows NTFS与合成/模拟故障；平台限制见记录|
 |ORG-03|我能中断后继续盘点|通过（限定实测范围）|[验收记录](ALPHA5-VALIDATION.md)|Windows NTFS与合成/模拟故障；平台限制见记录|
