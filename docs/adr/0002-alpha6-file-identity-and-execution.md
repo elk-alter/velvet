@@ -27,3 +27,9 @@ media_locations当前是独立数据层原型，尚未挂HTTP或启动迁移。�
 organization_drafts保存不可变草稿及内容摘要；organization_jobs以approval_digest唯一去重；organization_steps及events保存每个状态边界；organization_leases以设备资源唯一约束互斥，事务失败回滚部分获取。copying→verified→committing→committed→binding→done分开记录，不能以文件已复制代替已绑定。
 
 recover仅在持有整个数据目录DataGuard的启动阶段调用，不允许活跃执行器运行时清除租约。当前仅组织模块消费租约；扫描/媒体检查/恢复尚未接入，后续集成门槛仍保留。原生文件操作、资源伴随文件、移动批准与执行暂未实现。
+
+## 复制执行实现补充
+
+CopyExecutor采用逐文件重做。copying阶段进程中断/取消保留原暂存文件，重做创建新独占暂存并记录旧路径，不自动推断可删除。verified/committing/committed阶段恢复核对日志记录的文件身份与完整哈希；不能仅因同内容目标存在就认领外部文件。Windows使用MoveFileW的不覆盖行为提交；POSIX使用同目录link的不覆盖行为，不支持该能力的文件系统报错，不降级为覆盖rename。
+
+绑定为注入的数据层回调，返回确切绑定标识后才能done。提交后绑定失败单独重试；应用层仍需接入完整身份、元数据与关系适配，当前单元注入不代替成品验收。取消检查覆盖源哈希和复制块；临时清理、移动和设备实际支持范围继续按A6验收。

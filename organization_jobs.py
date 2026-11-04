@@ -51,6 +51,7 @@ class OrganizationJobs:
             c.execute('CREATE TABLE IF NOT EXISTS organization_jobs(id TEXT PRIMARY KEY,approval_digest TEXT UNIQUE,payload TEXT,state TEXT,created REAL,updated REAL)')
             c.execute("CREATE TABLE IF NOT EXISTS organization_steps(job_id TEXT,ordinal INTEGER,state TEXT,details TEXT DEFAULT '{}',updated REAL,PRIMARY KEY(job_id,ordinal))")
             c.execute('CREATE TABLE IF NOT EXISTS organization_step_events(sequence INTEGER PRIMARY KEY,job_id TEXT,ordinal INTEGER,state TEXT,created REAL)')
+            c.execute('CREATE TABLE IF NOT EXISTS organization_control(job_id TEXT PRIMARY KEY,cancel_requested INTEGER DEFAULT 0)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_leases(resource TEXT PRIMARY KEY,job_id TEXT)')
 
     def prepare(self,entries,source_root,target_root,rules_version=1):
@@ -140,6 +141,21 @@ class OrganizationJobs:
             c.execute('UPDATE organization_jobs SET state=?,updated=? WHERE id=?',(state,time.time(),job_id))
             c.execute('DELETE FROM organization_leases WHERE job_id=?',(job_id,))
         self.journal.observe('organize',job_id,state,{'processed':rows.count('done'),'total':len(rows)})
+
+    def request_cancel(self,job_id):
+        self.get(job_id)
+        with self.db() as c:c.execute('INSERT OR REPLACE INTO organization_control VALUES(?,1)',(job_id,))
+
+    def cancel_requested(self,job_id):
+        with self.db() as c:row=c.execute('SELECT cancel_requested FROM organization_control WHERE job_id=?',(job_id,)).fetchone()
+        return bool(row and row[0])
+
+    def resume(self,job_id):
+        with self.db() as c:
+            changed=c.execute("UPDATE organization_jobs SET state='queued',updated=? WHERE id=? AND state IN ('cancelled','interrupted','partial','failed','waiting')",(time.time(),job_id)).rowcount
+            if changed!=1:raise ValueError('Only stopped jobs can be resumed')
+            c.execute('DELETE FROM organization_control WHERE job_id=?',(job_id,))
+        self.journal.observe('organize',job_id,'queued',{'reason':'explicit_resume'})
 
     def recover(self):
         """Startup only, after the application has acquired exclusive DataGuard."""

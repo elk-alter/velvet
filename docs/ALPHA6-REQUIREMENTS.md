@@ -1,6 +1,6 @@
 # alpha.6 需求与验收基线
 
-日期：2026-11-04。状态：规划，未开发/未验收。已发布基线alpha.5；源码发行与本机运行版本分开核实。依据用户最新要求：**硬盘文件统一管理是alpha.6必达项，不再是条件试点。** 本文件是alpha.6范围权威来源，原Story细节仍见[E-ORG](EPIC-RAW-MEDIA-ORGANIZATION.md)。
+日期：2026-11-04。状态：开发中，尚未完成全量验收；进度见ALPHA6-PROGRESS.md。已发布基线alpha.5；源码发行与本机运行版本分开核实。依据用户最新要求：**硬盘文件统一管理是alpha.6必达项，不再是条件试点。** 本文件是alpha.6范围权威来源，原Story细节仍见[E-ORG](EPIC-RAW-MEDIA-ORGANIZATION.md)。
 
 ## 版本目标与完成定义
 

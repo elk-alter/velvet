@@ -35,3 +35,11 @@
 - library_transport：重复文件元数据的无损引用传输；原全量接口保留。
 
 数据取舍见[ADR0001](../adr/0001-alpha5-reliability-and-readonly-plans.md)，性能限制见[测量报告](../ALPHA5-PERFORMANCE.md)。
+
+## alpha.6开发模块（未接运行入口）
+
+- media_locations：稳定文件身份与经过验证的位置绑定。
+- organization_jobs：不可变批准、执行步骤、互斥租约、持久取消与启动对账。
+- organization_executor：已批准copy计划的暂存、完整校验、不覆盖提交与绑定回调；尚无移动/伴随资源及HTTP/UI。
+
+当前证据与缺口见[alpha.6进度](../ALPHA6-PROGRESS.md)。接生产初始化时须同步Docker资源、关系稳定策略及跨执行器租约。

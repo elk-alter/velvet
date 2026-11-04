@@ -6,12 +6,14 @@ from pathlib import Path
 from storage_inventory import volume_identity
 
 
-def fingerprint(raw):
+def fingerprint(raw,check=None):
     path=Path(raw)
     if path.is_symlink():raise ValueError('Linked media must be reviewed before binding')
     before=path.stat();digest=hashlib.sha256()
     with path.open('rb') as source:
-        for block in iter(lambda:source.read(4*1024*1024),b''):digest.update(block)
+        for block in iter(lambda:source.read(4*1024*1024),b''):
+            if check:check()
+            digest.update(block)
     after=path.stat()
     if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('Source changed during verification')
     return {'size':after.st_size,'mtime_ns':after.st_mtime_ns,'sha256':digest.hexdigest()}
