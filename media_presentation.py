@@ -5,6 +5,10 @@ from media_naming import fallback_title,generic_name
 
 PART_PATTERN=r'(?i)(?<![a-z0-9])(?:part|pt|cd|disc|disk)[ ._-]*(\d{1,2})(?![a-z0-9])|第\s*(\d{1,2})\s*(?:部分|段|集)'
 
+def resolution_label(height):
+ h=int(height or 0)
+ return '8K' if h>=4320 else '4K' if h>=2160 else '1440p' if h>=1440 else '1080p' if h>=1080 else '720p' if h>=720 else str(h)+'p' if h else '画质待解析'
+
 def censorship(row,metadata=None,path=None):
  override=row.get('censor_override','auto')
  if override in ('censored','uncensored','unknown'):return override,'手动指定'
@@ -43,5 +47,5 @@ def presentation(row):
  row['censorship_label']={'censored':'有码','uncensored':'无码','unknown':'未知'}[row['censorship']]
  h=int(row.get('height') or 0)
  row.pop('amane_snapshot',None)
- row['resolution_label']='8K' if h>=4320 else '4K' if h>=2160 else '1440p' if h>=1440 else '1080p' if h>=1080 else '720p' if h>=720 else str(h)+'p' if h else '画质待解析'
+ row['resolution_label']=resolution_label(h)
  return row

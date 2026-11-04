@@ -34,7 +34,7 @@ class LibraryQuery:
             c.execute('INSERT OR IGNORE INTO browse_state(id,revision,rebuild) VALUES(1,1,0)')
             if 'projected_revision' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projected_revision INTEGER DEFAULT -1')
             if 'projection_schema' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projection_schema INTEGER DEFAULT 0')
-            c.execute('UPDATE browse_state SET projection_schema=1,rebuild=1,revision=revision+1 WHERE projection_schema!=1')
+            c.execute('UPDATE browse_state SET rebuild=CASE WHEN projection_schema=1 THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=2,revision=revision+1 WHERE projection_schema!=2')
             c.execute('CREATE TABLE IF NOT EXISTS browse_query_members(query_id TEXT,card_key TEXT,movie_key TEXT,version_key TEXT,resume_id INTEGER,title TEXT,part_count INTEGER,size INTEGER,PRIMARY KEY(query_id,movie_key))')
             c.execute('CREATE INDEX IF NOT EXISTS browse_member_card ON browse_query_members(query_id,card_key,movie_key)')
             c.execute('CREATE INDEX IF NOT EXISTS browse_member_preview ON browse_query_members(query_id,card_key,title,resume_id)')
@@ -140,18 +140,18 @@ class LibraryQuery:
 
     CTE="""WITH files AS (
  SELECT v.id,v.size,v.mtime,v.duration,v.height,v.missing,v.watched,v.position,v.favorite,p.folder,p.review,l.movie_key,l.version_key,l.part_no,
- ROW_NUMBER() OVER(PARTITION BY l.movie_key,l.version_key ORDER BY v.missing,l.part_no,v.id) AS first_rank,
- ROW_NUMBER() OVER(PARTITION BY l.movie_key,l.version_key ORDER BY v.missing,CASE WHEN v.watched=0 AND v.position>0 THEN 0 WHEN v.watched=0 THEN 1 ELSE 2 END,l.part_no,v.id) AS resume_rank
+ ROW_NUMBER() OVER(PARTITION BY l.movie_key,l.version_key ORDER BY COALESCE(v.missing,0),l.part_no,v.id) AS first_rank,
+ ROW_NUMBER() OVER(PARTITION BY l.movie_key,l.version_key ORDER BY COALESCE(v.missing,0),CASE WHEN COALESCE(v.watched,0)=0 AND COALESCE(v.position,0)>0 THEN 0 WHEN COALESCE(v.watched,0)=0 THEN 1 ELSE 2 END,l.part_no,v.id) AS resume_rank
  FROM videos v JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 JOIN media_links l ON l.video_id=v.id
  ), stats AS (
- SELECT movie_key,version_key,COUNT(*) AS part_count,SUM(size) AS total_size,SUM(duration) AS total_duration,MIN(height) AS min_height,MIN(watched) AS all_watched,MAX(position) AS max_position,MIN(missing) AS all_missing,MAX(missing) AS any_missing,
+ SELECT movie_key,version_key,COUNT(*) AS part_count,SUM(COALESCE(size,0)) AS total_size,SUM(COALESCE(duration,0)) AS total_duration,MIN(COALESCE(height,0)) AS min_height,MIN(COALESCE(watched,0)) AS all_watched,MAX(COALESCE(position,0)) AS max_position,MIN(COALESCE(missing,0)) AS all_missing,MAX(COALESCE(missing,0)) AS any_missing,
  MAX(CASE WHEN id IN (SELECT preferred_id FROM duplicate_choices) THEN 1 ELSE 0 END) AS preferred,
  MAX(CASE WHEN json_extract(review,'$.needs_update') THEN 1 ELSE 0 END) AS needs_update,
  MAX(CASE WHEN json_extract(review,'$.decision')='open' THEN 1 ELSE 0 END) AS open_parts,
  MAX(CASE WHEN json_extract(review,'$.pending_automatic') THEN 1 ELSE 0 END) AS auto_pending
  FROM files GROUP BY movie_key,version_key
  ), movie_stats AS (
- SELECT movie_key,COUNT(DISTINCT version_key) AS version_count,MAX(favorite) AS movie_favorite,MAX(mtime) AS movie_mtime,
+ SELECT movie_key,COUNT(DISTINCT version_key) AS version_count,MAX(COALESCE(favorite,0)) AS movie_favorite,MAX(mtime) AS movie_mtime,
  CASE WHEN COUNT(DISTINCT folder)=1 AND MIN(length(folder))>0 THEN MIN(folder) ELSE '' END AS collection_root
  FROM files GROUP BY movie_key
  ), available_heights AS (SELECT movie_key,MAX(min_height) AS best_height FROM stats WHERE any_missing=0 GROUP BY movie_key),
@@ -358,7 +358,7 @@ class LibraryQuery:
     def lookup(self,code):
         if not isinstance(code,str) or not code.strip() or len(code)>100:raise ValueError('编号无效')
         self.refresh()
-        with self.db() as c:row=c.execute('SELECT v.id FROM videos v JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 WHERE v.code=? COLLATE NOCASE ORDER BY v.missing,v.id LIMIT 1',(code.strip(),)).fetchone()
+        with self.db() as c:row=c.execute('SELECT v.id FROM videos v JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 WHERE v.code=? COLLATE NOCASE ORDER BY COALESCE(v.missing,0),v.id LIMIT 1',(code.strip(),)).fetchone()
         if not row:raise ValueError('找不到对应的本地视频')
         return {'id':row[0]}
 

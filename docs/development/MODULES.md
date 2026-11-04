@@ -82,3 +82,6 @@
 
 - media_presentation：从app抽出的只读展示与轻量identity_presentation，共用分段/VR/内容标记规则；app保留原名称导出。LibraryCore可注入identity_traits(row,path)，缺省沿用自定义presentation兼容旧调用者；恢复重建保留该回调。它不分配媒体UUID或改写人工关系。
 - library_query版本聚合的files中间集只带统计/排序必需列，代表版本再联结完整展示；持久读模型字段与查询/失效契约保持。
+
+- movie_details：单作品/版本/分段分页、首选/续播、相邻分段与完整质量依据；无全图呈现，读取实例在HTTP恢复后换代。for_edit对全部索引成员先限制100，再兼容完整小图，保持应用DB互斥范围。
+- movie_detail_view.js：详情页导航、固定当前/默认项、未保存切换保护、页码/焦点/取消及迟到隔离；server_browse只缓存有界页面，关系编辑用明确范围，不能从部分缓存推断全片。UI_ASSETS/HTML/Docker同步。

@@ -7,6 +7,27 @@ from pathlib import Path
 
 
 class ServerBrowseTests(unittest.TestCase):
+    def test_closed_detail_rejects_late_movie_response_before_cache_or_reopen(self):
+        source=Path(__file__).with_name('server_browse.js')
+        script=r'''
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+const nodes={};function element(id=''){const e={id,textContent:'',options:[{textContent:'Any'}],children:[],value:'',setAttribute(){},insertAdjacentHTML(){},addEventListener(){}};e.replaceWith=input=>nodes[id]=input;return e}
+for(const id of ['tag','excludeTag','actor','studio','editDirty'])nodes[id]=element(id);
+let release,shown=0,generation=0;
+const context={window:{MovieDetailView:{cancelPending(){++generation},get generation(){return generation}}},library:{},detail:{open:true,addEventListener(){}},document:{createElement:()=>element()},$:id=>nodes[id],fetch:()=>new Promise(resolve=>release=resolve),URL,URLSearchParams,AbortController,setTimeout,clearTimeout,console,toast:message=>{throw Error(message)}};
+vm.createContext(context);vm.runInContext(fs.readFileSync(SOURCE,'utf8'),context);
+(async()=>{
+ const pending=context.window.serverBrowse.openMovie(1,true,()=>++shown);
+ context.detail.open=false;context.window.MovieDetailView.cancelPending();
+ release({ok:true,json:async()=>({movie:{movie_key:'work',id:1,_versions:[{_parts:[{id:1}]}]},review:{files:{}}})});
+ assert.equal(await pending,false);assert.equal(shown,0);assert.equal(context.library.movies,undefined);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''.replace('SOURCE',json.dumps(str(source)))
+        with tempfile.TemporaryDirectory() as root:
+            target=Path(root)/'late-detail.cjs';target.write_text(script,encoding='utf-8')
+            result=subprocess.run(['node',str(target)],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_merge_and_split_do_not_leave_one_file_in_two_cached_movies(self):
         source=Path(__file__).with_name('server_browse.js')
         script=r'''

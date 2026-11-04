@@ -15,7 +15,7 @@ const serverBrowse=(()=>{
   const revision=JSON.stringify(await get('/api/library/query-revision?quality='+encodeURIComponent(criteria().quality)));
   if(!force&&data&&revision===lastRevision&&JSON.stringify(criteria())===scope&&data.offset===(page-1)*pageSize&&data.limit===pageSize)return;
   lastRevision=revision;await load(force||!!data);
-  if(detail.open&&selected?.id)await loadMovie(selected.id);
+  if(detail.open&&selected?.id)await loadMovie(selected.id,{exact:true});
   if(currentActor)loadActors();
  }
  async function load(force=false){
@@ -64,12 +64,16 @@ const serverBrowse=(()=>{
    toast(`已按固定范围提交 ${submitted} 个编号 · 跳过 ${skipped}${failures.length?' · 失败 '+failures.length:''}`);if(submitted)showJobs()
   }catch(error){toast(`已提交 ${submitted} 个编号；后续停止：${error.message}`)}finally{selectionBusy=false}
  }
- async function loadMovie(id){
-  const result=await get('/api/library/movie?id='+encodeURIComponent(id));const movie=result.movie;library.review={...library.review,...result.review,files:{...library.review?.files,...result.review?.files}};const incoming=new Set(movie._versions.flatMap(version=>version._parts.map(part=>part.id)));for(const [key,cached]of details)if(key===movie.movie_key||cached._versions.some(version=>version._parts.some(part=>incoming.has(part.id))))details.delete(key);details.set(movie.movie_key,movie);while(details.size>20)details.delete(details.keys().next().value);
+ async function loadMovie(id,options={}){
+  const parameters=new URLSearchParams({id,exact:options.exact?'1':'0'});for(const key of ['version_offset','part_offset','version_limit','part_limit','revision'])if(options[key]!==undefined)parameters.set(key,options[key]);
+  if(options.edit)parameters.set('max_files','100');
+  const result=await get((options.edit?'/api/library/movie?':'/api/library/detail?')+parameters,options.signal);
+  if(options.accept&&!options.accept())return null;
+  const movie=result.detail?MovieDetailView.movie(result.detail):result.movie;library.review={...library.review,...result.review,files:{...library.review?.files,...result.review?.files}};const incoming=new Set(movie._versions.flatMap(version=>version._parts.map(part=>part.id)));for(const [key,cached]of details)if(key===movie.movie_key||cached._versions.some(version=>version._parts.some(part=>incoming.has(part.id))))details.delete(key);details.set(movie.movie_key,movie);while(details.size>20)details.delete(details.keys().next().value);
   library.movies=[...details.values()];library.videos=library.movies.flatMap(work=>work._versions.flatMap(version=>version._parts));const cachedIds=new Set(library.videos.map(part=>String(part.id)));library.review.files=Object.fromEntries(Object.entries(library.review.files||{}).filter(([id])=>cachedIds.has(id)));return movie;
  }
- async function openMovie(id,exact,show){const request=++movieEpoch;try{const movie=await loadMovie(id);returnCardKey='movie:'+movie.movie_key;if(request!==movieEpoch)return;show(id,exact)}catch(error){toast(error.message)}}
- async function relations(){const range=chosen.size?await members():null;if(range&&range.files>100)throw Error('关系编辑一次最多100个文件，请缩小选择范围');if(range){const works=[];for(let offset=0;offset<range.items.length;offset+=4)works.push(...await Promise.all(range.items.slice(offset,offset+4).map(item=>loadMovie(item.id))));if(works.reduce((n,work)=>n+work._versions.reduce((sum,version)=>sum+version._parts.length,0),0)>100)throw Error('所选作品含其它版本，合计超过100个文件，请缩小选择范围');library.movies=works;library.videos=works.flatMap(work=>work._versions.flatMap(version=>version._parts));chosenIds.clear();for(const item of range.items)chosenIds.add(item.id)}else if(selected)await loadMovie(selected.id)}
+ async function openMovie(id,exact,show){if(detail.open&&$('editDirty').textContent&&!await allowManagementLeave(true)){window.MovieDetailView?.restore();return false}window.MovieDetailView?.cancelPending();const request=++movieEpoch,navigation=window.MovieDetailView?.generation;try{const movie=await loadMovie(id,{...window.MovieDetailView?.parameters?.(id),exact,accept:()=>request===movieEpoch&&(!window.MovieDetailView||navigation===window.MovieDetailView.generation)});if(!movie||request!==movieEpoch||(window.MovieDetailView&&navigation!==window.MovieDetailView.generation))return false;returnCardKey='movie:'+movie.movie_key;show(movie.id??id,true);if(movie._detail)MovieDetailView.show(movie._detail);return true}catch(error){toast(error.message);return false}}
+ async function relations(){const range=chosen.size?await members():null;if(range&&range.files>100)throw Error('关系编辑一次最多100个文件，请缩小选择范围');if(range){const works=[];for(let offset=0;offset<range.items.length;offset+=4)works.push(...await Promise.all(range.items.slice(offset,offset+4).map(item=>loadMovie(item.id,{edit:true}))));if(works.reduce((n,work)=>n+work._versions.reduce((sum,version)=>sum+version._parts.length,0),0)>100)throw Error('所选作品含其它版本，合计超过100个文件，请缩小选择范围');library.movies=works;library.videos=works.flatMap(work=>work._versions.flatMap(version=>version._parts));chosenIds.clear();for(const item of range.items)chosenIds.add(item.id)}else if(selected){const work=await loadMovie(selected.id,{exact:true});if(work._edit_file_count>100)return {ids:[selected.id],notice:'此作品包含较多索引文件，本次仅编辑当前文件，不批量修改整部作品。'};await loadMovie(selected.id,{edit:true})}}
  async function random(){try{const result=await get('/api/library/random?snapshot='+snapshot);openVideo(result.id,true)}catch(error){toast(error.message)}}
  function openCollection(id){collectionReturn=captureView();const url=new URL(location.href);url.searchParams.set('collection',id);history.pushState(null,'',url);page=1;render()}
  function focusCard(key){document.querySelector('.movieCard[data-card-key="'+CSS.escape(key)+'"]')?.focus({preventScroll:true})}

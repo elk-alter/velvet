@@ -22,6 +22,7 @@ UI_ASSETS={
  '/browse.js':('browse.js','text/javascript'),
  '/server_browse.js':('server_browse.js','text/javascript'),
  '/film_detail.js':('film_detail.js','text/javascript'),
+ '/movie_detail_view.js':('movie_detail_view.js','text/javascript'),
  '/browse.css':('browse.css','text/css'),
  '/file_review.js':('file_review.js','text/javascript'),
 }
@@ -144,6 +145,8 @@ from storage_file_details import StorageFileDetails
 STORAGE_FILES=StorageFileDetails(INVENTORY,INVENTORY_QUERY,LEASES)
 from library_query import LibraryQuery,LibraryQueryChanged
 BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,config)
+from movie_details import MovieDetails
+MOVIE_DETAILS=MovieDetails(BROWSE,REVIEW)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
@@ -781,8 +784,10 @@ class Handler(BaseHTTPRequestHandler):
     query=parse_qs(urlparse(self.path).query);return self.send(BROWSE.facets(query.get('kind',['tags'])[0],query.get('q',[''])[0]))
    if path=='/api/library/random':return self.send(BROWSE.random(parse_qs(urlparse(self.path).query).get('snapshot',[''])[0]))
    if path=='/api/library/query':return self.send(BROWSE.query({key:values[0] for key,values in parse_qs(urlparse(self.path).query).items()}))
+   if path=='/api/library/detail':return self.send(MOVIE_DETAILS.query({key:values[0] for key,values in parse_qs(urlparse(self.path).query).items()}))
    if path=='/api/library/movie':
-    movie=BROWSE.movie(parse_qs(urlparse(self.path).query).get('id',['0'])[0]);videos=[part for version in movie['_versions'] for part in version['_parts']]
+    query=parse_qs(urlparse(self.path).query);ident=query.get('id',['0'])[0]
+    movie=MOVIE_DETAILS.for_edit(ident,query['max_files'][0]) if 'max_files' in query else BROWSE.movie(ident);videos=[part for version in movie['_versions'] for part in version['_parts']]
     return self.send({'movie':movie,'review':REVIEW.snapshot(videos,[movie])})
    if path=='/api/library-revision':return self.send({'instance':hashlib.sha256(TOKEN.encode()).hexdigest(),'revision':DB_REVISION,'scan':dict(STATUS),'review_running':REVIEW.lock.locked()})
    if path.startswith('/api/organization/'):
@@ -1112,7 +1117,7 @@ class Handler(BaseHTTPRequestHandler):
        result={key:report[key] for key in ('id','digest','ready','backup')}
        result.update(problems=report['problems'][:50],problem_count=len(report['problems']),verified_count=len(report['files']),retained_count=len(report['retained_files']),retained_files=[{'path':item['path']} for item in report['retained_files'][:50]])
       else:
-       rollback=CORE.restore(a['name'],a.get('reconciliation'));REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+       rollback=CORE.restore(a['name'],a.get('reconciliation'));REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config);MOVIE_DETAILS.__init__(BROWSE,REVIEW);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
        with db() as c:
         if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:

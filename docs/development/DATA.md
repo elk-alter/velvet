@@ -118,3 +118,10 @@ restore_reconciliation检查两端organization_jobs/steps/inverses的清单摘�
 
 
 第二十三批性能调整不新增业务表/字段，不改变movie/version/part哈希、分段命名或人工优先规则。browse_version_rows最终字段/值保持；中间窗口采用窄行，现有派生行可继续使用，无需通过全库改写来升级。LibraryCore恢复重建保留已注入的轻量身份回调，旧三参数构造仍兼容。
+
+
+### 分页作品详情与聚合schema2
+
+MovieDetails无业务表/队列/文件写入，复用browse_version_rows和固定可见关系；查询过程保持一致读取，应用HTTP恢复后重新初始化读取实例，旧revision即使SQL计数重复也无效。实例代数不进入备份或整理批准。关系编辑max_files在DB_MUTEX范围内按全部索引成员检查后再加载，不能按当前页或可见数绕过上限。
+
+NULL兼容修复将窗口中的missing/watched/position及聚合中的height/size/duration/watched/position/missing/favorite按原Python零值语义解释，避免选错默认版本/续播。browse_state.projection_schema=2；从1升级只将projected_revision置失效并递增revision，保持原逐文件投影与已有rebuild需求；0/未知模式重建。不是业务schema版本，不改写用户字段、UUID或关系键。测试覆盖复用投影、重算聚合及旧令牌失效；决定见ADR0010。

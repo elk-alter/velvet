@@ -59,3 +59,8 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 
 
 `python -m unittest test_presentation_identity test_features test_library_query_core test_library_query test_server_browse test_location_core test_upgrade_preservation -q`核对身份/展示一致性、人工字段锁与查询/位置/恢复。历史键与聚合比对、同机HTTP计时的实际证据见ALPHA6-PERFORMANCE；没有浏览器绘制时不宣称首屏验收。
+
+
+`python -m unittest test_movie_details test_movie_detail_view test_server_browse test_library_query test_library_query_core -q`覆盖分页/首选/续播/跨页下一段/隐藏成员编辑上限/NULL旧数据/schema1聚合迁移、鉴权与恢复/重启令牌、缓存适配与关闭后迟到响应。实际媒体解码和全部关闭/导航入口仍需独立验收。
+
+`python scripts/benchmark_movie_details.py --counts 10000 50000 --output report.json`用独立进程覆盖单作品的极多分段和极多版本。每场景先记录索引准备，再测首次详情及20次暖HTTP、响应字节、每请求呈现文件数、进程峰值；禁止全作品hierarchy，超大编辑必须在加载前拒绝。HTTP不是浏览器绘制；较慢压力场景不靠删测或改目标放行。

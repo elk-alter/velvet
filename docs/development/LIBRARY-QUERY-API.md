@@ -14,7 +14,7 @@ quality支持no_cover以及needs_update（或update）、watermark/damaged/repla
 
 ## GET /api/library/movie?id=video_id
 
-返回movie，内容与旧LibraryCore.hierarchy的单作品模型一致，含版本/分段、完整字段、人工锁、偏好与续播信息。按作品查询，不扫描呈现其它作品资料；不存在或排除400。当前单作品极多分段仍未分页，后续需版本/分段独立分页契约。它不触发刮削或物理执行。
+返回movie，内容与旧LibraryCore.hierarchy的单作品模型一致，含版本/分段、完整字段、人工锁、偏好与续播信息。按作品查询，不扫描呈现其它作品资料；不存在或排除400。此为保留的兼容响应，未附max_files时仍可能全量；新主详情使用下述detail分页接口。它不触发刮削或物理执行。
 
 ## 回归与限制
 
@@ -22,7 +22,7 @@ quality支持no_cover以及needs_update（或update）、watermark/damaged/repla
 
 ## 第十一批前端接入及补充接口
 
-主片库已切换到本契约；旧/api/library仍给未改造的管理消费者保留。以下新增接口同样沿用Host/NAS认证，POST还需Token。单作品极多分段仍未分页，不能据此宣称所有详情都有大小上限。
+主片库已切换到本契约；旧/api/library仍给未改造的管理消费者保留。以下新增接口同样沿用Host/NAS认证，POST还需Token。兼容movie及其它旧管理全量接口仍存在，不能据此宣称所有消费者都有大小上限。
 
 - GET /api/library/query-revision?quality=...：源revision；仅quality=no_cover时附实际封面ID集合摘要。不要使用整个数据目录mtime（数据库日志会产生误报）。
 - GET /api/library/facets?kind=tags/actors/studio&q=...：最多100项名称与作品数，供可输入筛选建议。
@@ -37,4 +37,19 @@ movie响应同时附review，仅查询该作品的文件检查记录，完整证
 
 批量刮削先捕获snapshot/keys，不随后续筛选改动；每批50个有编号ID沿用原提交接口，跳过无编号，范围失效则停止后续并保留已提交反馈。模拟150任务通过，不代表真实来源刮削成功；当前任务工作台仍显示最近100条。
 
-第二十三批只调整内部身份派生与版本聚合中间列，GET响应字段、固定选择/过期、偏好/质量语义不变。最新五万首次HTTP6.304秒仍不达冷首屏目标；单作品版本/分段分页尚未接入，不把轻量卡片当作该项完成。
+第二十三批只调整内部身份派生与版本聚合中间列，GET响应字段、固定选择/过期、偏好/质量语义不变。最新五万首次HTTP6.304秒仍不达冷首屏目标；该批单作品版本/分段分页尚未接入；后续第二十四批的契约见下。
+
+
+## GET /api/library/detail（第二十四批开发候选）
+
+主片库详情已使用此接口，不调用全作品hierarchy。参数id为可见视频文件ID；exact=0（默认）遵循作品首选/续播，exact=1打开该文件。version_offset≥0、version_limit默认10/上限20；part_offset≥0（省略时自动定位所选分段所在页）、part_limit默认20/上限50。后续页带原样revision，不将令牌解析为数字。
+
+响应detail包含movie_key、selected完整当前文件、active_version/default_version摘要、default_version_key、total_files（可见文件）、edit_file_count（全部索引成员）、favorite/mtime、revision，以及versions/parts的items/offset/limit/total。版本摘要无完整分段图；当前和默认版本可固定列在当前页以外。parts按人工part_no与文件ID排序，selected不在正在浏览页时仍单独返回；单次最多呈现50个页内文件加1个当前文件。外层review只覆盖这些文件，跨版本质量依据仍取完整SQL范围。
+
+next是当前版本中紧邻的下一可见分段{id,missing}或null，不依赖当前页，不自动跨过缺失分段。每个版本有可区分的目录/文件提示及最低画质说明；摘要和原始物理文件身份分开。读取不探测原视频、刮削或批准整理。
+
+令牌绑定读取实例和源revision；资料变化、服务重启或HTTP恢复后旧页409，前端保留编辑并提供重新打开。未知/已排除文件、非法参数、越界页400；Host/NAS鉴权沿用403/401，不接受任意路径读取。
+
+旧GET /api/library/movie可附max_files=1–100供关系编辑：后端先按全部索引成员计数，在应用数据库互斥范围内检查后才加载完整图；超过限制400。隐藏成员也计入上限。主详情大作品只编辑当前文件且明确提示；跨页批选过大仍拒绝，不偷偷裁成当前页。旧无参数兼容接口保留，不给新主详情使用。
+
+前端20作品缓存现在可含分页分段；当前文件始终保留。关系编辑显式取得完整小范围或当前ID，不能从部分缓存推导“全部”。详情页取消、关闭/切换与迟到响应隔离；翻页不重建正文，版本页码与键盘焦点保留。默认版本操作使用原API并刷新导航。
