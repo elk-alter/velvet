@@ -44,3 +44,11 @@ selected可以是预览中的index数组、all或eligible；后两者由服务�
 ResourceLeases提供跨流程读/写互斥；organization_leases补充设备互斥。未完成物理操作的organize-reconcile保护可以跨暂停和进程重启保留。只有对应任务/批准反向计划可以执行修复；普通修改不能借等待状态绕过保护。恢复备份前另核对文件操作历史，详见[数据规范](DATA.md)。
 
 接口测试在test_organization_http.py使用临时资料库和真实HTTP覆盖，不能据此宣称全部设备、浏览器、迁移及性能验收完成。
+
+## 硬盘查询与管理上下文
+
+GET /api/context返回settings（来源凭据清空及has标记）、folders、collection_rules、excluded_directories、status、ffmpeg/ffprobe、platform/server_mode、amane和变更Token，transport=context-v1；不包含videos/movies/review，不构建片库全图。沿用Host与NAS鉴权，仅供已授权前端。旧/api/library保留，尚未完成主片库分页替换。
+
+GET /api/storage/query参数：device=all或登记位置ID；online=all/online/offline；status=all/identified/unknown；quality=all/issue/no_known_issue；duplicate=all/historical；search；directory（根内相对目录）；sort=path/title/size/mtime；offset≥0；limit=1–100（默认50）；可选snapshot。响应items、total、bytes、offset/limit、criteria、snapshot/snapshot_created和devices别名/在线状态。每项仅当前页元数据白名单、companion_count和最多3项resource_preview；current_content_verified恒为false，历史指纹不伪装成现场校验。
+
+第一次固定盘点范围并存有序标识；翻页必须沿用相同筛选和snapshot。设备/排除/建议/偏好变化、到期或淘汰返回409，条件无效400。新盘点不改变旧快照。有效30分钟、最多16份，不适合作为长期收藏地址或执行清单。数据库恢复后重建查询模块和触发器；查询缓存不是媒体或任务记录。

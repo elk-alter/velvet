@@ -23,6 +23,10 @@ def volume_identity(root):
             guid = ctypes.create_unicode_buffer(1024)
             if ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(volume.value, guid, len(guid)):
                 return 'windows-volume:' + guid.value.casefold(), True
+    try:
+        device=os.stat(root).st_dev
+        if device:return 'system-device:'+str(device),False
+    except OSError:pass
     return 'location:' + hashlib.sha256(str(root).encode()).hexdigest(), False
 
 
