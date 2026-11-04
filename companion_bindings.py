@@ -34,7 +34,7 @@ class CompanionBindings:
             resource_id=owner['id'] if owner else uuid.uuid4().hex
             c.execute('INSERT INTO media_resources VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(device_token,path) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,sha256=excluded.sha256',
                       (resource_id,entry['parent_asset_id'],entry['target_device'],entry['destination'],stamp['size'],stamp['mtime_ns'],stamp['sha256'],task_id))
-            c.execute('INSERT OR IGNORE INTO media_resource_events VALUES(?,?,?,?)',(resource_id,task_id,'copy_bound',time.time()))
+            c.execute('INSERT OR IGNORE INTO media_resource_events VALUES(?,?,?,?)',(resource_id,task_id,'kept_bound' if entry['operation']=='keep' else 'copy_bound',time.time()))
         return resource_id
 
     def prepare_moves(self,entries):

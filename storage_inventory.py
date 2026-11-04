@@ -262,13 +262,15 @@ class StorageInventory:
             row['metadata'] = self.effective_metadata(row); row['companions'] = json.loads(row['companions'])
         return rows
 
-    def plan(self, device_id, raw_target, layout='title'):
+    def plan(self, device_id, raw_target, layout='title',operation='copy'):
+        if operation not in ('copy','move','keep'):raise ValueError('未知整理操作')
+        keeping=operation=='keep'
         if layout not in ('title', 'preserve', 'version', 'episode'):
             raise ValueError('未知整理模板')
-        if not isinstance(raw_target,str) or not raw_target.strip():raise ValueError('请填写独立目标目录')
+        if not keeping and (not isinstance(raw_target,str) or not raw_target.strip()):raise ValueError('请填写独立目标目录')
         device = self.device(device_id); source = Path(device['root'])
-        target = Path(raw_target).expanduser().resolve()
-        if source.is_relative_to(target) or target.is_relative_to(source):
+        target = source if keeping else Path(raw_target).expanduser().resolve()
+        if not keeping and (source.is_relative_to(target) or target.is_relative_to(source)):
             raise ValueError('目标必须与源目录相互独立')
         with self.db() as c:
             latest = c.execute("SELECT * FROM inventory_snapshots WHERE device_id=? AND state IN ('done','partial') ORDER BY created DESC LIMIT 1", (device_id,)).fetchone()
@@ -281,17 +283,20 @@ class StorageInventory:
             destination = target/relative if layout == 'preserve' else target/safe_component(title)/safe_component(relative.name)
             if layout=='version':destination=target/safe_component(title)/safe_component(str(metadata.get('height') or 'unknown')+'p-'+str(metadata.get('codec') or 'unknown'))/safe_component(relative.name)
             if layout=='episode':destination=target/safe_component(metadata.get('relationship',{}).get('collection') or relative.parent.name or title)/('Episode '+str(metadata.get('relationship',{}).get('number') or 'unknown').zfill(2))/safe_component(relative.name)
-            conflicts=destination_conflicts(destination,destinations)
+            if keeping:destination=source/relative
+            conflicts=[] if keeping else destination_conflicts(destination,destinations)
             try:
                 stamp=(source/relative).stat()
                 if (stamp.st_size,stamp.st_mtime_ns)!=(row['size'],row['mtime_ns']):conflicts.append('source_changed')
                 if volume_identity(source)[0]!=device['identity']:conflicts.append('device_mismatch')
             except OSError:conflicts.append('source_unavailable')
-            entries.append({'relative': row['relative_path'], 'source':str(source/relative), 'destination': str(destination), 'size': row['size'], 'mtime_ns': row['mtime_ns'], 'digest': row['digest'], 'operation': 'copy_proposal_only', 'conflicts': conflicts,
-                            'reason': 'preserve_original' if layout=='preserve' else 'metadata_or_directory_title', 'metadata_source':metadata.get('source','unknown'), 'needs_review': True, 'source_metadata':metadata, 'companions': json.loads(row['companions'])})
-        space=target_space(entries,target)
+            entries.append({'relative': row['relative_path'], 'source':str(source/relative), 'destination': str(destination), 'size': row['size'], 'mtime_ns': row['mtime_ns'], 'digest': row['digest'], 'operation': 'keep_proposal_only' if keeping else 'copy_proposal_only', 'conflicts': conflicts,
+                            'reason': 'keep_original_location' if keeping else 'preserve_original' if layout=='preserve' else 'metadata_or_directory_title', 'metadata_source':metadata.get('source','unknown'), 'needs_review': True, 'source_metadata':metadata, 'companions': json.loads(row['companions'])})
+        space={'required':0,'reserve':0,'sufficient':True,'files_unchanged':True} if keeping else target_space(entries,target)
         plan_id = uuid.uuid4().hex
         payload = {'entries': entries, 'bytes': sum(r['size'] for r in rows), 'source_unchanged': not any(any(issue in entry['conflicts'] for issue in ('source_changed','source_unavailable','device_mismatch')) for entry in entries), 'source_root':str(source),'device_id':device_id,'device_alias':device['alias'],'source_device_identity':device['identity'], 'snapshot_created':latest['created'], 'executable': False, 'layout': layout,'space':space}
+        payload['operation']='keep' if keeping else 'relocate'
+        payload['requested_operation']=operation
         payload['digest'] = hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
         with self.db() as c:
             c.execute('INSERT INTO organization_plans VALUES(?,?,?,?,?,?,?)', (plan_id, device_id, str(target), latest['id'], 'preview_only', json.dumps(payload), time.time()))
@@ -329,6 +334,7 @@ class StorageInventory:
         with self.db() as c:row=c.execute('SELECT * FROM organization_plans WHERE id=?',(plan_id,)).fetchone()
         if not row:raise ValueError('未知方案')
         payload=json.loads(row['payload'])
+        if payload.get('operation')=='keep':raise ValueError('原位保留不修改目标路径，请返回规则页更换操作')
         if payload['digest']!=expected_digest:raise ValueError('方案已变化，请重新载入')
         if not isinstance(selected,list) or not selected or any(type(i) is not int or not 0<=i<len(payload['entries']) for i in selected):raise ValueError('选择条目无效')
         edits=edits or {}

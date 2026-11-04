@@ -12,6 +12,7 @@ from organization_executor import CopyExecutor
 from organization_moves import MoveExecutor
 from organization_cleanup import CopyCleanup
 from organization_copy_undo import CopyUndo
+from organization_keep import KeepExecutor
 from resource_leases import ResourceBusy
 from restore_safety import require_reconciled_files
 
@@ -26,16 +27,18 @@ class OrganizationService:
         self.move=MoveExecutor(self.jobs,self.bind_moves)
         self.cleanup=CopyCleanup(self.jobs)
         self.copy_undo=CopyUndo(self.jobs,self.locations)
+        self.keep=KeepExecutor(self.jobs,self.bind_keep)
         with db() as c:c.execute('CREATE TABLE IF NOT EXISTS organization_draft_origins(draft_id TEXT PRIMARY KEY,preview_id TEXT)')
         self.wake=threading.Event();self.stopping=threading.Event()
         self.dispatch=threading.Lock();self.thread=None
 
     def prepare(self,plan_id,expected_digest,selected,operation='copy'):
-        if operation not in ('copy','move'):raise ValueError('请选择复制或同盘移动')
+        if operation not in ('copy','move','keep'):raise ValueError('请选择原位保留、复制或同盘移动')
         with self.jobs.leases.hold('organization-preview'):
             with self.db() as c:row=c.execute('SELECT * FROM organization_plans WHERE id=?',(plan_id,)).fetchone()
             if not row:raise ValueError('整理预览不存在')
             payload=json.loads(row['payload'])
+            if (operation=='keep')!=(payload.get('operation')=='keep'):raise ValueError('原位保留需要独立预览，请返回规则页选择操作')
             unsigned={key:value for key,value in payload.items() if key!='digest'}
             if payload['digest']!=expected_digest or hashlib.sha256(json.dumps(unsigned,sort_keys=True).encode()).hexdigest()!=expected_digest:raise ValueError('整理预览已变化，请重新载入')
             if not isinstance(selected,list) or not selected or any(type(i) is not int or not 0<=i<len(payload['entries']) for i in selected):raise ValueError('请选择当前预览中的文件')
@@ -85,6 +88,13 @@ class OrganizationService:
         video_id,location_id=self.locations.bind_committed_copy(entry['asset_id'],entry['destination'],entry['fingerprint'],entry['target_device'],job_id,entry.get('metadata'),entry.get('verified_identity'))
         self.locations.prefer(video_id,location_id,entry.get('verified_identity'))
         return location_id
+
+    def bind_keep(self,entry,job_id):
+        if entry.get('role')=='companion':return self.resources.bind_copy(entry,job_id)
+        vid,location=self.locations.bind_committed_copy(entry['asset_id'],entry['source'],entry['fingerprint'],entry['source_device'],job_id,entry.get('metadata'),entry['source_identity'])
+        with self.db() as c:current=c.execute('SELECT path FROM videos WHERE id=?',(vid,)).fetchone()
+        if current and current['path']==entry['source']:self.locations.prefer(vid,location,entry['source_identity'])
+        return location
 
     def bind_moves(self,entries,job_id):
         media=[entry for entry in entries if entry.get('role')!='companion']
@@ -143,6 +153,7 @@ class OrganizationService:
             if operations=={'copy'}:return self.copy.run(job_id,draining)
             if operations=={'move'}:return self.move.run(job_id,draining)
             if operations=={'unbind_copy'}:return self.copy_undo.run(job_id,draining)
+            if operations=={'keep'}:return self.keep.run(job_id,draining)
             raise ValueError('Unsupported approved operation')
         except ResourceBusy:
             self.jobs.finish(job_id,'waiting')
@@ -184,7 +195,7 @@ class OrganizationService:
         if not row:raise ValueError('整理预览不存在')
         payload=json.loads(row['payload']);entries=payload['entries'];offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
         return {'id':row['id'],'digest':payload['digest'],'device_id':row['device_id'],'target':row['target'],'source_root':payload['source_root'],
-                'items':[dict(entry,index=index) for index,entry in enumerate(entries[offset:offset+limit],offset)],'total':len(entries),'offset':offset,'limit':limit,'bytes':payload['bytes'],'space':payload.get('space',{})}
+                'items':[dict(entry,index=index) for index,entry in enumerate(entries[offset:offset+limit],offset)],'total':len(entries),'offset':offset,'limit':limit,'bytes':payload['bytes'],'space':payload.get('space',{}),'operation':payload.get('requested_operation','copy')}
 
     def selected(self,plan_id,scope):
         if isinstance(scope,list):return scope

@@ -65,3 +65,8 @@ video_ids在初始化旧videos表时原子迁移为AUTOINCREMENT，保留现有I
 ### 复制绑定撤销
 
 organization_superseded记录被重新审阅替代的撤销任务及新草稿、原任务；claim/resume须检查，不能靠取消状态阻止旧摘要复用。organization_inverses指向当前草稿/任务，历史任务仍保留。unbind_copy以单个事务提交绑定删除、默认位置/质量时间更新、事件、步骤与任务完成，不更新源/目标文件。校验阶段暂停/取消不提交元数据。新语义与恢复保护见[ADR0004](../adr/0004-copy-binding-undo.md)，不放宽物理日志对账门禁。
+
+
+### 原位保留操作
+
+organization_plans标记operation=keep，requested_operation供页面恢复选择；普通搬迁预览标记relocate，兼容未带该字段的旧copy/move预览。keep草稿固定source=destination及设备/完整指纹，不依赖目标空间；pending→binding→done，失败needs_binding后重新验证再关联。新原文件成功关联才materialize，已有UUID、video_id、人工字段和默认副本不重建。无需新增业务表。暂停/取消保留已完成关联；恢复后幂等重试。当前restore_safety仍保守拒绝已有步骤的数据库恢复，完整迁移/文件对账门禁未放宽。

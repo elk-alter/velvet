@@ -964,7 +964,7 @@ class Handler(BaseHTTPRequestHandler):
     INVENTORY.prefer(a.get('id'),a.get('relative'),a.get('preferred'),a.get('note',''));return self.send({'ok':True})
    elif path=='/api/storage/revise':return self.send({'ok':True,'plan':INVENTORY.revise_plan(a.get('id'),a.get('digest'),a.get('selected'),a.get('edits'))})
    elif path=='/api/storage/plan':
-    plan=INVENTORY.plan(a.get('id'),a.get('target'),a.get('layout','title'))
+    plan=INVENTORY.plan(a.get('id'),a.get('target'),a.get('layout','title'),a.get('operation','copy'))
     JOURNAL.observe('plan',plan['id'],'done',{'processed':len(plan['entries']),'total':len(plan['entries']),'phase':'preview_only'})
     return self.send({'ok':True,'plan':plan})
    elif path=='/api/directory-preview':return self.send(DIRECTORY_POLICY.preview(a.get('path')))

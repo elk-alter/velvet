@@ -12,7 +12,7 @@ from resource_leases import ResourceLeases,ResourceBusy
 
 TERMINAL={'done','cancelled'}
 TRANSITIONS={
- 'pending':{'copying','staging','cancelled','waiting'},
+ 'pending':{'copying','staging','binding','cancelled','waiting'},
  'staging':{'staged','interrupted'},
  'staged':{'committing','interrupted'},
  'waiting':{'pending','cancelled'},
@@ -67,9 +67,10 @@ class OrganizationJobs:
         source_root=no_links(source_root);target_root=no_links(target_root)
         if not isinstance(entries,list) or not entries:raise ValueError('Choose files before approval')
         operations={entry.get('operation') for entry in entries}
-        if len(operations)!=1 or not operations<={'copy','move'}:raise ValueError('Choose a single supported operation')
+        if len(operations)!=1 or not operations<={'copy','move','keep'}:raise ValueError('Choose a single supported operation')
         moving=operations=={'move'}
-        if not moving and (source_root.is_relative_to(target_root) or target_root.is_relative_to(source_root)):raise ValueError('Copy target must be independent of source scope')
+        keeping=operations=={'keep'}
+        if not moving and not keeping and (source_root.is_relative_to(target_root) or target_root.is_relative_to(source_root)):raise ValueError('Copy target must be independent of source scope')
         sources={destination_key(no_links(entry['source'])) for entry in entries}
         if len(sources)!=len(entries):raise ValueError('Duplicate source location')
         checked=[];destinations=set()
@@ -77,8 +78,9 @@ class OrganizationJobs:
             source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
             if not source.is_relative_to(source_root) or not target.is_relative_to(target_root):raise ValueError('Entry escapes approved roots')
             key=destination_key(target)
-            if any(safe_component(part)!=part for part in target.parts[1:]):raise ValueError('Invalid target path component')
-            if (target.exists() and not (moving and key in sources)) or key in destinations:raise ValueError('Target collision')
+            if keeping and source!=target:raise ValueError('原位保留不能修改路径')
+            if not keeping and any(safe_component(part)!=part for part in target.parts[1:]):raise ValueError('Invalid target path component')
+            if (target.exists() and not keeping and not (moving and key in sources)) or key in destinations:raise ValueError('Target collision')
             source_device=self.device_identity(source);target_device=self.device_identity(target.parent)
             if moving and source_device!=target_device:raise ValueError('Cross-device moves must use verified copy first')
             destinations.add(key)
@@ -102,11 +104,12 @@ class OrganizationJobs:
         if existing:return existing['id']
         payload=json.loads(draft['payload'])
         if digest(payload)!=expected_digest:raise ValueError('Stored approval content changed')
-        if any(entry['operation'] not in ('copy','move') for entry in payload['entries']):raise ValueError('此计划需要使用对应撤销批准入口')
+        if any(entry['operation'] not in ('copy','move','keep') for entry in payload['entries']):raise ValueError('此计划需要使用对应撤销批准入口')
         sources={destination_key(e['source']) for e in payload['entries']}
         for entry in payload['entries']:
             source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
-            allowed_existing=entry['operation']=='move' and destination_key(target) in sources
+            if entry['operation']=='keep' and source!=target:raise ValueError('原位保留不能修改路径')
+            allowed_existing=entry['operation']=='keep' or entry['operation']=='move' and destination_key(target) in sources
             if str(source)!=entry['source'] or str(target)!=entry['destination'] or (target.exists() and not allowed_existing):raise ValueError('Path changed since preview')
             if self.device_identity(source)!=entry['source_device'] or self.device_identity(target.parent)!=entry['target_device']:raise ValueError('Device changed since preview')
             if fingerprint(source)!=entry['fingerprint'] or [source.stat().st_dev,source.stat().st_ino]!=entry['source_identity']:raise ValueError('Source changed since preview')

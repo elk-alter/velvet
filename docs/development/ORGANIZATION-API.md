@@ -24,7 +24,7 @@ limit上限100，offset为非负；未提供时预览/草稿/详情50，任务�
 
 |方法/路径|关键请求字段|行为|
 |---|---|---|
-|POST /api/organization/prepare|id（盘点预览）、digest、selected、operation|完整复检并建立不可变执行草稿；operation为copy或move|
+|POST /api/organization/prepare|id（盘点预览）、digest、selected、operation|完整复检并建立不可变执行草稿；operation为copy、move或keep（原位预览）|
 |POST /api/organization/approve|id（草稿）、digest、confirmed:true|幂等批准并唤醒队列，返回任务id|
 |POST /api/organization/control|id（任务）、action|pause、cancel或resume，控制状态持久化|
 |POST /api/organization/undo-preview|id（已停止的移动/复制任务）|移动生成反向文件草稿；复制生成保留文件的绑定撤销草稿；均不执行|
@@ -52,3 +52,8 @@ GET /api/context返回settings（来源凭据清空及has标记）、folders、c
 GET /api/storage/query参数：device=all或登记位置ID；online=all/online/offline；status=all/identified/unknown；quality=all/issue/no_known_issue；duplicate=all/historical；search；directory（根内相对目录）；sort=path/title/size/mtime；offset≥0；limit=1–100（默认50）；可选snapshot。响应items、total、bytes、offset/limit、criteria、snapshot/snapshot_created和devices别名/在线状态。每项仅当前页元数据白名单、companion_count和最多3项resource_preview；current_content_verified恒为false，历史指纹不伪装成现场校验。
 
 第一次固定盘点范围并存有序标识；翻页必须沿用相同筛选和snapshot。设备/排除/建议/偏好变化、到期或淘汰返回409，条件无效400。新盘点不改变旧快照。有效30分钟、最多16份，不适合作为长期收藏地址或执行清单。数据库恢复后重建查询模块和触发器；查询缓存不是媒体或任务记录。
+
+
+## 原位保留
+
+POST /api/storage/plan新增operation=copy/move/keep（默认copy）；keep无需target，不创建目标/不计算复制空间，预览source=destination。GET organization/preview返回operation供恢复规则选择。organization/prepare支持keep，但仅接受原位预览；copy/move不可借用keep预览，storage/revise也不能把keep改成重命名。approve仍需confirmed:true和对应摘要。keep任务通过原队列运行，已有默认副本保持，只有源原位是当前播放路径时补齐其验证/可用状态。关联资源沿用身份校验，事件kind=kept_bound，未写物理媒体。取消后保留已完成关联；不提供虚假的文件反向移动入口。
