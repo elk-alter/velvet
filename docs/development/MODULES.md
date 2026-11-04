@@ -77,3 +77,5 @@
 
 - restore_reconciliation：只读重放物理日志、完整文件证明、权威DB/归档/配置摘要、固定计划与私有回执；不执行文件修复。restore_safety验证内部新审计许可，兼容已终止纯资料操作。
 - library_core：主库恢复预览和最终门禁/回滚备份；app负责全局独占、后台静止及有限HTTP结果。full_backup复用审计，持DataGuard离线恢复并保留旧目录/私有回执。index/manager_routes显示问题和留盘副本、传计划令牌，不自己推断安全。详见ADR0009。
+
+- scripts/upgrade_fixture.py：alpha.5兼容合成资料、图片/OCR证据和队列样本，供Git历史升级演练及无Git的回归测试共用；不进入运行时，不处理生产数据，不修改已有源媒体。

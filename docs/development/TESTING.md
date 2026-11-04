@@ -32,7 +32,7 @@ release.py只检查Git跟踪/暂存文件；新增文件需先加入Git。它检
 
 ## alpha.5工具
 
-`python scripts/preview_alpha5.py`提供独立合成UI；`python scripts/benchmark_library.py --counts 10000 50000`量测接口；`python scripts/rehearse_upgrade.py --baseline a98609a`从alpha.4提交验证迁移/回滚，需要Git历史。源码包不含.git，演练可从开发checkout执行；包内后端测试不依赖Git。不得将HTTP时间写成首屏时间，或把模拟FAT32写成实机验证。
+`python scripts/preview_alpha5.py`提供独立合成UI；`python scripts/benchmark_library.py --counts 10000 50000`量测接口；历史alpha.5验收使用从alpha.4迁移的脚本；该历史命令见ALPHA5-VALIDATION，当前alpha.6脚本见下节，不将旧命令冒充当前可复现入口。源码包不含.git，演练可从开发checkout执行；包内后端测试不依赖Git。不得将HTTP时间写成首屏时间，或把模拟FAT32写成实机验证。
 
 
 ## alpha.6实际跨卷合成演练
@@ -53,4 +53,6 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 
 `python -m unittest test_restore_reconciliation test_full_backup test_video_ids test_organization_http -q`覆盖主库/离线对账、完整回执、恢复ID水位、真实HTTP名称确认/鉴权/计划过期。移动六个检查点使用合成SystemExit，保留步骤并通过批准反向后对账；不是物理拔盘或进程强杀。
 
-`python scripts/rehearse_upgrade.py`当前默认从alpha.5发布提交44f7373取源码，重复迁移后复制/移动/反向，恢复前完整对账、保留副本与回执，再启动旧程序核对五类资料及源哈希/mtime。可用--baseline指定兼容历史；不是全部图片/OCR/队列/灾难恢复矩阵。源码包没有Git历史，演练从checkout运行，不能冒充包内测试。默认提交依据本地Git历史，不假设存在版本标签。
+`python scripts/rehearse_upgrade.py`当前默认从alpha.5发布提交44f7373取源码，重复迁移后复制/移动/反向，恢复前完整对账、保留副本与回执，再启动旧程序核对18类资料、4张内置库表、两份配置及6个图片/OCR证据缓存。核对每一步人工决定，受控模拟执行队列且禁止外部请求，详见[升级验收](../ALPHA6-UPGRADE-VALIDATION.md)。可用--baseline指定兼容alpha.5模式的历史，不承诺任意旧版本；不是实际OCR识别或灾难恢复矩阵。源码包没有Git历史，演练从checkout运行，不能冒充包内测试。默认提交依据本地Git历史，不假设存在版本标签。
+
+`python -m unittest test_upgrade_preservation -q`不依赖Git，覆盖已改变的人工资料/图像/内置缓存完整恢复与重启队列规则，随默认全量测试执行。scripts/upgrade_fixture.py仅用于合成演练，不导入生产数据。
