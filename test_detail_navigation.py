@@ -7,6 +7,54 @@ from pathlib import Path
 
 
 class DetailNavigationTests(unittest.TestCase):
+    def test_play_starts_loading_and_stale_metadata_does_not_seek_another_file(self):
+        source=Path(__file__).with_name('index.html')
+        script=r'''
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+const html=fs.readFileSync(SOURCE,'utf8'),start=html.indexOf('function internalPlay(){'),end=html.indexOf('let lastSave=0',start);
+let plays=0;const player={src:'',currentTime:0,duration:10,getAttribute(){return this.src},play(){plays++;return Promise.resolve()}};
+const context={$:()=>player,detail:{open:true},playbackEpoch:0,selected:{id:1,position:8,duration:10,watched:false},toast(){}};
+vm.createContext(context);vm.runInContext(html.slice(start,end),context);
+context.internalPlay();assert.equal(plays,1,'play must request loading with preload=none');assert.equal(player.src,'/media/1');
+const oldMetadata=player.onloadedmetadata;context.selected={id:2,position:4,duration:10,watched:false};oldMetadata();assert.equal(player.currentTime,0,'stale metadata cannot seek another selected file');
+context.internalPlay();player.onloadedmetadata();assert.equal(player.currentTime,4);
+context.selected={id:2,position:999,duration:10,watched:false};context.internalPlay();player.onloadedmetadata();assert.equal(player.currentTime,9);
+player.ended=true;context.selected={id:2,position:9,duration:10,watched:false};context.internalPlay();player.onloadedmetadata();assert.equal(player.currentTime,0,'replay starts at zero even before cached watched state updates');
+context.selected={id:2,position:8,duration:10,watched:true};context.internalPlay();player.onloadedmetadata();assert.equal(player.currentTime,0);
+'''.replace('SOURCE',json.dumps(str(source)))
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'play-start.cjs';path.write_text(script,encoding='utf-8')
+            result=subprocess.run(['node',str(path)],capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_ended_continuation_rejects_stale_progress_refresh_and_replay(self):
+        source=Path(__file__).with_name('index.html')
+        script=r'''
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+const html=fs.readFileSync(SOURCE,'utf8'),start=html.indexOf("$('player').onended=async"),end=html.indexOf('function saveProgress(',start);
+let completed=false;process.on('beforeExit',()=>{if(!completed){console.error('Continuation did not complete');process.exitCode=1}});
+let open=0,play=0,refresh=0,resolveProgress,resolveRefresh;
+const player={src:'/media/1',ended:true,getAttribute(){return this.src}};
+const work=id=>({_versions:[{_parts:[{id}]}],_detail:{next:{id:id+20,missing:false}}});
+const context={$:()=>player,detail:{open:true},playbackEpoch:1,selected:{id:1},library:{movies:[work(1),work(2)]},
+ saveProgress:()=>new Promise(resolve=>resolveProgress=resolve),refresh:async()=>refresh++,openVideo:async id=>{open++;context.selected={id};return true},internalPlay:()=>play++,toast(){}};
+vm.createContext(context);vm.runInContext(html.slice(start,end),context);
+(async()=>{
+ let pending=player.onended();context.selected={id:2};resolveProgress();await pending;assert.equal(open,0);assert.equal(refresh,0);
+ context.selected={id:1};context.saveProgress=async()=>{};context.refresh=()=>new Promise(resolve=>resolveRefresh=resolve);
+ pending=player.onended();while(!resolveRefresh)await new Promise(resolve=>setImmediate(resolve));context.selected={id:2};resolveRefresh();await pending;assert.equal(open,0);
+ context.selected={id:1};context.refresh=async()=>{context.playbackEpoch++};await player.onended();assert.equal(open,0,'replay of same file invalidates old ended callback');
+ context.refresh=async()=>{};await player.onended();assert.equal(open,1);assert.equal(play,1,'next can be outside the loaded part page');
+ context.selected={id:1};context.openVideo=async()=>false;await player.onended();assert.equal(play,1,'canceled switch cannot start playing');
+ context.library.movies[0]._detail.next.missing=true;await player.onended();assert.equal(play,1);
+ completed=true;
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''.replace('SOURCE',json.dumps(str(source)))
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'continuation.cjs';path.write_text(script,encoding='utf-8')
+            result=subprocess.run(['node',str(path)],capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_cancel_discard_escape_actor_and_stale_confirmation(self):
         source = Path(__file__).with_name('index.html')
         script = r'''

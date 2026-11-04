@@ -70,6 +70,35 @@ const exclusionButton=document.createElement('button');exclusionButton.textConte
 async function showExcludedDirectories(){await refresh();openTool('排除目录',`<p class="muted">排除目录及其子目录，不删除文件；恢复后重新扫描可补全索引。</p><label>目录完整路径<input id="excludedPath" placeholder="填写媒体库内的目录路径"></label><button onclick="addExcludedDirectory()">添加排除</button>${(library.excluded_directories||[]).map(path=>`<div class="folder"><span class="path">${esc(path)}</span><button data-path="${esc(path)}" onclick="restoreExcludedDirectory(this.dataset.path)">恢复</button></div>`).join('')||'<p class="muted">暂无排除目录</p>'}`)}
 async function addExcludedDirectory(){try{await confirmDirectoryExclusion({path:$('excludedPath').value});await showExcludedDirectories()}catch(error){toast(error.message)}}
 async function restoreExcludedDirectory(path){try{await api('/api/excluded-directories',{path,enabled:false});await refresh(true);toast('已有索引已恢复；新增文件请重扫');await showExcludedDirectories()}catch(error){toast(error.message)}}
-const exclusionRenderReview=renderFileReviewDetail;renderFileReviewDetail=function(){exclusionRenderReview();const button=document.createElement('button');button.textContent='排除此文件所在目录';button.onclick=async()=>{try{if(!await confirmDirectoryExclusion({id:selected.id}))return;detail.close();await refresh(true);toast('已排除目录，原文件保留')}catch(error){toast(error.message)}};reviewDetail.append(button)};
+const exclusionRenderReview=renderFileReviewDetail;renderFileReviewDetail=function(){exclusionRenderReview();const button=document.createElement('button');button.textContent='排除此文件所在目录';button.onclick=async()=>{try{if(!await confirmDirectoryExclusion({id:selected.id}))return;toast('已排除目录，原文件保留')}catch(error){toast(error.message)}};reviewDetail.append(button)};
 
-async function confirmDirectoryExclusion(scope){const preview=await api('/api/exclusion-preview',scope);if(!confirm(`排除 ${preview.path} 及其子目录？\n影响 ${preview.files} 个文件、${preview.movies} 部影片。原文件保留；可在管理中恢复。`))return false;await api('/api/excluded-directories',{...scope,enabled:true,digest:preview.digest});await refresh(true);return true}
+function requestDirectoryExclusion(preview,dirty,apply){
+ const dialog=document.createElement('dialog');dialog.className='exclusionDialog';dialog.setAttribute('aria-labelledby','excludeDirectoryTitle');
+ dialog.innerHTML=`<form method="dialog"><div class="dialogChrome"><h2 id="excludeDirectoryTitle">排除此目录？</h2><button class="close" value="cancel" aria-label="取消排除">×</button></div><div class="dialogBody"><p>此目录及其子目录将从片库和扫描中排除。</p><p class="path exclusionPath">${esc(preview.path)}</p><p><strong>${preview.files} 个文件 · ${preview.movies} 部影片</strong></p>${dirty?'<p class="notice">当前详情有未保存的资料或质量备注。确认排除后会放弃这些修改；取消则继续保留。</p>':''}<p class="muted">原文件保留，可在排除目录管理中恢复显示。</p><p role="status" class="muted"></p></div><div class="actions dialogFooter"><button value="cancel" autofocus>取消</button><button class="accent" value="exclude">确认排除</button></div></form>`;
+ let applying=false;
+ return new Promise((resolve,reject)=>{
+  dialog.addEventListener('cancel',event=>{if(applying)event.preventDefault()});
+  dialog.addEventListener('close',()=>{const applied=dialog.returnValue==='excluded';dialog.remove();resolve(applied)},{once:true});
+  dialog.querySelector('form').addEventListener('submit',async event=>{
+   if(event.submitter?.value!=='exclude')return;event.preventDefault();if(applying)return;applying=true;
+   dialog.querySelectorAll('button').forEach(button=>button.disabled=true);dialog.querySelector('[role="status"]').textContent='正在应用排除…';
+   try{const applied=await apply();dialog.close(applied===false?'cancel':'excluded')}catch(error){reject(error);dialog.close('cancel')}
+  });
+  document.body.append(dialog);dialog.showModal();
+ });
+}
+let exclusionPending=false;
+async function confirmDirectoryExclusion(scope){
+ if(exclusionPending)return false;exclusionPending=true;
+ const context=detail.open&&selected?.id===scope.id?{id:selected.id,generation:detailGeneration}:null;
+ const current=()=>context&&detail.open&&selected?.id===context.id&&detailGeneration===context.generation;
+ try{
+  const preview=await api('/api/exclusion-preview',scope);if(context&&!current())return false;
+  return await requestDirectoryExclusion(preview,!!context&&detailHasChanges(),async()=>{
+   if(context&&!current())return false;
+   await api('/api/excluded-directories',{...scope,enabled:true,digest:preview.digest});
+   if(current()){$('editDirty').textContent='';discardFileReviewDraft(context.id);await closeDetail()}
+   await refresh(true);return true;
+  });
+ }finally{exclusionPending=false}
+}

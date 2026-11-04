@@ -90,3 +90,7 @@
 - movie_detail_view.js：详情页导航、固定当前/默认项、未保存切换保护、页码/焦点/取消及迟到隔离；server_browse只缓存有界页面，关系编辑用明确范围，不能从部分缓存推断全片。UI_ASSETS/HTML/Docker同步。
 
 - file_review的当前质量编辑器保存单文件note/decision基线，重绘先保留尚未保存的值、成功保存后与权威结果比较；close或确认移除库记录后释放草稿。已有openVideo包装转发上游结果，false不重绘，也不吞掉自动续播取消信号。index的detailHasChanges聚合影片资料与质量表单状态，server_browse/disk_file_view/manager_routes复用，不另叠导航包装。
+
+- file_review的requestDirectoryExclusion持有专用确认dialog，确认内容含影响范围与丢弃草稿说明；应用期间保持modal并禁止取消/重复提交。confirmDirectoryExclusion按原详情ID/代数审计生命周期，失败或陈旧预览不清理，新详情不受迟到结果影响；仍使用既有后端摘要校验。
+- index播放启动先配置元数据回调再主动play，使用当前播放请求代数；ended在进度和refresh前后核对原详情/文件/DOM源/请求代数/ended状态，分页下一段来自后端next。它不是文件身份或持久任务代数，不新增全局导航包装。
+- scripts/preview_alpha6_playback.py仅开发合成验收，生成VP8 WebM和哨兵，独立数据/端口、无扫描/来源线程；退出校验媒体SHA及mtime。不进入运行时和Docker资产表。

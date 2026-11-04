@@ -70,3 +70,9 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 `python -m unittest test_presentation_identity test_library_query test_movie_details test_library_query_core -q`还覆盖列表窄投影的384组合与人工标题保护、旧自定义完整展示回调、HTTP主库恢复后重新查询、NULL/缺列升级及匹配/选择结果。完整展示的Git基线差分在开发checkout核对；不是只比较两个同用新helper的实现。benchmark_browse计入首次投影与范围构建，不预热后再冒充冷启动。
 
 `python -m unittest test_review_navigation test_detail_navigation test_server_browse test_movie_detail_view -q`验证取消/迟到结果转发、质量草稿刷新及保存中继续编辑、关闭清理与分段隔离、质量独立离开确认、移除库记录的当前/迟到处理。异步Node场景需显式完成标记，未完成不能仅凭进程exit0通过。浏览器合成样本另验证只改质量表单的切换/物理入口/工作台/关闭、标记刷新、独立保存和丢弃后重开；不是实际视频解码/续播或全部管理/排除入口验收。
+
+### 可播放合成片库与排除确认
+
+`python scripts/preview_alpha6_playback.py --port 9873 --report work/playback-fixture.json`需要PATH上带libvpx的FFmpeg；报告可省略，只留本地，不提交。脚本只在新临时目录生成3个320×180无音轨VP8 WebM及哨兵，建立第20/21段可播放、其它段离线的22段样本，另有独立影片；注册独立媒体根，禁用联网与自动化。通过既有runtime/stop安全退出后检查媒体/哨兵SHA和mtime_ns。它不是原媒体测试或所有编码认证。端口必须空闲，测试不复用生产目录。
+
+浏览器实际验证第20段6秒播放结束时草稿确认、取消保留/放弃后跨页到第21段4秒并停止于缺失的22段、结束后重播从零；排除取消/确认/恢复、两表单草稿、390px确认页和Esc。10项相关客户端回归还覆盖旧进度/刷新/重播回调、旧元数据、续播取消、确认页重复提交/Esc应用中保护、失败与陈旧/迟到结果。该合成样本不替代大库浏览器首屏、音轨/全屏、物理断盘或最终发行包验收。
