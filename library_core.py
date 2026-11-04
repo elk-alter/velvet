@@ -2,6 +2,7 @@
 import hashlib,json,re,sqlite3,time,zipfile,tempfile,threading
 from contextlib import closing
 from restore_safety import require_reconciled_files
+from video_ids import ensure_video_ids,high_watermark
 from pathlib import Path
 class LibraryCore:
  def __init__(self,db,data,presentation):
@@ -176,12 +177,14 @@ class LibraryCore:
      if not isinstance(value,dict if filename=='settings.json' else list):raise ValueError('备份配置格式错误')
   return path
  def restore(self,name):
-  with self.db() as c:require_reconciled_files(c)
+  with self.db() as c:
+   require_reconciled_files(c);watermark=high_watermark(c,self.data)
   path=self.validate_backup(name);rollback=self.backup('before-restore')
   with zipfile.ZipFile(path) as z,tempfile.TemporaryDirectory(dir=self.data) as temp:
    p=Path(temp)/'restore.db';p.write_bytes(z.read('library.db'))
+   with closing(sqlite3.connect(p)) as source:require_reconciled_files(source)
+   ensure_video_ids(lambda:closing(sqlite3.connect(p)),self.data,minimum=watermark)
    with closing(sqlite3.connect(p)) as source:
-    require_reconciled_files(source)
     with self.db() as dest:source.backup(dest)
    for filename in ('settings.json','tag_rules.json'):
     if filename in z.namelist():(self.data/filename).write_bytes(z.read(filename))

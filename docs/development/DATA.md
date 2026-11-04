@@ -53,3 +53,10 @@ browse_queries/browse_results保存最多16份、30分钟的固定排序卡片�
 第十一批新增browse_query_members(query_id,card_key,movie_key,version_key,resume_id,title,part_count,size)，用于固定选择/合集展开/随机，不是执行清单。query_id与卡片/预览有索引；与browse_results一起到期/淘汰清理。browse_results仅保存排序卡片身份，当前页才补资料；相同源revision和完整筛选可复用有效范围。缺封面范围还核对缓存ID集合。普通轮询不能以数据目录mtime作为图片版本，SQLite WAL/SHM会触发无效刷新。
 
 启动在开放HTTP前准备查询索引并明确打印等待信息；这只是就绪阶段，不宣称消除大库迁移成本。离线克隆/恢复测试必须执行标准DataGuard/LEASES恢复；克隆包含当时持有的备份租约不能直接作为已对账运行库。浏览查询不代表媒体执行或恢复验证。
+
+
+### 数字视频ID迁移与恢复水位
+
+video_ids在初始化旧videos表时原子迁移为AUTOINCREMENT，保留现有ID、额外字段、约束、索引、触发器、视图和资产UUID关系。分配水位同时检查表引用、已知本地历史JSON引用及数据目录图片/OCR编号；不读取远端资料中的ID。缓存不可读或历史不可解析会报错停止迁移，不能静默忽略后继续分配。调用时数据目录须独占且无媒体写入。
+
+主库/完整恢复先取得当前水位，在暂存数据库完成迁移才替换当前数据，保留回滚快照。恢复后的新自动ID不得低于恢复前已分配水位。它不修复过去已错误关联的缓存，也不代替物理整理日志对账。完整决定和边界见[ADR0003](../adr/0003-monotonic-video-ids.md)。

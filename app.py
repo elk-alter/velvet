@@ -58,7 +58,7 @@ def config():
  except (OSError,ValueError):return DEFAULT.copy()
 with db() as c:
  c.execute('PRAGMA journal_mode=WAL')
- c.execute('CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY,path TEXT UNIQUE,title TEXT,size INTEGER,mtime REAL,duration REAL DEFAULT 0,favorite INTEGER DEFAULT 0,tags TEXT DEFAULT "",error TEXT DEFAULT "")')
+ c.execute('CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY AUTOINCREMENT,path TEXT UNIQUE,title TEXT,size INTEGER,mtime REAL,duration REAL DEFAULT 0,favorite INTEGER DEFAULT 0,tags TEXT DEFAULT "",error TEXT DEFAULT "")')
  c.execute('CREATE TABLE IF NOT EXISTS folders(path TEXT PRIMARY KEY)')
  c.execute('CREATE TABLE IF NOT EXISTS actor_preferences(name TEXT PRIMARY KEY,rating INTEGER DEFAULT 0,favorite INTEGER DEFAULT 0)')
  c.execute('CREATE TABLE IF NOT EXISTS duplicate_choices(group_key TEXT PRIMARY KEY,preferred_id INTEGER)')
@@ -71,6 +71,9 @@ with db() as c:
  if 'retry_kind' not in job_fields:c.execute("ALTER TABLE scrape_jobs ADD COLUMN retry_kind TEXT DEFAULT ''")
  if 'engine' not in job_fields:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
  if 'video_id' not in job_fields:c.execute('ALTER TABLE scrape_jobs ADD COLUMN video_id INTEGER')
+
+from video_ids import ensure_video_ids
+ensure_video_ids(db,DATA)
 
 from media_libraries import MediaLibraries
 from network_checks import NetworkChecks

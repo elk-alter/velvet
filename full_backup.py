@@ -1,6 +1,7 @@
 """Offline full application-data backup/restore. Never includes original media roots."""
 from data_guard import exclusive_data
 from restore_safety import require_reconciled_files
+from video_ids import ensure_video_ids,high_watermark
 import argparse
 from contextlib import closing
 import hashlib
@@ -110,13 +111,16 @@ def restore(data, archive_path):
     if data == Path(data.anchor) or archive_path.is_relative_to(data):raise ValueError('Unsafe restore location')
     if data.exists() and any(data.iterdir()) and not (data/'library.db').is_file():raise ValueError('Destination contains unrelated data')
     offline(data)
+    watermark=0
     if (data/'library.db').is_file():
-        with closing(sqlite3.connect(data/'library.db')) as connection:require_reconciled_files(connection)
+        with closing(sqlite3.connect(data/'library.db')) as connection:
+            require_reconciled_files(connection);watermark=high_watermark(connection,data)
     data.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='velvet-restore-', dir=data.parent) as temp:
         stage = Path(temp)/'data';stage.mkdir()
         manifest = validate_extract(archive_path, stage)
         with closing(sqlite3.connect(stage/'library.db')) as connection:require_reconciled_files(connection)
+        watermark=ensure_video_ids(lambda:closing(sqlite3.connect(stage/'library.db')),stage,minimum=watermark)
         offline(data)
         rollback = data.with_name(data.name+'.before-'+uuid.uuid4().hex)
         had_data = data.exists()
@@ -125,7 +129,7 @@ def restore(data, archive_path):
         except BaseException:
             if had_data and not data.exists():rollback.rename(data)
             raise
-    return {'restored':len(manifest['files']), 'rollback':str(rollback) if had_data else None}
+    return {'restored':len(manifest['files']), 'rollback':str(rollback) if had_data else None,'id_watermark':watermark}
 
 
 if __name__ == '__main__':
