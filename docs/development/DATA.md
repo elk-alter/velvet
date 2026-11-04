@@ -91,3 +91,6 @@ inventory_query_items.ordinal是查询内成员序号，不是永久文件ID。�
 resource_scopes(owner,resource)记录活动claim的文件/目录、资产、视频或设备范围；旧claim缺scope仍按全局处理。resource_waiters(ticket,owner,kind,mode,resources,created)保存不可变范围的稳定写入owner，冲突读者及较晚写者不得插队。领取失败也需提交等待票号；暂停/取消删除票号但不提前释放活动租约。删除claim的触发器清其scope；启动独占recover才清过期运行态，禁止时间到期清锁。
 
 任务范围只取固定批准，不随原始资产进入片库而增加视频ID；读者补资产UUID范围保持冲突。reconcile也保存范围，保留原任务/反向修复豁免。备份恢复仍全局独占和原文件日志门禁；部分工作流仍保守全局，详见[ADR0007](../adr/0007-scoped-leases-writer-admission.md)。
+
+
+目录归组派生计算在单次refresh最多缓存1024目录的规则/命名结果；逐文件manual/code/source仍单独判断。不跨refresh复用，不新增业务表，不改变资产身份或人工关系权威。

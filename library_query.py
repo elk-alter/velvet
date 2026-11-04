@@ -56,25 +56,38 @@ class LibraryQuery:
                     c.execute('DROP TRIGGER IF EXISTS browse_'+table+'_'+action)
                     c.execute('CREATE TRIGGER IF NOT EXISTS browse_'+table+'_'+action+' AFTER '+action+' ON '+table+' BEGIN'+dirty+' UPDATE browse_state SET '+rebuild+'revision=revision+1 WHERE id=1; END')
 
-    def folder(self,row,rules,short_prefixes):
-        path=path_text(canonical(row['relation_path'] or row['path'],short_prefixes));normal=fold(path)
-        matches=[rule for rule in rules if normal.startswith(fold(path_text(rule['path']))+'/')]
-        if matches:
-            rule=max(matches,key=lambda item:len(item['path']))
-            return path_text(rule['path']) if rule['mode']=='group' else ''
-        segments=path.split('/')[:-1]
-        for i in range(len(segments)-1,max(-1,len(segments)-7),-1):
-            name=segments[i].strip()
-            if re.search(r'合集|全集|collection|box[ _-]?set',name,re.I) and not re.fullmatch(r'合集|全集|collections?|box[ _-]?sets?',name,re.I):return '/'.join(segments[:i+1])
+    def folder(self,row,rules,short_prefixes,cache=None):
+        # Directory decisions are shared by siblings; manual identity remains per file.
+        parent=path_text(row['relation_path'] or row['path']).rsplit('/',1)
+        parent=parent[0] if len(parent)>1 else ''
+        if cache is not None and parent in cache:resolved,directory=cache[parent]
+        else:
+            directory=path_text(canonical(parent,short_prefixes)) if parent else ''
+            normal=fold(directory)
+            matches=[rule for rule in rules if normal==fold(path_text(rule['path'])) or normal.startswith(fold(path_text(rule['path']))+'/')]
+            resolved=None
+            if matches:
+                rule=max(matches,key=lambda item:len(item['path']))
+                resolved=path_text(rule['path']) if rule['mode']=='group' else ''
+            else:
+                segments=directory.split('/')
+                for i in range(len(segments)-1,max(-1,len(segments)-7),-1):
+                    name=segments[i].strip()
+                    if re.search(r'合集|全集|collection|box[ _-]?set',name,re.I) and not re.fullmatch(r'合集|全集|collections?|box[ _-]?sets?',name,re.I):
+                        resolved='/'.join(segments[:i+1]);break
+            if cache is not None:
+                if len(cache)>=1024:cache.clear()
+                cache[parent]=(resolved,directory)
+        if resolved is not None:return resolved
         if row['relation_manual'] or row['code'] or row['source'] in ('nfo','online','amane'):return ''
-        return '/'.join(segments)
+        return directory
 
     def refresh(self):
         self.core.reconcile()
         with self.db() as c:
             state=c.execute('SELECT rebuild,revision,projected_revision FROM browse_state WHERE id=1').fetchone()
             if not state[0] and state[1]==state[2] and not c.execute('SELECT 1 FROM browse_dirty LIMIT 1').fetchone():return
-        short_prefixes={}
+        short_prefixes={};folder_cache={}
         policies=self.libraries.policies();excluded=[canonical(root,short_prefixes) for root in self.libraries.exclusions()]
         policies=[dict(p,path=str(canonical(p['path'],short_prefixes)),excluded_directories=excluded) for p in policies]
         rules=[dict(rule,path=str(canonical(rule['path'],short_prefixes))) for rule in self.policy.rules()]
@@ -103,7 +116,7 @@ class LibraryQuery:
                     summary={key:review[key] for key in ('needs_update','decision','status','result','auto_status')}
                     summary['issues']=[{'code':item['code'],'source':item['source']} for item in review['issues']]
                     summary['pending_automatic']=any(item['review']=='pending' for item in review['automatic_findings'])
-                    values.append((row['id'],present['title'],present['vr'],present['censorship'],present['resolution_label'],self.folder(row,rules,short_prefixes),visible,json.dumps(list(dict.fromkeys(tokens(row['tags'])+tokens(row['auto_tags'])))),json.dumps(tokens(row['actors'])),json.dumps(summary)))
+                    values.append((row['id'],present['title'],present['vr'],present['censorship'],present['resolution_label'],self.folder(row,rules,short_prefixes,folder_cache),visible,json.dumps(list(dict.fromkeys(tokens(row['tags'])+tokens(row['auto_tags'])))),json.dumps(tokens(row['actors'])),json.dumps(summary)))
                 c.executemany('INSERT OR REPLACE INTO browse_projection VALUES(?,?,?,?,?,?,?,?,?,?)',values)
                 c.execute('DELETE FROM browse_dirty WHERE video_id IN ('+slots+')',ids)
             c.execute('DELETE FROM browse_dirty WHERE video_id NOT IN (SELECT id FROM videos)')

@@ -47,3 +47,18 @@ class LibraryQueryCoreTests(unittest.TestCase):
         self.assertEqual(first,expanded/'offline-a.mp4');self.assertEqual(second,expanded/'offline-b.mp4')
         self.assertEqual(resolver.call_count,1)
         self.assertEqual(resolver.call_args.args[0].name,'FOLDER~1')
+
+    def test_directory_cache_preserves_per_file_identity_and_rule_precedence(self):
+        query=self.app.BROWSE;cache={}
+        root=self.root.resolve()/'Synthetic folder'
+        base={'path':str(root/'a.mp4'),'relation_path':'','relation_manual':0,'code':'','source':'filename'}
+        self.assertEqual(query.folder(base,[],{},cache),str(root).replace('\\','/'))
+        self.assertEqual(query.folder(dict(base,path=str(root/'b.mp4'),relation_manual=1),[],{},cache),'')
+        self.assertEqual(len(cache),1)
+        grouped=self.root.resolve()/'Synthetic Box Set'/'Season 1'
+        explicit=dict(base,path=str(grouped/'a.mp4'),relation_manual=1)
+        self.assertEqual(query.folder(explicit,[],{},{}),str(grouped.parent).replace('\\','/'))
+        rules=[{'path':str(grouped.parent),'mode':'separate'}]
+        self.assertEqual(query.folder(explicit,rules,{},{}),'')
+        rules.append({'path':str(grouped),'mode':'group'})
+        self.assertEqual(query.folder(explicit,rules,{},{}),str(grouped).replace('\\','/'))
