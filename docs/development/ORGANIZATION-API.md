@@ -78,3 +78,21 @@ storage/query的每项增加query_ordinal。POST /api/storage/selection：snapsh
 ## 范围调度（开发候选）
 
 整理执行在同一事务登记文件/资产/设备范围和持久写入票号。等待的冲突写任务阻止新冲突读任务插队；已有读任务在文件边界结束后让出，无关文件播放/检查可继续。暂停/取消移除等待票号，不释放尚在执行的租约。队列会尝试被阻塞任务之后的不同设备任务，仍单执行线程及设备写入串行。部分预览/维护/同步接口保持全局，备份恢复全局独占；不是完整资源矩阵已验收的声明。
+
+
+## 物理文件详情与片库定位（开发候选）
+
+以下GET沿用Host/NAS鉴权，不接受任意路径读取，不批准或执行整理。
+
+|路径|参数|响应与边界|
+|---|---|---|
+|/api/storage/file|snapshot、ordinal、resource_offset≥0|固定查询成员的原file_snapshot、设备别名/路径、历史大小/mtime/SHA、当前单文件stat、识别候选/锁/建议、当前资产/作品/版本/分段绑定；资源每页50|
+|/api/storage/video|id（视频文件ID）、offset、limit≤50（默认20）|此文件的稳定资产和位置分页；尚未迁移的旧索引以indexed位置只读展示，不自动创建资产|
+|/api/storage/locate|id、location|仅接受属于该视频的已有位置；有盘点则生成精确成员查询并返回snapshot/ordinal/criteria；无盘点返回indexed:true及video_id/location供索引详情使用|
+|/api/storage/indexed-file|id、location、resource_offset|直接读取已有视频/位置记录与当前属性，明确source_type=index，无file_snapshot和盘点时间；不自动登记/盘点/入库，绑定资源每页50|
+
+盘点详情source_type=inventory；名称/候选来自固定历史元数据，当前作品绑定单列，不将目录合集建议改写成版本关系。状态current只代表大小/修改时间匹配，不表示完整内容现场校验；current_content_verified恒false，SHA与校验时间明确为历史。offline、device_changed、changed、missing、permission_denied、linked_or_unsafe、unavailable分别显示；旧索引缺稳定卷记录则identity_unverified，不能当设备验证通过；旧索引沿用秒精度时间及10毫秒属性容差，不当作纳秒指纹证明。
+
+查询到期/设备/排除/建议变化或indexed占位被实际位置替换返回409；未知ID、越界成员、外来位置及不安全相对路径400；资源冲突409。查看期间持路径/资产/视频范围读租约，不打开媒体内容、不触发刮削、不生成执行清单。位置未盘点也可读已有索引；若要完整盘点/整理，需要另行登记和确认。
+
+前端地址storage-file保存m_snapshot/m_file或m_video/m_location，资源m_resource；storage-video使用m_source视频ID。文件列表原筛选/偏移及滚动/焦点保存在History状态，刷新详情可返回；查询过期时解释并回原筛选刷新，不扩大旧选择。物理位置与单作品版本/分段、目录合集分别展示。

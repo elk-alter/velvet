@@ -16,6 +16,7 @@ UI_ASSETS={
  '/management.js':('management.js','text/javascript'),
  '/disk_manager.js':('disk_manager.js','text/javascript'),
  '/disk_selection.js':('disk_selection.js','text/javascript'),
+ '/disk_file_view.js':('disk_file_view.js','text/javascript'),
  '/manager_routes.js':('manager_routes.js','text/javascript'),
  '/management.css':('management.css','text/css'),
  '/browse.js':('browse.js','text/javascript'),
@@ -173,6 +174,8 @@ from organization_service import OrganizationService
 ORGANIZATION=OrganizationService(db,INVENTORY)
 from inventory_query import InventoryQuery,InventoryQueryChanged
 INVENTORY_QUERY=InventoryQuery(INVENTORY)
+from storage_file_details import StorageFileDetails
+STORAGE_FILES=StorageFileDetails(INVENTORY,INVENTORY_QUERY,LEASES)
 from library_query import LibraryQuery,LibraryQueryChanged
 BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,config)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
@@ -825,6 +828,12 @@ class Handler(BaseHTTPRequestHandler):
     if path=='/api/organization/locations':
      video_id=int(value('id'));ORGANIZATION.locations.migrate([video_id])
      return self.send({'items':ORGANIZATION.locations.locations(video_id)})
+   if path in ('/api/storage/file','/api/storage/indexed-file','/api/storage/video','/api/storage/locate'):
+    query=parse_qs(urlparse(self.path).query);value=lambda key,default='':query.get(key,[default])[0]
+    if path=='/api/storage/file':return self.send(STORAGE_FILES.file(value('snapshot'),value('ordinal'),value('resource_offset',0)))
+    if path=='/api/storage/indexed-file':return self.send(STORAGE_FILES.indexed_file(value('id'),value('location'),value('resource_offset',0)))
+    if path=='/api/storage/video':return self.send(STORAGE_FILES.locations(value('id'),value('offset',0),value('limit',20)))
+    return self.send(STORAGE_FILES.locate(value('id'),value('location')))
    if path=='/api/storage':return self.send({'devices':INVENTORY.devices()})
    if path=='/api/storage/query':return self.send(INVENTORY_QUERY.query({key:values[0] for key,values in parse_qs(urlparse(self.path).query).items()}))
    if path=='/api/storage/files':

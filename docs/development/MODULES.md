@@ -65,3 +65,7 @@
 - organization_archive：已完成复制后的独立归档预览/批准、目标副本证明、设备能力和持久来源关系；复用MoveExecutor执行/恢复。archive_policy集中保留namespace和强制根排除，供片库、盘点、查询、播放和副本解绑使用。
 
 - organization_planner：从InventoryQuery固定成员构建多来源计划，复用原模板和冲突预检；不把查询范围当执行授权。disk_selection.js独立管理物理跨页/全部匹配差集和返回参数，disk_manager显式接入。
+
+
+- storage_file_details：固定盘点成员详情、已有索引/稳定位置详情和片库定位；只读stat与身份检查，历史证据/当前属性/作品关系分开。通过已有记录ID限定范围，无资产自动迁移/自动入库或文件执行。
+- disk_file_view.js：物理文件及位置视图、索引回退、资源分页与返回上下文；manager_routes持有地址、History滚动/焦点，film_detail提供入口。新资源与UI_ASSETS/HTML/Docker同步。

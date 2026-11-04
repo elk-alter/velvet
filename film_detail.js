@@ -48,3 +48,5 @@ async function retryFilmArtwork(){try{await api('/api/artwork-retry',{id:selecte
 
 function renderSelectedFilmSummary(){const v=selected;$('filmSummary').innerHTML=`<div class="filmEyebrow">${esc(v.code||'本地收藏')} ${v.date?' · '+esc(v.date):''}</div><h2>${esc(v.title)}</h2><div class="filmFacts"><span>${esc(v.resolution_label||'画质待解析')}</span>${v.vr?'<span>VR</span>':''}${v.height>=2160?'<span class="premiumFact">✦ 精品</span>':''}<span>${esc(v.censorship_label||'类型未知')}</span><span>${duration(v.duration)}</span>${v.rating?'<span>★ '+v.rating+'</span>':''}</div><p class="filmStudio">${esc(v.studio||'厂商资料待补全')}</p><p class="filmPlot">${esc(v.plot||'暂无简介。可以在刮削中心补全资料，或展开下方编辑区手动整理。')}</p>`;}
 const previousSaveVideo=saveVideo;saveVideo=async function(){await previousSaveVideo();renderSelectedFilmSummary()};
+
+const physicalFileButton=document.createElement('button');physicalFileButton.id='filmPhysicalFiles';physicalFileButton.textContent='物理文件与副本';physicalFileButton.onclick=()=>DiskFileView.fromVideo(selected.id);playbackActions.append(physicalFileButton);
