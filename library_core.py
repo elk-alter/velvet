@@ -7,6 +7,7 @@ class LibraryCore:
   self.db,self.data,self.present=db,data,presentation
   with db() as c:
    c.execute('CREATE TABLE IF NOT EXISTS media_links(video_id INTEGER PRIMARY KEY,movie_key TEXT,version_key TEXT,part_no INTEGER,manual INTEGER DEFAULT 0)')
+   c.execute('CREATE TRIGGER IF NOT EXISTS media_link_forget AFTER DELETE ON videos BEGIN DELETE FROM media_links WHERE video_id=OLD.id; END')
    c.execute('CREATE TABLE IF NOT EXISTS movie_preferences(movie_key TEXT PRIMARY KEY,version_key TEXT)')
    pref_fields={r[1] for r in c.execute('PRAGMA table_info(movie_preferences)')}
    if 'preferred_id' not in pref_fields:c.execute('ALTER TABLE movie_preferences ADD COLUMN preferred_id INTEGER')
@@ -22,11 +23,15 @@ class LibraryCore:
  def reconcile(self):
   with self.db() as c:
    occupied=set()
+   relation_paths={}
+   if c.execute("SELECT 1 FROM sqlite_master WHERE name='media_assets'").fetchone() and 'relation_path' in {r[1] for r in c.execute('PRAGMA table_info(media_assets)')}:
+    relation_paths={r['video_id']:r['relation_path'] for r in c.execute("SELECT video_id,relation_path FROM media_assets WHERE video_id IS NOT NULL AND relation_path!=''")}
    for raw in c.execute('SELECT * FROM videos ORDER BY id').fetchall():
     row=dict(raw);old=c.execute('SELECT * FROM media_links WHERE video_id=?',(row['id'],)).fetchone()
     if old and old['manual']:
      occupied.add((old['movie_key'],old['version_key'],old['part_no']));continue
-    movie,version,part=self.infer(row)
+    inference=dict(row,path=relation_paths.get(row['id'],row['path']))
+    movie,version,part=self.infer(inference)
     if (movie,version,part) in occupied:version+=':copy:'+str(row['id'])
     occupied.add((movie,version,part))
     if old and (old['movie_key'],old['version_key'],old['part_no'])==(movie,version,part):continue
@@ -72,7 +77,11 @@ class LibraryCore:
     if not old:raise ValueError('文件不存在')
     part=int(change.get('part_no',1));movie=str(change['movie_key']).strip();version=str(change['version_key']).strip()
     if not movie or not version or not 1<=part<=999:raise ValueError('影片/版本名称或分段序号无效')
-    before.append(dict(old));c.execute('UPDATE media_links SET movie_key=?,version_key=?,part_no=?,manual=1 WHERE video_id=?',(movie,version,part,vid))
+    snapshot=dict(old)
+    if c.execute("SELECT 1 FROM sqlite_master WHERE name='media_assets'").fetchone():
+     asset=c.execute('SELECT id,relation_path FROM media_assets WHERE video_id=?',(vid,)).fetchone()
+     if asset:snapshot.update(asset_id=asset['id'],relation_path=asset['relation_path'])
+    before.append(snapshot);c.execute('UPDATE media_links SET movie_key=?,version_key=?,part_no=?,manual=1 WHERE video_id=?',(movie,version,part,vid))
    # Reject ambiguous ordering within affected versions.
    for key in {x['version_key'] for x in changes}:
     conflict=c.execute('SELECT part_no,COUNT(*) FROM media_links WHERE version_key=? GROUP BY movie_key,part_no HAVING COUNT(*)>1',(key,)).fetchone()
@@ -83,14 +92,27 @@ class LibraryCore:
    before=[]
    for vid in ids:
     row=c.execute('SELECT * FROM media_links WHERE video_id=?',(int(vid),)).fetchone()
-    if row:before.append(dict(row));c.execute('UPDATE media_links SET manual=0 WHERE video_id=?',(int(vid),))
+    if row:
+     snapshot=dict(row)
+     if c.execute("SELECT 1 FROM sqlite_master WHERE name='media_assets'").fetchone():
+      asset=c.execute('SELECT id,relation_path FROM media_assets WHERE video_id=?',(int(vid),)).fetchone()
+      if asset:
+       snapshot['asset_id']=asset['id'];snapshot['relation_path']=asset['relation_path']
+       c.execute('UPDATE media_assets SET relation_path=(SELECT path FROM videos WHERE id=?) WHERE id=?',(int(vid),asset['id']))
+     before.append(snapshot);c.execute('UPDATE media_links SET manual=0 WHERE video_id=?',(int(vid),))
    c.execute('INSERT INTO relationship_undo(created,payload) VALUES(?,?)',(time.time(),json.dumps(before)))
   self.reconcile()
  def undo(self):
   with self.db() as c:
    last=c.execute('SELECT * FROM relationship_undo ORDER BY id DESC LIMIT 1').fetchone()
    if not last:raise ValueError('没有可撤销的关系修改')
-   for row in json.loads(last['payload']):c.execute('INSERT OR REPLACE INTO media_links VALUES(?,?,?,?,?)',tuple(row[k] for k in ['video_id','movie_key','version_key','part_no','manual']))
+   for row in json.loads(last['payload']):
+    if not c.execute('SELECT 1 FROM videos WHERE id=?',(row['video_id'],)).fetchone():continue
+    if 'asset_id' in row:
+     asset=c.execute('SELECT id FROM media_assets WHERE video_id=?',(row['video_id'],)).fetchone()
+     if not asset or asset['id']!=row['asset_id']:continue
+     c.execute('UPDATE media_assets SET relation_path=? WHERE id=?',(row['relation_path'],row['asset_id']))
+    c.execute('INSERT OR REPLACE INTO media_links VALUES(?,?,?,?,?)',tuple(row[k] for k in ['video_id','movie_key','version_key','part_no','manual']))
    c.execute('DELETE FROM relationship_undo WHERE id=?',(last['id'],))
  def prefer(self,vid):
   self.reconcile()

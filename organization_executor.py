@@ -92,6 +92,7 @@ class CopyExecutor:
         if fingerprint(source,check)!=entry['fingerprint']:raise ValueError('Source changed during copy')
         verified=fingerprint(temporary,check)
         if (verified['size'],verified['sha256'])!=(entry['fingerprint']['size'],entry['fingerprint']['sha256']):raise ValueError('Temporary copy verification failed')
+        os.utime(temporary,ns=(source.stat().st_atime_ns,entry['fingerprint']['mtime_ns']))
         self.jobs.transition(job_id,ordinal,'copying','verified',details)
         self.checkpoint('verified',job_id,ordinal)
         return details

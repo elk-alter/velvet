@@ -11,7 +11,9 @@ from task_journal import TaskJournal
 
 TERMINAL={'done','cancelled'}
 TRANSITIONS={
- 'pending':{'copying','cancelled','waiting'},
+ 'pending':{'copying','staging','cancelled','waiting'},
+ 'staging':{'staged','interrupted'},
+ 'staged':{'committing','interrupted'},
  'waiting':{'pending','cancelled'},
  'copying':{'verified','interrupted','cancelled'},
  'verified':{'committing','interrupted'},
@@ -57,20 +59,26 @@ class OrganizationJobs:
     def prepare(self,entries,source_root,target_root,rules_version=1):
         if type(rules_version) is not int or rules_version<1:raise ValueError('Invalid rule version')
         source_root=no_links(source_root);target_root=no_links(target_root)
-        if source_root.is_relative_to(target_root) or target_root.is_relative_to(source_root):raise ValueError('Copy target must be independent of source scope')
         if not isinstance(entries,list) or not entries:raise ValueError('Choose files before approval')
+        operations={entry.get('operation') for entry in entries}
+        if len(operations)!=1 or not operations<={'copy','move'}:raise ValueError('Choose a single supported operation')
+        moving=operations=={'move'}
+        if not moving and (source_root.is_relative_to(target_root) or target_root.is_relative_to(source_root)):raise ValueError('Copy target must be independent of source scope')
+        sources={destination_key(no_links(entry['source'])) for entry in entries}
+        if len(sources)!=len(entries):raise ValueError('Duplicate source location')
         checked=[];destinations=set()
         for entry in entries:
-            if entry.get('operation')!='copy':raise ValueError('This approval schema currently supports copy; move approval is not implemented')
-            source=no_links(entry['source']);target=no_links(entry['destination'])
+            source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
             if not source.is_relative_to(source_root) or not target.is_relative_to(target_root):raise ValueError('Entry escapes approved roots')
             key=destination_key(target)
             if any(safe_component(part)!=part for part in target.parts[1:]):raise ValueError('Invalid target path component')
-            if target.exists() or key in destinations:raise ValueError('Target collision')
+            if (target.exists() and not (moving and key in sources)) or key in destinations:raise ValueError('Target collision')
+            source_device=self.device_identity(source);target_device=self.device_identity(target.parent)
+            if moving and source_device!=target_device:raise ValueError('Cross-device moves must use verified copy first')
             destinations.add(key)
             checked.append({'source':str(source),'destination':str(target),'video_id':entry.get('video_id'),
-                            'operation':'copy','fingerprint':fingerprint(source),'source_device':self.device_identity(source),
-                            'target_device':self.device_identity(target.parent)})
+                            'operation':entry['operation'],'fingerprint':fingerprint(source),'source_identity':[source.stat().st_dev,source.stat().st_ino],'source_device':source_device,
+                            'target_device':target_device})
         payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version}
         stamp=digest(payload);draft_id=uuid.uuid4().hex
         with self.db() as c:
@@ -86,11 +94,13 @@ class OrganizationJobs:
         if existing:return existing['id']
         payload=json.loads(draft['payload'])
         if digest(payload)!=expected_digest:raise ValueError('Stored approval content changed')
+        sources={destination_key(e['source']) for e in payload['entries']}
         for entry in payload['entries']:
-            source=no_links(entry['source']);target=no_links(entry['destination'])
-            if str(source)!=entry['source'] or str(target)!=entry['destination'] or target.exists():raise ValueError('Path changed since preview')
+            source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
+            allowed_existing=entry['operation']=='move' and destination_key(target) in sources
+            if str(source)!=entry['source'] or str(target)!=entry['destination'] or (target.exists() and not allowed_existing):raise ValueError('Path changed since preview')
             if self.device_identity(source)!=entry['source_device'] or self.device_identity(target.parent)!=entry['target_device']:raise ValueError('Device changed since preview')
-            if fingerprint(source)!=entry['fingerprint']:raise ValueError('Source changed since preview')
+            if fingerprint(source)!=entry['fingerprint'] or [source.stat().st_dev,source.stat().st_ino]!=entry['source_identity']:raise ValueError('Source changed since preview')
         job_id=uuid.uuid4().hex;now=time.time()
         with self.db() as c:
             c.execute('INSERT OR IGNORE INTO organization_jobs VALUES(?,?,?,?,?,?)',(job_id,expected_digest,json.dumps(payload),'queued',now,now))
@@ -113,6 +123,7 @@ class OrganizationJobs:
         resources=sorted({e[key] for e in job['payload']['entries'] for key in ('source_device','target_device')})
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
+            if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? AND inverse_job_id IS NOT NULL',(job_id,)).fetchone():raise ValueError('Rollback approved; original execution cannot resume')
             state=c.execute('SELECT state FROM organization_jobs WHERE id=?',(job_id,)).fetchone()[0]
             if state=='running' or state in TERMINAL:raise ValueError('Job already claimed or finished')
             for resource in resources:

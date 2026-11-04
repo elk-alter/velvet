@@ -66,3 +66,11 @@ class LocationTests(unittest.TestCase):
         self.repository.device_identity=lambda path:'other-volume'
         with self.assertRaises(ValueError):self.repository.prefer(1,location)
         with self.assertRaises(ValueError):self.repository.bind_verified_copy(1,target,'volume','task')
+
+    def test_verified_original_can_be_selected_after_copy_location(self):
+        target=self.root/'copy.mp4';target.write_bytes(self.source.read_bytes())
+        location=self.repository.bind_verified_copy(1,target,'volume','task')
+        original=next(r for r in self.repository.locations(1) if r['path']==str(self.source))
+        self.assertTrue(original['verified']);self.assertEqual(original['device_token'],'volume')
+        self.repository.prefer(1,location);self.repository.prefer(1,original['id'])
+        with self.db() as c:self.assertEqual(c.execute('SELECT path FROM videos WHERE id=1').fetchone()[0],str(self.source))

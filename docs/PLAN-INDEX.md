@@ -6,7 +6,7 @@
 |---|---|
 |当前已发布能力|[功能](FEATURES.md)及对应版本说明，仍须核对代码|
 |迭代顺序|[路线图](ROADMAP.md)|
-|alpha.6需求及验收|[A6-01–30](ALPHA6-REQUIREMENTS.md)|
+|alpha.6总览、必达场景及逐项验收|[8个Feature / A6-01–30](ALPHA6-REQUIREMENTS.md)|
 |alpha.5需求及验收|[A5-01–32](ALPHA5-REQUIREMENTS.md)|
 |原文件整理Epic/Feature/Story|[E-ORG、ORG-01–35](EPIC-RAW-MEDIA-ORGANIZATION.md)|
 |体验问题与后续改进|[U01–40](UX-AUDIT.md)|

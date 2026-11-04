@@ -32,6 +32,7 @@ class ExecutorTests(unittest.TestCase):
         result=executor.run(self.job)
         self.assertEqual(result['state'],'done');self.assertEqual(self.target.read_bytes(),self.source.read_bytes())
         self.assertEqual(len(self.repository.locations(1)),2);self.assert_source()
+        self.assertEqual(self.target.stat().st_mtime_ns,self.source.stat().st_mtime_ns)
         identity=self.target.stat().st_ino
         executor.run(self.job);self.assertEqual(identity,self.target.stat().st_ino)
         self.assertFalse(list(self.target_root.glob('*.partial')))
