@@ -77,3 +77,10 @@ organization_plans标记operation=keep，requested_operation供页面恢复选�
 organization_archive_roots(path,device_token,created)记录强制排除根；organization_archive_plans(draft_id,original_job_id,archive_job_id,root,device_token)关联原copy、固定草稿和归档任务。archive条目保存archive_guard的副本完整指纹、文件身份、绑定/资产/播放身份；普通approve拒绝此操作。
 
 archive沿用move状态及未完成物理操作对账隔离，不能将暂停/取消视作已恢复。原文件位置非默认时才可归档，绑定后保持默认副本。归档根在执行前保留，即使取消/恢复也不静默移除强制排除。恢复反向计划可核验日志所属源文件而不依赖外部副本健康。根与关联均在主库备份内，但备份恢复不撤销归档，原保守文件日志门禁不放宽。详见[ADR0005](../adr/0005-controlled-source-archive.md)。
+
+
+### 多来源固定计划
+
+inventory_query_items.ordinal是查询内成员序号，不是永久文件ID。选择必须结合所属snapshot校验；temp选择表避免大量参数的SQLite变量上限，条目不存在则拒绝。已生成计划保存source_devices、逐项device_id/file_snapshot/root及选择摘要，不能后续重选最新盘点。
+
+执行草稿新增可选source_roots/target_roots数组及每项根；路径必须属于清单内根，复制目标不得嵌套任一所选来源。旧单根日志继续用原字符串。反向任务和源归档按每项根处理，不使用跨盘字符串commonpath；归档旧草稿缺每项target_root时仍可批准。完整契约见[ADR0006](../adr/0006-fixed-query-multi-root-plans.md)。

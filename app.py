@@ -15,6 +15,7 @@ UI_ASSETS={
  '/':('index.html','text/html'),
  '/management.js':('management.js','text/javascript'),
  '/disk_manager.js':('disk_manager.js','text/javascript'),
+ '/disk_selection.js':('disk_selection.js','text/javascript'),
  '/manager_routes.js':('manager_routes.js','text/javascript'),
  '/management.css':('management.css','text/css'),
  '/browse.js':('browse.js','text/javascript'),
@@ -906,7 +907,8 @@ class Handler(BaseHTTPRequestHandler):
   if self.headers.get('X-Velvet-Token')!=TOKEN:return self.send({},status=403)
   try:
    length=int(self.headers.get('Content-Length',0))
-   if length>100000:raise ValueError('请求过大')
+   selection_request=urlparse(self.path).path in ('/api/storage/selection','/api/storage/query-plan','/api/organization/prepare')
+   if length>(2000000 if selection_request else 100000):raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
    DB_REVISION+=1
    if RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
@@ -969,6 +971,11 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/storage/prefer':
     INVENTORY.prefer(a.get('id'),a.get('relative'),a.get('preferred'),a.get('note',''));return self.send({'ok':True})
    elif path=='/api/storage/revise':return self.send({'ok':True,'plan':INVENTORY.revise_plan(a.get('id'),a.get('digest'),a.get('selected'),a.get('edits'))})
+   elif path=='/api/storage/selection':
+    return self.send(ORGANIZATION.planner.selection(a.get('snapshot'),a.get('selected')))
+   elif path=='/api/storage/query-plan':
+    plan=ORGANIZATION.planner.plan(a.get('snapshot'),a.get('selected'),a.get('target',''),a.get('layout','title'),a.get('operation','copy'))
+    return self.send({'ok':True,'plan':{key:plan[key] for key in ('id','digest','bytes','source_roots','selection','space')}|{'total':len(plan['entries'])}})
    elif path=='/api/storage/plan':
     plan=INVENTORY.plan(a.get('id'),a.get('target'),a.get('layout','title'),a.get('operation','copy'))
     JOURNAL.observe('plan',plan['id'],'done',{'processed':len(plan['entries']),'total':len(plan['entries']),'phase':'preview_only'})
@@ -1253,7 +1260,7 @@ class Handler(BaseHTTPRequestHandler):
     with db() as c:c.execute('DELETE FROM videos WHERE id=?',(int(a['id']),))
    else:return self.send({},status=404)
    self.send({'ok':True})
-  except LibraryQueryChanged as e:self.send({'error':str(e)},status=409)
+  except (ResourceBusy,InventoryQueryChanged,LibraryQueryChanged) as e:self.send({'error':str(e)},status=409)
   except Exception as e:self.send({'error':str(e)},status=400)
 def task_resources():
  cfg=config()

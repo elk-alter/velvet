@@ -131,7 +131,7 @@ class InventoryQuery:
         return self.response(rows,devices,totals,offset,limit,snapshot_id,created,criteria)
 
     def page(self,c,snapshot,offset,limit):
-        return [dict(row) for row in c.execute("""SELECT f.*,d.alias,d.root,d.identity,a.payload AS annotation,
+        return [dict(row) for row in c.execute("""SELECT f.*,q.ordinal AS query_ordinal,d.alias,d.root,d.identity,a.payload AS annotation,
  COALESCE(NULLIF(json_extract(a.payload,'$.title'),''),json_extract(f.metadata,'$.title'),f.relative_path) AS display_title,
  casefold(replace(d.root,'\\','/')||'/'||f.relative_path) AS physical_path,q.historical_copies
  FROM inventory_query_items q JOIN inventory_files f ON f.device_id=q.device_id AND f.snapshot=q.file_snapshot AND f.relative_path=q.relative_path
@@ -150,3 +150,25 @@ class InventoryQuery:
             row['current_content_verified']=False;row.pop('location_rank',None)
         return dict(totals,items=rows,offset=offset,limit=limit,snapshot=snapshot_id,snapshot_created=created,criteria=criteria,
                     devices=[{'id':device['id'],'alias':device['alias'],'online':device['online']} for device in devices])
+
+    def members(self,snapshot,selected):
+        with self.db() as c:row=c.execute('SELECT payload FROM inventory_query_snapshots WHERE id=?',(snapshot,)).fetchone()
+        if not row:raise InventoryQueryChanged('查询快照已失效，请重新查询和选择')
+        criteria=json.loads(row[0])['criteria']
+        current=self.query(dict(criteria,snapshot=snapshot,limit=1))
+        excluding=isinstance(selected,dict) and set(selected)=={'exclude'}
+        all_rows=selected=='all' or excluding
+        chosen=selected['exclude'] if excluding else [] if all_rows else selected
+        if not isinstance(chosen,list) or (not all_rows and not chosen) or len(chosen)>100000 or any(type(i) is not int or i<0 for i in chosen) or len(set(chosen))!=len(chosen):raise ValueError('请选择固定查询中的有效且不重复条目')
+        with self.db() as c:
+            if chosen or not all_rows:
+                c.execute('CREATE TEMP TABLE chosen_query_rows(ordinal INTEGER PRIMARY KEY)')
+                c.executemany('INSERT INTO chosen_query_rows VALUES(?)',((i,) for i in chosen))
+                found=c.execute('SELECT COUNT(*) FROM inventory_query_items q JOIN chosen_query_rows chosen ON chosen.ordinal=q.ordinal WHERE q.query_id=?',(snapshot,)).fetchone()[0]
+                if found!=len(chosen):raise InventoryQueryChanged('选择含其它查询或已失效的条目，请重新选择')
+            join=(' LEFT JOIN chosen_query_rows chosen ON chosen.ordinal=q.ordinal' if excluding else ' JOIN chosen_query_rows chosen ON chosen.ordinal=q.ordinal') if chosen or not all_rows else ''
+            items=[dict(r) for r in c.execute('SELECT q.ordinal,q.device_id,q.file_snapshot,q.relative_path,f.size,d.alias,d.root,d.identity FROM inventory_query_items q JOIN inventory_files f ON f.device_id=q.device_id AND f.snapshot=q.file_snapshot AND f.relative_path=q.relative_path JOIN storage_devices d ON d.id=q.device_id'+join+' WHERE q.query_id=?'+(' AND chosen.ordinal IS NULL' if excluding and chosen else '')+' ORDER BY q.ordinal',(snapshot,))]
+        expected=current['total']-len(chosen) if excluding else current['total'] if all_rows else len(chosen)
+        if len(items)!=expected:raise InventoryQueryChanged('所选范围已失效或包含其它查询的条目，请重新选择')
+        self.query(dict(criteria,snapshot=snapshot,limit=1))
+        return {'items':items,'total':len(items),'bytes':sum(i['size'] for i in items),'snapshot':snapshot,'criteria':criteria,'query_total':current['total']}

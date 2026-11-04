@@ -265,7 +265,7 @@ class StorageInventory:
             row['metadata'] = self.effective_metadata(row); row['companions'] = json.loads(row['companions'])
         return rows
 
-    def plan(self, device_id, raw_target, layout='title',operation='copy'):
+    def plan(self, device_id, raw_target, layout='title',operation='copy',*,snapshot_id=None,relatives=None,persist=True):
         if operation not in ('copy','move','keep'):raise ValueError('未知整理操作')
         keeping=operation=='keep'
         if layout not in ('title', 'preserve', 'version', 'episode'):
@@ -276,9 +276,12 @@ class StorageInventory:
         if not keeping and (source.is_relative_to(target) or target.is_relative_to(source)):
             raise ValueError('目标必须与源目录相互独立')
         with self.db() as c:
-            latest = c.execute("SELECT * FROM inventory_snapshots WHERE device_id=? AND state IN ('done','partial') ORDER BY created DESC LIMIT 1", (device_id,)).fetchone()
+            latest = c.execute("SELECT * FROM inventory_snapshots WHERE device_id=? AND state IN ('done','partial')"+(' AND id=?' if snapshot_id else '')+' ORDER BY created DESC LIMIT 1', (device_id,snapshot_id) if snapshot_id else (device_id,)).fetchone()
             if not latest:raise ValueError('先完成一次盘点')
             rows = [dict(r) for r in c.execute('SELECT * FROM inventory_files WHERE device_id=? AND snapshot=? ORDER BY relative_path', (device_id, latest['id']))]
+        if relatives is not None:
+            allowed=set(relatives);rows=[row for row in rows if row['relative_path'] in allowed]
+            if len(rows)!=len(allowed):raise ValueError('固定盘点中的所选条目已失效')
         entries = []; destinations = set()
         for row in rows:
             metadata = self.effective_metadata(row); relative = Path(row['relative_path'])
@@ -301,8 +304,8 @@ class StorageInventory:
         payload['operation']='keep' if keeping else 'relocate'
         payload['requested_operation']=operation
         payload['digest'] = hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
-        with self.db() as c:
-            c.execute('INSERT INTO organization_plans VALUES(?,?,?,?,?,?,?)', (plan_id, device_id, str(target), latest['id'], 'preview_only', json.dumps(payload), time.time()))
+        if persist:
+            with self.db() as c:c.execute('INSERT INTO organization_plans VALUES(?,?,?,?,?,?,?)', (plan_id, device_id, str(target), latest['id'], 'preview_only', json.dumps(payload), time.time()))
         return dict(payload, id=plan_id,target=str(target))
 
     def plans(self, device_id):
@@ -353,8 +356,9 @@ class StorageInventory:
                 if not target.resolve().is_relative_to(root.resolve()):raise ValueError('目标路径越界')
                 entry['destination']=str(target)
             entry['conflicts']=destination_conflicts(Path(entry['destination']),destinations)
-            device=self.device(row['device_id']);source=Path(device['root'])/entry['relative'];entry['source']=str(source)
-            if device['identity']!=payload.get('source_device_identity'):entry['conflicts'].append('device_mismatch')
+            device=self.device(entry.get('device_id',row['device_id']));source=Path(device['root'])/entry['relative'];entry['source']=str(source)
+            expected=entry.get('source_device_identity',payload.get('source_device_identity'))
+            if device['identity']!=expected or (entry.get('source_root') and device['root']!=entry['source_root']):entry['conflicts'].append('device_mismatch')
             try:
                 stat=source.stat()
                 if (stat.st_size,stat.st_mtime_ns)!=(entry['size'],entry['mtime_ns']):entry['conflicts'].append('source_changed')
@@ -362,8 +366,9 @@ class StorageInventory:
             entries.append(entry)
         updated=dict(payload,entries=entries,bytes=sum(e['size'] for e in entries),parent_plan_id=plan_id)
         updated['space']=target_space(entries,root)
+        if payload.get('selection'):updated['selection']=dict(payload['selection'],scope='revised',origin_total=payload['selection']['total'],total=len(entries),bytes=updated['bytes'])
         updated['source_unchanged']=not any(any(issue in entry['conflicts'] for issue in ('source_changed','source_unavailable','device_mismatch')) for entry in entries)
-        updated['source_root']=self.device(row['device_id'])['root']
+        updated['source_root']=payload['source_root'] if payload.get('source_devices') else self.device(row['device_id'])['root']
         updated.pop('digest',None);updated['digest']=hashlib.sha256(json.dumps(updated,sort_keys=True).encode()).hexdigest()
         new_id=uuid.uuid4().hex
         with self.db() as c:

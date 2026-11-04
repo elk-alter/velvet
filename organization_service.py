@@ -15,6 +15,8 @@ from organization_copy_undo import CopyUndo
 from organization_keep import KeepExecutor
 from organization_archive import SourceArchive
 from archive_policy import is_archive_path
+from inventory_query import InventoryQuery
+from organization_planner import QueryPlanner
 from resource_leases import ResourceBusy
 from restore_safety import require_reconciled_files
 
@@ -32,6 +34,7 @@ class OrganizationService:
         self.keep=KeepExecutor(self.jobs,self.bind_keep)
         self.archive=SourceArchive(self.jobs)
         self.move.validator=self.archive.validate_guard
+        self.planner=QueryPlanner(inventory,InventoryQuery(inventory),self.jobs.leases)
         with db() as c:c.execute('CREATE TABLE IF NOT EXISTS organization_draft_origins(draft_id TEXT PRIMARY KEY,preview_id TEXT)')
         self.wake=threading.Event();self.stopping=threading.Event()
         self.dispatch=threading.Lock();self.thread=None
@@ -47,12 +50,19 @@ class OrganizationService:
             if payload['digest']!=expected_digest or hashlib.sha256(json.dumps(unsigned,sort_keys=True).encode()).hexdigest()!=expected_digest:raise ValueError('整理预览已变化，请重新载入')
             if not isinstance(selected,list) or not selected or any(type(i) is not int or not 0<=i<len(payload['entries']) for i in selected):raise ValueError('请选择当前预览中的文件')
             if len(selected)!=len(set(selected)):raise ValueError('选择包含重复条目')
-            device=self.inventory.device(row['device_id']);source_root=no_links(device['root'])
-            if str(source_root)!=payload['source_root'] or device['identity']!=payload['source_device_identity'] or self.jobs.device_identity(source_root)!=device['identity']:raise ValueError('源设备或根目录变化，请重新生成预览')
+            frozen=payload.get('source_devices') or {row['device_id']:{'root':payload['source_root'],'identity':payload['source_device_identity']}}
+            contexts={}
+            for index in selected:
+                device_id=payload['entries'][index].get('device_id',row['device_id'])
+                if device_id in contexts:continue
+                device=self.inventory.device(device_id);source_root=no_links(device['root'])
+                if device_id not in frozen or str(source_root)!=frozen[device_id]['root'] or device['identity']!=frozen[device_id]['identity'] or self.jobs.device_identity(source_root)!=device['identity']:raise ValueError('源设备或根目录变化，请重新生成预览')
+                contexts[device_id]=source_root
             self.locations.migrate()
             entries=[];originals={};resource_records={};retained=[];companions=[];assets={}
             for index in sorted(selected):
                 original=payload['entries'][index]
+                source_root=contexts[original.get('device_id',row['device_id'])]
                 if original.get('conflicts'):raise ValueError('请先解决预览中的冲突')
                 source=no_links(source_root/original['relative'])
                 if is_archive_path(source) or is_archive_path(original['destination']):raise ValueError('归档目录仅通过受控归档/恢复任务操作')
@@ -63,6 +73,7 @@ class OrganizationService:
                 if annotation.get('title'):
                     metadata['title']=annotation['title'];metadata['locked_fields']=json.dumps(['title'])
                 entries.append({'metadata':metadata,'source':str(source),'destination':original['destination'],'video_id':video['id'] if video else None,'operation':operation})
+                if payload.get('source_devices'):entries[-1].update(source_root=str(source_root),target_root=str(source_root) if operation=='keep' else row['target'])
                 originals[str(source)]=original
                 for resource in original.get('companions',[]):
                     name=resource['name']
@@ -74,6 +85,7 @@ class OrganizationService:
                     if not resource.get('available') or 'mtime_ns' not in resource:raise ValueError('伴随资源未确认或快照过旧，请重新盘点')
                     target=companion_destination(source,original['destination'],name)
                     companions.append({'source':str(resource_source),'destination':str(target),'video_id':None,'operation':operation,'role':'companion','metadata':{'parent_source':str(source),'kind':resource_source.suffix.lower()}})
+                    if payload.get('source_devices'):companions[-1].update(source_root=str(source_root),target_root=str(source_root) if operation=='keep' else row['target'])
                     resource_records[str(no_links(resource_source))]=resource
             entries.extend(companions)
             def register(entry,stamp,device_token):
@@ -84,7 +96,9 @@ class OrganizationService:
                     entry['parent_asset_id']=assets[entry['metadata']['parent_source']];return None
                 asset=self.locations.register_verified(entry['source'],stamp,device_token,entry.get('video_id'),entry['metadata'])
                 assets[entry['source']]=asset;return asset
-            draft=self.jobs.prepare(entries,source_root,row['target'],register=register,retained=list({item['source']:item for item in retained}.values()))
+            roots=sorted(set(contexts.values()),key=str);target_root=roots[0] if operation=='keep' else row['target']
+            options={'source_roots':roots,'target_roots':roots if operation=='keep' else [target_root]} if payload.get('source_devices') else {}
+            draft=self.jobs.prepare(entries,roots[0],target_root,register=register,retained=list({item['source']:item for item in retained}.values()),**options)
             with self.db() as c:c.execute('INSERT OR IGNORE INTO organization_draft_origins VALUES(?,?)',(draft['id'],plan_id))
             return draft
 
@@ -246,6 +260,8 @@ class OrganizationService:
             if superseded:inverse_of=(superseded['original_job'],)
         capability=None
         if job['payload']['entries'][0]['operation']=='copy' and job['state']=='done':
-            try:self.archive.capability(job['payload']['source_root']);capability={'supported':True}
+            try:
+                for root in job['payload'].get('source_roots',[job['payload']['source_root']]):self.archive.capability(root)
+                capability={'supported':True}
             except (OSError,ValueError) as error:capability={'supported':False,'reason':str(error)}
         return {'archive_capability':capability,'archive_of':archive[0] if archive else None,'source_archives':archives,'superseded':dict(superseded) if superseded else None,'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}

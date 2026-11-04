@@ -64,3 +64,12 @@ POST /api/storage/plan新增operation=copy/move/keep（默认copy）；keep无�
 POST /api/organization/archive-preview：id为已完成copy任务，返回独立草稿id；不移动源、不创建物理归档目录。GET draft返回operation=archive、archive_of、每项源/归档路径及archive_guard保留副本证据。POST archive-approve：id为原copy、draft、digest、confirmed:true；幂等排队返回新任务id。普通approve不能替代该确认。job返回archive_of、source_archives（最近20项）、以及已完成copy的archive_capability（supported/reason）；不支持时界面禁用并说明。
 
 归档使用固定原设备namespace，不允许任意归档根输入。只支持策略确认的可写Windows NTFS/ReFS，实际本批NTFS测试。目标副本变化/外部同内容替换/绑定变化/源为默认等拒绝。控制沿用pause/cancel/resume，archive步骤按move持久化。undo-preview/undo-approve生成并批准恢复原路径的反向move；归档根继续排除。locations增加archived布尔，prefer拒绝归档位置；完整源与目标对账见ADR0005。
+
+
+## 从固定查询选择到多来源计划
+
+storage/query的每项增加query_ordinal。POST /api/storage/selection：snapshot、selected（ordinal数组/all/{exclude:[ordinal]}），返回total/bytes、各来源位置计数/在线状态、criteria、scope和query_total，不返回全量元数据。POST /api/storage/query-plan使用同样固定选择，加target、layout、operation=copy/move/keep；返回精简plan摘要（id/digest/total/bytes/source_roots/selection/space），具体条目通过原organization/preview分页读取。
+
+过期、设备/排除/建议变化、成员不属于查询返回409；重复/类型错误/空规划400。选中离线项仍进入只读预览并列冲突，prepare拒绝执行；不偷偷缩成在线子集。新盘点不改变固定老成员。source_devices与逐项来源快照/路径属于计划摘要，prepare重新校验所选根/卷/完整内容。选择/规划/prepare请求上限2MB，其余保持原100KB。选中范围不是对后续新增文件的授权。
+
+多来源仍返回一个执行草稿/任务ID；状态/控制/位置、归档/反向接口继续原契约。跨设备move逐项拒绝，使用copy保源。

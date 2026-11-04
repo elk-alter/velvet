@@ -1,6 +1,7 @@
 """Source archival is separate from copying and never deletes the retained copy."""
 import unittest
 import os
+import json
 from pathlib import Path
 from unittest.mock import patch
 import test_organization_service as fixtures
@@ -51,6 +52,11 @@ class ArchiveTests(unittest.TestCase):
         target.write_bytes(b'changed synthetic copy')
         with self.assertRaises(ValueError):self.service.archive.approve(job,draft['id'],draft['digest'])
         self.assertTrue(self.clip.exists())
+
+    def test_source_changed_since_copy_cannot_be_archived_as_if_backed_up(self):
+        job,target=self.copied();self.clip.write_bytes(b'new unbacked source contents')
+        with self.assertRaisesRegex(ValueError,'复制后发生变化'):self.service.archive.prepare(job)
+        self.assertEqual(self.clip.read_bytes(),b'new unbacked source contents');self.assertTrue(target.exists())
 
     def test_same_byte_external_replacement_after_approval_is_not_adopted(self):
         job,target=self.copied();draft=self.service.archive.prepare(job)
@@ -132,6 +138,18 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(self.service.run_once(archived)['state'],'done')
         with self.app.db() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM videos').fetchone()[0],1)
         self.assertEqual(target.read_bytes(),Path(draft['payload']['entries'][0]['destination']).read_bytes())
+
+    def test_legacy_single_root_archive_draft_can_still_approve_and_restore(self):
+        from organization_jobs import digest
+        job,target=self.copied();draft=self.service.archive.prepare(job)
+        payload=draft['payload'];payload.pop('source_roots');payload.pop('target_roots')
+        for entry in payload['entries']:entry.pop('source_root');entry.pop('target_root')
+        stamp=digest(payload)
+        with self.app.db() as c:c.execute('UPDATE organization_drafts SET digest=?,payload=? WHERE id=?',(stamp,json.dumps(payload),draft['id']))
+        archived=self.service.archive.approve(job,draft['id'],stamp)
+        self.assertEqual(self.service.run_once(archived)['state'],'done')
+        inverse=self.service.prepare_inverse(archived);undo=self.service.approve_inverse(archived,inverse['digest'])
+        self.assertEqual(self.service.run_once(undo)['state'],'done');self.assertTrue(self.clip.exists());self.assertTrue(target.exists())
 
 
 @unittest.skipUnless(os.name=='nt','Verified Windows archive capability required')

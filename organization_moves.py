@@ -123,9 +123,11 @@ class MoveExecutor:
                 except (OSError,ValueError):continue
                 location=candidate;break
             if not location:raise ValueError('Cannot prove rollback ownership; review required')
-            reverse.append({'video_id':entry['video_id'],'asset_id':entry.get('asset_id'),'metadata':entry.get('metadata',{}),'role':entry.get('role','media'),'parent_asset_id':entry.get('parent_asset_id'),'operation':'move','source':location,'destination':entry['source']})
-        common=Path(os.path.commonpath([job['payload']['source_root'],job['payload']['target_root']]))
-        draft=self.jobs.prepare(reverse,common,common,retained=job['payload'].get('retained',[]))
+            origin=Path(entry.get('source_root',job['payload']['source_root']));target=Path(entry.get('target_root',job['payload']['target_root']))
+            source_root=target if Path(location).is_relative_to(target) else origin
+            reverse.append({'video_id':entry['video_id'],'asset_id':entry.get('asset_id'),'metadata':entry.get('metadata',{}),'role':entry.get('role','media'),'parent_asset_id':entry.get('parent_asset_id'),'operation':'move','source':location,'destination':entry['source'],'source_root':str(source_root),'target_root':str(origin)})
+        roots=list(dict.fromkeys(e['source_root'] for e in reverse));targets=list(dict.fromkeys(e['target_root'] for e in reverse))
+        draft=self.jobs.prepare(reverse,roots[0],targets[0],retained=job['payload'].get('retained',[]),source_roots=roots,target_roots=targets)
         with self.jobs.db() as c:c.execute('INSERT INTO organization_inverses VALUES(?,?,NULL)',(job_id,draft['id']))
         return draft
 

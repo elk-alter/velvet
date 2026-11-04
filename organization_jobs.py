@@ -63,21 +63,25 @@ class OrganizationJobs:
             if 'pause_requested' not in {r[1] for r in c.execute('PRAGMA table_info(organization_control)')}:
                 c.execute('ALTER TABLE organization_control ADD COLUMN pause_requested INTEGER DEFAULT 0')
 
-    def prepare(self,entries,source_root,target_root,rules_version=1,register=None,retained=None):
+    def prepare(self,entries,source_root,target_root,rules_version=1,register=None,retained=None,*,source_roots=None,target_roots=None):
         if type(rules_version) is not int or rules_version<1:raise ValueError('Invalid rule version')
         source_root=no_links(source_root);target_root=no_links(target_root)
+        multiple=source_roots is not None or target_roots is not None
+        source_roots=list(dict.fromkeys(no_links(root) for root in (source_roots or [source_root])))
+        target_roots=list(dict.fromkeys(no_links(root) for root in (target_roots or [target_root])))
         if not isinstance(entries,list) or not entries:raise ValueError('Choose files before approval')
         operations={entry.get('operation') for entry in entries}
         if len(operations)!=1 or not operations<={'copy','move','keep','archive'}:raise ValueError('Choose a single supported operation')
         moving=operations in ({'move'},{'archive'})
         keeping=operations=={'keep'}
-        if not moving and not keeping and (source_root.is_relative_to(target_root) or target_root.is_relative_to(source_root)):raise ValueError('Copy target must be independent of source scope')
+        if not moving and not keeping and any(source.is_relative_to(target) or target.is_relative_to(source) for source in source_roots for target in target_roots):raise ValueError('Copy target must be independent of source scope')
         sources={destination_key(no_links(entry['source'])) for entry in entries}
         if len(sources)!=len(entries):raise ValueError('Duplicate source location')
         checked=[];destinations=set()
         for entry in entries:
             source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
-            if not source.is_relative_to(source_root) or not target.is_relative_to(target_root):raise ValueError('Entry escapes approved roots')
+            entry_source=no_links(entry.get('source_root',source_root));entry_target=no_links(entry.get('target_root',target_root))
+            if entry_source not in source_roots or entry_target not in target_roots or not source.is_relative_to(entry_source) or not target.is_relative_to(entry_target):raise ValueError('Entry escapes approved roots')
             key=destination_key(target)
             if keeping and source!=target:raise ValueError('原位保留不能修改路径')
             if not keeping and any(safe_component(part)!=part and not (operations=={'archive'} and part==ARCHIVE_NAME) for part in target.parts[1:]):raise ValueError('Invalid target path component')
@@ -90,10 +94,12 @@ class OrganizationJobs:
             checked.append({'source':str(source),'destination':str(target),'video_id':entry.get('video_id'),
                             'operation':entry['operation'],'fingerprint':stamp,'source_identity':[source.stat().st_dev,source.stat().st_ino],'source_device':source_device,
                             'target_device':target_device,'asset_id':asset_id,'role':entry.get('role','media'),'parent_asset_id':entry.get('parent_asset_id'),'metadata':entry.get('metadata',{})})
+            if multiple:checked[-1].update(source_root=str(entry_source),target_root=str(entry_target))
             if operations=={'archive'}:
                 if not isinstance(entry.get('archive_guard'),dict):raise ValueError('归档需要目标副本证明')
                 checked[-1]['archive_guard']=entry['archive_guard']
         payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version,'retained':retained or []}
+        if multiple:payload.update(source_roots=[str(root) for root in source_roots],target_roots=[str(root) for root in target_roots])
         stamp=digest(payload);draft_id=uuid.uuid4().hex
         with self.db() as c:
             c.execute('INSERT OR IGNORE INTO organization_drafts VALUES(?,?,?,?)',(draft_id,stamp,json.dumps(payload),time.time()))

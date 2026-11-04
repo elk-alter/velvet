@@ -52,14 +52,16 @@
 
 - inventory_query：跨盘SQL范围、重叠根去重、固定排序标识缓存及分页DTO；独立于整理批准和主片库全图。
 
-- library_query：开发中的片库派生投影、SQL版本/合集聚合、固定分页卡片与按作品详情后端；旧前端尚未切换。FileReview.describe为旧/新查询共享的单文件质量推导。
+- library_query：开发中的片库派生投影、SQL版本/合集聚合、固定分页卡片与按作品详情后端；主片库前端已接server_browse。FileReview.describe为旧/新查询共享的单文件质量推导。
 
 - server_browse.js：分页请求/取消、固定选择、合集URL/返回、按作品资料缓存、范围刮削及有限筛选/关系建议；index/browse的交互处理器显式调用，替代主页面全量bootstrap。
 
-- video_ids：数字视频ID的原子旧表迁移、缓存/本地历史引用水位及备份恢复预迁移；只读应用缓存，不改原媒体。见[ADR0003](../adr/0003-monotonic-video-ids.md)。library_query的分页前端已由server_browse接入，前文“旧前端尚未切换”仅描述第十批历史状态。
+- video_ids：数字视频ID的原子旧表迁移、缓存/本地历史引用水位及备份恢复预迁移；只读应用缓存，不改原媒体。见[ADR0003](../adr/0003-monotonic-video-ids.md)。library_query的分页前端已由server_browse接入。
 
 - organization_copy_undo：复制绑定撤销的固定审阅/专用批准/原子元数据事务，与既有队列、控制、租约和反向任务关系共用；不写物理媒体。
 
 - organization_keep：原位保留执行器；复用固定批准、控制、租约及稳定身份/资源适配，校验和关联现有文件，不写媒体目录。
 
 - organization_archive：已完成复制后的独立归档预览/批准、目标副本证明、设备能力和持久来源关系；复用MoveExecutor执行/恢复。archive_policy集中保留namespace和强制根排除，供片库、盘点、查询、播放和副本解绑使用。
+
+- organization_planner：从InventoryQuery固定成员构建多来源计划，复用原模板和冲突预检；不把查询范围当执行授权。disk_selection.js独立管理物理跨页/全部匹配差集和返回参数，disk_manager显式接入。

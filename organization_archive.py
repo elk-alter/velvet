@@ -51,12 +51,14 @@ class SourceArchive:
         with self.jobs.leases.hold('source-archive-preview'):
             job=self.jobs.get(original)
             if job['state']!='done' or any(e['operation']!='copy' for e in job['payload']['entries']):raise ValueError('请先完成复制、校验和片库绑定，再单独归档源文件')
-            source_root=no_links(job['payload']['source_root']);root,token=self.capability(source_root)
+            source_roots=job['payload'].get('source_roots',[job['payload']['source_root']])
+            capabilities={str(no_links(value)):self.capability(value) for value in source_roots}
             original_sources={e['source'] for e in job['payload']['entries']}
             with self.jobs.db() as c:
                 restored=c.execute("SELECT i.inverse_job_id FROM organization_archive_plans p JOIN organization_inverses i ON i.original_job_id=p.archive_job_id JOIN organization_jobs j ON j.id=i.inverse_job_id WHERE p.original_job_id=? AND j.state='done' ORDER BY j.created DESC LIMIT 1",(original,)).fetchone()
             entries=[]
             for old,step in zip(job['payload']['entries'],job['steps']):
+                source_root=no_links(old.get('source_root',job['payload']['source_root']));root,token=capabilities[str(source_root)]
                 if step['state']!='done':raise ValueError('复制步骤尚未完成')
                 companion=old.get('role')=='companion';asset_id=old.get('parent_asset_id') if companion else old.get('asset_id')
                 table='media_resources' if companion else 'media_locations'
@@ -73,12 +75,15 @@ class SourceArchive:
                 guard['after_restore']=restored[0] if restored else None
                 source=no_links(old['source'])
                 if is_archive_path(source) or not source.is_relative_to(source_root):raise ValueError('原位置不属于源范围')
+                if token!=old['source_device'] or file_identity(source)!=old['source_identity'] or fingerprint(source)!=old['fingerprint']:raise ValueError('源设备或文件在复制后发生变化，请重新核对，不能归档')
                 entry={key:old.get(key) for key in ('video_id','asset_id','metadata','role','parent_asset_id')}
                 entry.update(source=str(source),destination=str(root/original/source.relative_to(source_root)),operation='archive',archive_guard=guard)
+                entry.update(source_root=str(source_root),target_root=str(root))
                 self.validate_guard(entry)
                 entries.append(entry)
-            draft=self.jobs.prepare(entries,source_root,root,retained=job['payload'].get('retained',[]))
-            with self.jobs.db() as c:c.execute('INSERT OR IGNORE INTO organization_archive_plans VALUES(?,?,NULL,?,?)',(draft['id'],original,str(root),token))
+            roots=list(capabilities);targets=[str(value[0]) for value in capabilities.values()]
+            draft=self.jobs.prepare(entries,roots[0],targets[0],retained=job['payload'].get('retained',[]),source_roots=roots,target_roots=targets)
+            with self.jobs.db() as c:c.execute('INSERT OR IGNORE INTO organization_archive_plans VALUES(?,?,NULL,?,?)',(draft['id'],original,targets[0],capabilities[roots[0]][1]))
             return draft
 
     def approve(self,original,draft_id,expected_digest):
@@ -94,7 +99,8 @@ class SourceArchive:
             if original_job['state']!='done':raise ValueError('原复制任务状态已变化')
             for entry in payload['entries']:self.validate_guard(entry)
             # Reserve the mandatory exclusion before any media mutation can run.
-            with self.jobs.db() as c:c.execute('INSERT OR IGNORE INTO organization_archive_roots VALUES(?,?,?)',(row['root'],row['device_token'],time.time()))
+            with self.jobs.db() as c:
+                for entry in payload['entries']:c.execute('INSERT OR IGNORE INTO organization_archive_roots VALUES(?,?,?)',(entry.get('target_root',payload['target_root']),entry['source_device'],time.time()))
             job_id=self.jobs.approve(draft_id,expected_digest)
             with self.jobs.db() as c:c.execute('UPDATE organization_archive_plans SET archive_job_id=? WHERE draft_id=?',(job_id,draft_id))
             return job_id
