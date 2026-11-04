@@ -145,6 +145,56 @@ class LibraryQueryTests(unittest.TestCase):
         result=query.query({'mode':'favorite'});self.assertEqual(result['total'],1)
         self.assertEqual(result['items'][0]['title'],'First title')
 
+    def test_fixed_selection_expands_matching_collection_members_and_rejects_foreign_keys(self):
+        a=self.video('Example Collection/a.mp4',title='Alpha');b=self.video('Example Collection/b.mp4',title='Beta')
+        query=self.query_service();data=query.query({});key=data['items'][0]['key']
+        selected=query.selection(data['snapshot'],[key],limit=1)
+        self.assertEqual((selected['total'],selected['files'],len(selected['items'])),(2,2,1))
+        self.assertEqual(selected['eligible'],0)
+        next_page=query.selection(data['snapshot'],[key],offset=1,limit=1)
+        self.assertNotEqual(selected['items'][0]['id'],next_page['items'][0]['id'])
+        hit=query.query({'q':'Alpha'});self.assertEqual(query.selection(hit['snapshot'],[hit['items'][0]['key']])['total'],1)
+        self.assertEqual(query.random(hit['snapshot'])['id'],a)
+        with self.assertRaises(ValueError):query.selection(hit['snapshot'],['movie:foreign'])
+        with self.app.db() as c:c.execute('UPDATE videos SET favorite=1 WHERE id=?',(b,))
+        with self.assertRaises(LibraryQueryChanged):query.selection(data['snapshot'],[key])
+
+    def test_cover_filter_tracks_cache_changes_and_facets_are_bounded(self):
+        a=self.video('a.mp4','DEMO-1',actors='Alex; Emma',tags='Drama,Travel',studio='Example')
+        b=self.video('b.mp4','DEMO-2',actors='Alex',tags='Drama')
+        query=self.query_service();before=query.query({'quality':'no_cover'});self.assertEqual(before['total'],2)
+        (self.app.DATA/(str(a)+'-cover.jpg')).write_bytes(b'synthetic cover')
+        with self.assertRaises(LibraryQueryChanged):query.query({'quality':'no_cover','snapshot':before['snapshot']})
+        with self.assertRaises(LibraryQueryChanged):query.selection(before['snapshot'],[before['items'][0]['key']])
+        self.assertEqual(query.query({'quality':'no_cover'})['items'][0]['id'],b)
+        facets=query.facets('actors',limit=1);self.assertEqual(len(facets['items']),1);self.assertEqual(facets['items'][0],{'name':'Alex','movies':2})
+        self.assertEqual(query.facets('tags','travel')['items'][0]['name'],'Travel')
+        self.assertEqual(query.query({'facet_kind':'studio','facet_name':'Example'})['items'][0]['id'],a)
+
+    def test_unchanged_fresh_requests_reuse_scope_but_edits_and_filter_changes_do_not(self):
+        ident=self.video('one.mp4','DEMO-1');query=self.query_service();first=query.query({})
+        self.assertEqual(query.query({'limit':1})['snapshot'],first['snapshot'])
+        self.assertNotEqual(query.query({'sort':'title'})['snapshot'],first['snapshot'])
+        with self.app.db() as c:c.execute('UPDATE videos SET title=? WHERE id=?',('Edited title',ident))
+        self.assertNotEqual(query.query({})['snapshot'],first['snapshot'])
+
+    def test_revision_does_not_confuse_database_journals_with_cover_changes(self):
+        ident=self.video('one.mp4','DEMO-1');query=self.query_service();query.query({})
+        before=query.revision();cover_before=query.revision('no_cover')
+        (self.app.DATA/'synthetic-journal.tmp').write_bytes(b'not a cover')
+        self.assertEqual(query.revision(),before);self.assertEqual(query.revision('no_cover'),cover_before)
+        (self.app.DATA/(str(ident)+'-cover.jpg')).write_bytes(b'synthetic image')
+        self.assertEqual(query.revision(),before);self.assertNotEqual(query.revision('no_cover'),cover_before)
+
+    def test_global_lookup_and_relation_suggestions_do_not_depend_on_loaded_page(self):
+        ident=self.video('sample.mp4','DEMO-12',title='Synthetic title')
+        for i in range(120):self.video(f'other-{i}.mp4',f'OTHER-{i}')
+        query=self.query_service();self.assertEqual(query.lookup('demo-12')['id'],ident)
+        options=query.relationship_options('Synthetic title');self.assertEqual(len(options['movies']),1)
+        self.assertEqual(options['movies'][0]['label'],'DEMO-12 · Synthetic title')
+        self.assertLessEqual(len(query.relationship_options()['movies']),100)
+        with self.assertRaises(ValueError):query.lookup('unknown-code')
+
     def test_invalid_inputs_and_empty_library(self):
         query=self.query_service();self.assertEqual(query.query({})['items'],[])
         for criteria in ({'sort':'invalid'},{'tags':'{}'},{'height':'-1'}):
@@ -162,9 +212,13 @@ class LibraryQueryHTTPTests(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown();self.server.server_close();self.worker.join(5)
         fixtures.FeatureTests.tearDown(self)
-    def request(self,path,host=None):
+    def request(self,path,host=None,data=None,token=True):
         connection=HTTPConnection('127.0.0.1',self.server.server_port,timeout=10)
-        connection.request('GET',path,headers={'Host':host or '127.0.0.1:'+str(self.app.RUNTIME.port)})
+        headers={'Host':host or '127.0.0.1:'+str(self.app.RUNTIME.port)}
+        if data is not None:
+            headers['Content-Type']='application/json'
+            if token:headers['X-Velvet-Token']=self.app.TOKEN
+        connection.request('POST' if data is not None else 'GET',path,json.dumps(data) if data is not None else None,headers)
         response=connection.getresponse();body=response.read();connection.close()
         return response.status,json.loads(body) if body else {}
     def test_http_list_lazy_detail_and_snapshot_invalidations(self):
@@ -180,3 +234,21 @@ class LibraryQueryHTTPTests(unittest.TestCase):
         for path in ('/api/library/query','/api/library/movie?id='+str(self.ident)):
             self.assertEqual(self.request(path,host='untrusted.invalid')[0],403)
             with patch.object(self.app,'NAS',True):self.assertEqual(self.request(path)[0],401)
+
+    def test_selection_http_requires_token_and_conflict_is_409(self):
+        _,data=self.request('/api/library/query');payload={'snapshot':data['snapshot'],'keys':[data['items'][0]['key']]}
+        self.assertEqual(self.request('/api/library/selection',data=payload,token=False)[0],403)
+        status,selection=self.request('/api/library/selection',data=payload);self.assertEqual(status,200)
+        self.assertEqual(selection['eligible'],1);self.assertEqual(selection['items'][0]['code'],'DEMO-1')
+        with self.app.db() as c:c.execute('UPDATE videos SET favorite=1 WHERE id=?',(self.ident,))
+        self.assertEqual(self.request('/api/library/selection',data=payload)[0],409)
+
+    def test_cancelled_browser_connection_does_not_turn_into_second_error_response(self):
+        for error in (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):
+            handler=object.__new__(self.app.Handler)
+            handler.send_response=lambda status:None;handler.send_header=lambda *args:None;handler.end_headers=lambda:None
+            class Disconnected:
+                def write(self,data):raise error('synthetic disconnect')
+            handler.wfile=Disconnected();handler.close_connection=False
+            self.app.Handler.send(handler,{'items':[]})
+            self.assertTrue(handler.close_connection)

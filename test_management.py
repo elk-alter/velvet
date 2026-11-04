@@ -129,7 +129,8 @@ class BatchScopeTests(unittest.TestCase):
         from pathlib import Path
         source=Path(__file__).with_name('index.html').read_text('utf-8')
         function=next(line for line in source.splitlines() if line.startswith('function choosePage()'))
-        script="const assert=require('node:assert/strict');let filtered=[{id:1,_folderCollection:[{id:1},{id:2}]},{id:3},{id:4}],page=1,pageSize=2,chosenIds=new Set([4]);function render(){};"+function+";choosePage();assert.deepEqual([...chosenIds].sort(),[1,2,3,4]);choosePage();assert.deepEqual([...chosenIds],[4]);page=2;choosePage();assert.equal(chosenIds.size,0);"
+        script="const assert=require('node:assert/strict');const window={};let filtered=[{id:1,_folderCollection:[{id:1},{id:2}]},{id:3},{id:4}],page=1,pageSize=2,chosenIds=new Set([4]);function render(){};"+function+";choosePage();assert.deepEqual([...chosenIds].sort(),[1,2,3,4]);choosePage();assert.deepEqual([...chosenIds],[4]);page=2;choosePage();assert.equal(chosenIds.size,0);let delegated=0;const serverBrowse=window.serverBrowse={selectPage(){delegated++}};choosePage();assert.equal(delegated,1);"
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'batch.js';path.write_text(script,encoding='utf-8')
-            subprocess.run(['node',str(path)],check=True,capture_output=True)
+            completed=subprocess.run(['node',str(path)],capture_output=True,text=True)
+            self.assertEqual(completed.returncode,0,completed.stderr)

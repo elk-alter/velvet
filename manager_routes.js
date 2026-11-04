@@ -34,7 +34,7 @@ async function goManage(route,params={},options={}){
  const retainingDiskEdits=route==='organization-review'&&managerNavigationState.route===route&&params.source===managerNavigationState.params.source;
  if(!options.history&&managerDirty&&!retainingDiskEdits&&!await allowManagementLeave())return false;
  if(!managerNavigationState.route){const state=captureView();managerNavigationState.browseReturn=history.state?.browseReturn||(options.history?managerNavigationState.browseReturn:null)||{state,scroll:window.scrollY||0};saveViewState();history.replaceState({...history.state,browseReturn:managerNavigationState.browseReturn},'',location.href)}
- clearManagerTimers();const ticket=++managerRouteEpoch;managerController=new AbortController();managerDirty=false;managerNavigationState.route=route;managerNavigationState.params={...params};
+ window.serverBrowse?.cancel();clearManagerTimers();const ticket=++managerRouteEpoch;managerController=new AbortController();managerDirty=false;managerNavigationState.route=route;managerNavigationState.params={...params};
  if(!options.history)writeManagementLocation(route,params,same||options.replace);
  renderManagerShell(managerRouteInfo[route].title,'<div class="managerLoading" role="status">正在加载…</div>');window.scrollTo({top:0});managerRendering=true;
  try{

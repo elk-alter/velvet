@@ -49,3 +49,7 @@ media_relation_revision记录推断输入代数及已完成代数；video路径/
 browse_projection只存按文件派生的搜索/展示/质量摘要；browse_dirty由权威表触发器登记。browse_state记录源revision、投影模式和已聚合revision；规则/可见性/质量目标变化重算，普通字段变化重算脏文件，再刷新可复用SQL版本聚合browse_version_rows。构建前复查上下文与关系代数，变化返回409，避免使用旧规则标记新投影完成。这里的DDL、投影和失效不构成物理文件操作。
 
 browse_queries/browse_results保存最多16份、30分钟的固定排序卡片查询，源revision变化即拒绝旧页。与持久任务/批准计划无关；恢复后幂等补模式及触发器。还没有全量故障/升级验收，旧前端没有切换。质量证据和完整资料留在权威表，不进入卡片JSON。
+
+第十一批新增browse_query_members(query_id,card_key,movie_key,version_key,resume_id,title,part_count,size)，用于固定选择/合集展开/随机，不是执行清单。query_id与卡片/预览有索引；与browse_results一起到期/淘汰清理。browse_results仅保存排序卡片身份，当前页才补资料；相同源revision和完整筛选可复用有效范围。缺封面范围还核对缓存ID集合。普通轮询不能以数据目录mtime作为图片版本，SQLite WAL/SHM会触发无效刷新。
+
+启动在开放HTTP前准备查询索引并明确打印等待信息；这只是就绪阶段，不宣称消除大库迁移成本。离线克隆/恢复测试必须执行标准DataGuard/LEASES恢复；克隆包含当时持有的备份租约不能直接作为已对账运行库。浏览查询不代表媒体执行或恢复验证。

@@ -124,7 +124,9 @@ class FileReview:
 
     def snapshot(self, videos, movies=None):
         with self.db() as c:
-            records = {r['video_id']: dict(r) for r in c.execute('SELECT r.* FROM file_reviews r JOIN videos v ON v.id=r.video_id')}
+            records={};ids=[v['id'] for v in videos]
+            for offset in range(0,len(ids),500):
+                batch=ids[offset:offset+500];records.update({r['video_id']:dict(r) for r in c.execute('SELECT * FROM file_reviews WHERE video_id IN ('+','.join('?' for _ in batch)+')',batch)})
             setting = c.execute("SELECT value FROM review_settings WHERE key='target'").fetchone()
         visible={video['id'] for video in videos}
         records={key:value for key,value in records.items() if key in visible}

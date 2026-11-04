@@ -18,6 +18,7 @@ UI_ASSETS={
  '/manager_routes.js':('manager_routes.js','text/javascript'),
  '/management.css':('management.css','text/css'),
  '/browse.js':('browse.js','text/javascript'),
+ '/server_browse.js':('server_browse.js','text/javascript'),
  '/film_detail.js':('film_detail.js','text/javascript'),
  '/browse.css':('browse.css','text/css'),
  '/file_review.js':('file_review.js','text/javascript'),
@@ -169,7 +170,7 @@ ORGANIZATION=OrganizationService(db,INVENTORY)
 from inventory_query import InventoryQuery,InventoryQueryChanged
 INVENTORY_QUERY=InventoryQuery(INVENTORY)
 from library_query import LibraryQuery,LibraryQueryChanged
-BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY)
+BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,config)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
@@ -724,7 +725,9 @@ class Handler(BaseHTTPRequestHandler):
  def log_message(self,*a):pass
  def send(self,data,kind='application/json',status=200):
   if not isinstance(data,bytes):data=json.dumps(data,ensure_ascii=False).encode()
-  self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)));self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(data)
+  try:
+   self.send_response(status);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)));self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(data)
+  except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError):self.close_connection=True
  def video(self,vid):
   with db() as c:r=c.execute('SELECT * FROM videos WHERE id=?',(int(vid),)).fetchone()
   if not r:raise ValueError('视频记录不存在')
@@ -796,8 +799,16 @@ class Handler(BaseHTTPRequestHandler):
     except (OSError,ValueError):rules=[]
     return self.send({'rules':rules})
    if path=='/api/context':return self.send(browser_context())
+   if path=='/api/library/lookup':return self.send(BROWSE.lookup(parse_qs(urlparse(self.path).query).get('code',[''])[0]))
+   if path=='/api/library/relationship-options':return self.send(BROWSE.relationship_options(parse_qs(urlparse(self.path).query).get('q',[''])[0]))
+   if path=='/api/library/query-revision':return self.send(BROWSE.revision(parse_qs(urlparse(self.path).query).get('quality',[''])[0]))
+   if path=='/api/library/facets':
+    query=parse_qs(urlparse(self.path).query);return self.send(BROWSE.facets(query.get('kind',['tags'])[0],query.get('q',[''])[0]))
+   if path=='/api/library/random':return self.send(BROWSE.random(parse_qs(urlparse(self.path).query).get('snapshot',[''])[0]))
    if path=='/api/library/query':return self.send(BROWSE.query({key:values[0] for key,values in parse_qs(urlparse(self.path).query).items()}))
-   if path=='/api/library/movie':return self.send({'movie':BROWSE.movie(parse_qs(urlparse(self.path).query).get('id',['0'])[0])})
+   if path=='/api/library/movie':
+    movie=BROWSE.movie(parse_qs(urlparse(self.path).query).get('id',['0'])[0]);videos=[part for version in movie['_versions'] for part in version['_parts']]
+    return self.send({'movie':movie,'review':REVIEW.snapshot(videos,[movie])})
    if path=='/api/library-revision':return self.send({'instance':hashlib.sha256(TOKEN.encode()).hexdigest(),'revision':DB_REVISION,'scan':dict(STATUS),'review_running':REVIEW.lock.locked()})
    if path.startswith('/api/organization/'):
     query=parse_qs(urlparse(self.path).query);value=lambda key,default='':query.get(key,[default])[0]
@@ -932,6 +943,7 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/organization/prefer':
     with LEASES.hold('location-choice'):ORGANIZATION.locations.prefer(a.get('id'),a.get('location'))
     return self.send({'ok':True})
+   elif path=='/api/library/selection':return self.send(BROWSE.selection(a.get('snapshot',''),a.get('keys'),a.get('offset',0),a.get('limit',100)))
    elif path=='/api/storage/register':return self.send({'ok':True,'id':INVENTORY.register(a.get('path'),a.get('alias'))})
    elif path=='/api/storage/annotate':
     INVENTORY.annotate(a.get('id'),a.get('relative'),a.get('annotation'));return self.send({'ok':True})
@@ -1101,7 +1113,7 @@ class Handler(BaseHTTPRequestHandler):
      with db() as c:
       if c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]:raise ValueError('仍有刮削任务，请先在任务中心取消并等待结束后恢复')
      with DB_MUTEX:
-      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
       with db() as c:
        if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:
@@ -1232,6 +1244,7 @@ class Handler(BaseHTTPRequestHandler):
     with db() as c:c.execute('DELETE FROM videos WHERE id=?',(int(a['id']),))
    else:return self.send({},status=404)
    self.send({'ok':True})
+  except LibraryQueryChanged as e:self.send({'error':str(e)},status=409)
   except Exception as e:self.send({'error':str(e)},status=400)
 def task_resources():
  cfg=config()
@@ -1302,6 +1315,8 @@ if __name__=='__main__':
  try:server=LocalServer((BIND,RUNTIME.port),Handler)
  except OSError as error:raise SystemExit('服务端口不可用，请检查已有实例或使用 --port；系统错误码 '+str(error.errno)) from None
  ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+ print('正在检查片库查询索引，首次升级大库可能需要一些时间…',flush=True)
+ BROWSE.refresh()
  if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):
   with LEASES.hold('backup','write'):CORE.backup('auto-'+time.strftime('%Y%m%d'))
  JOURNAL.recover()

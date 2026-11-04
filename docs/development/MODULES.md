@@ -53,3 +53,5 @@
 - inventory_query：跨盘SQL范围、重叠根去重、固定排序标识缓存及分页DTO；独立于整理批准和主片库全图。
 
 - library_query：开发中的片库派生投影、SQL版本/合集聚合、固定分页卡片与按作品详情后端；旧前端尚未切换。FileReview.describe为旧/新查询共享的单文件质量推导。
+
+- server_browse.js：分页请求/取消、固定选择、合集URL/返回、按作品资料缓存、范围刮削及有限筛选/关系建议；index/browse的交互处理器显式调用，替代主页面全量bootstrap。

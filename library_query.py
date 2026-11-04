@@ -5,6 +5,7 @@ Legacy metadata/edit models remain authoritative. Full movie data is lazy.
 """
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -22,8 +23,9 @@ def tokens(value):return [part.strip() for part in re.split(r'[,，;；\n]',str(
 
 
 class LibraryQuery:
-    def __init__(self,db,core,libraries,policy):
+    def __init__(self,db,core,libraries,policy,config=lambda:{}):
         self.db,self.core,self.libraries,self.policy=db,core,libraries,policy
+        self.config=config
         libraries.exclusions();policy.ensure()
         with db() as c:
             c.execute('CREATE TABLE IF NOT EXISTS browse_projection(video_id INTEGER PRIMARY KEY,title TEXT,vr INTEGER,censorship TEXT,resolution_label TEXT,folder TEXT,visible INTEGER,tags TEXT,actors TEXT,review TEXT)')
@@ -33,7 +35,11 @@ class LibraryQuery:
             if 'projected_revision' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projected_revision INTEGER DEFAULT -1')
             if 'projection_schema' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projection_schema INTEGER DEFAULT 0')
             c.execute('UPDATE browse_state SET projection_schema=1,rebuild=1,revision=revision+1 WHERE projection_schema!=1')
+            c.execute('CREATE TABLE IF NOT EXISTS browse_query_members(query_id TEXT,card_key TEXT,movie_key TEXT,version_key TEXT,resume_id INTEGER,title TEXT,part_count INTEGER,size INTEGER,PRIMARY KEY(query_id,movie_key))')
+            c.execute('CREATE INDEX IF NOT EXISTS browse_member_card ON browse_query_members(query_id,card_key,movie_key)')
+            c.execute('CREATE INDEX IF NOT EXISTS browse_member_preview ON browse_query_members(query_id,card_key,title,resume_id)')
             c.execute('CREATE TABLE IF NOT EXISTS browse_queries(id TEXT PRIMARY KEY,created REAL,revision INTEGER,criteria TEXT,totals TEXT)')
+            c.execute('CREATE INDEX IF NOT EXISTS browse_query_reuse ON browse_queries(revision,criteria,created DESC)')
             c.execute('CREATE TABLE IF NOT EXISTS browse_results(query_id TEXT,ordinal INTEGER,payload TEXT,PRIMARY KEY(query_id,ordinal))')
             c.execute('INSERT OR IGNORE INTO browse_dirty SELECT v.id FROM videos v LEFT JOIN browse_projection p ON p.video_id=v.id WHERE p.video_id IS NULL')
             for action in ('INSERT','UPDATE'):
@@ -83,7 +89,7 @@ class LibraryQuery:
             setting=c.execute("SELECT value FROM review_settings WHERE key='target'").fetchone();target=int(setting[0]) if setting else 1080
             # Batches bound Python memory and avoid holding full metadata graphs.
             while True:
-                batch=c.execute("SELECT v.*,COALESCE(a.relation_path,'') AS relation_path,l.manual AS relation_manual FROM browse_dirty q JOIN videos v ON v.id=q.video_id JOIN media_links l ON l.video_id=v.id LEFT JOIN media_assets a ON a.video_id=v.id ORDER BY v.id LIMIT 500").fetchall()
+                batch=c.execute("SELECT v.*,COALESCE(a.relation_path,'') AS relation_path,l.manual AS relation_manual FROM browse_dirty q CROSS JOIN videos v ON v.id=q.video_id JOIN media_links l ON l.video_id=v.id LEFT JOIN media_assets a ON a.video_id=v.id ORDER BY q.video_id LIMIT 500").fetchall()
                 if not batch:break
                 ids=[r['id'] for r in batch];slots=','.join('?' for _ in ids)
                 records={r['video_id']:dict(r) for r in c.execute('SELECT * FROM file_reviews WHERE video_id IN ('+slots+')',ids)}
@@ -105,12 +111,12 @@ class LibraryQuery:
             # Rebuild only when authoritative rows/preferences/rules changed.
             c.execute('DROP TABLE IF EXISTS browse_version_rows')
             c.execute('CREATE TABLE browse_version_rows AS '+self.CTE+' SELECT * FROM versions')
-            c.execute('CREATE INDEX browse_version_movie ON browse_version_rows(movie_key)')
+            c.execute('CREATE INDEX browse_version_movie ON browse_version_rows(movie_key,version_key)')
             c.execute('UPDATE browse_state SET projected_revision=revision WHERE id=1')
 
     def parameters(self,query):
-        criteria={key:str(query.get(key,default)).strip() for key,default in [('q',''),('mode','all'),('length','all'),('censorship',''),('vr',''),('height','0'),('tag_logic','all'),('exclude_tag',''),('actor',''),('studio',''),('source',''),('quality',''),('sort','new'),('collections','on'),('collection','')]}
-        for key,choices in [('mode',{'all','favorite','unwatched','recent','missing'}),('length',{'all','short','long'}),('censorship',{'','censored','uncensored','unknown','mixed'}),('vr',{'','vr','flat'}),('height',{'0','720','1080','1440','2160','4320'}),('tag_logic',{'all','any'}),('source',{'','matched','pending','error','partial'}),('quality',{'','needs_update','update','watermark','damaged','replace','suspected_watermark','suspected_black','suspected_freeze','decode_error','below_target','higher_local','auto_pending','auto_error','auto_unchecked','unchecked','active','inspection','pending','metadata_error','incomplete','accepted','ignored'}),('sort',{'new','title','duration','rating','size'}),('collections',{'on','off'})]:
+        criteria={key:str(query.get(key,default)).strip() for key,default in [('q',''),('mode','all'),('length','all'),('censorship',''),('vr',''),('height','0'),('tag_logic','all'),('exclude_tag',''),('actor',''),('studio',''),('source',''),('quality',''),('sort','new'),('collections','on'),('collection',''),('facet_kind',''),('facet_name','')]}
+        for key,choices in [('mode',{'all','favorite','unwatched','recent','missing'}),('length',{'all','short','long'}),('censorship',{'','censored','uncensored','unknown','mixed'}),('vr',{'','vr','flat'}),('height',{'0','720','1080','1440','2160','4320'}),('tag_logic',{'all','any'}),('source',{'','matched','pending','error','partial'}),('quality',{'','needs_update','update','watermark','damaged','replace','suspected_watermark','suspected_black','suspected_freeze','decode_error','below_target','higher_local','auto_pending','auto_error','auto_unchecked','unchecked','active','inspection','pending','metadata_error','incomplete','no_cover','accepted','ignored'}),('sort',{'new','title','duration','rating','size'}),('collections',{'on','off'}),('facet_kind',{'','tags','user_tags','technical','studio','series','director'})]:
             if criteria[key] not in choices:raise ValueError('无效片库筛选：'+key)
         try:tags=json.loads(query.get('tags','[]'))
         except (ValueError,TypeError):raise ValueError('标签筛选应为JSON数组')
@@ -185,6 +191,7 @@ class LibraryQuery:
         if quality in ('needs_update','update'):where.append('v.needs_update=1')
         elif quality=='higher_local':where.append('v.higher_local=1')
         elif quality=='auto_pending':where.append('v.auto_pending=1')
+        elif quality=='no_cover':where.append('EXISTS(SELECT 1 FROM files p WHERE p.movie_key=v.movie_key AND p.id NOT IN (SELECT id FROM cached_covers))')
         elif quality:
             tests={
                 'accepted':"json_extract(p.review,'$.decision')='accepted'",
@@ -202,6 +209,16 @@ class LibraryQuery:
             elif quality=='watermark':where.append("EXISTS(SELECT 1 FROM files p,json_each(p.review,'$.issues') issue WHERE p.movie_key=v.movie_key AND (json_extract(issue.value,'$.code')='watermark' OR (json_extract(issue.value,'$.code')='suspected_watermark' AND json_extract(issue.value,'$.source')='automatic_confirmed')))")
             else:
                 where.append("EXISTS(SELECT 1 FROM files p,json_each(p.review,'$.issues') issue WHERE p.movie_key=v.movie_key AND json_extract(issue.value,'$.code')=?)");args.append(quality)
+        if criteria['facet_kind'] and criteria['facet_name']:
+            kind=criteria['facet_kind'];name=criteria['facet_name']
+            if kind=='tags':condition='EXISTS(SELECT 1 FROM json_each(facet_tags(vf.source_tags)) WHERE value=?)'
+            elif kind=='studio':condition='vf.studio=?'
+            elif kind=='series':condition="json_extract(vf.amane_snapshot,'$.series')=?"
+            elif kind=='director':condition="EXISTS(SELECT 1 FROM json_each(vf.amane_snapshot,'$.directors') WHERE value=?)"
+            else:
+                column='source_tags' if kind=='tags' else 'tags' if kind=='user_tags' else 'auto_tags'
+                condition='EXISTS(SELECT 1 FROM json_each(token_list(vf.'+column+')) WHERE value=?)'
+            where.append('EXISTS(SELECT 1 FROM videos vf JOIN media_links lf ON lf.video_id=vf.id JOIN browse_projection pf ON pf.video_id=vf.id AND pf.visible=1 WHERE lf.movie_key=v.movie_key AND ('+condition+'))');args.append(name)
         if criteria['collection']:
             where.append('collection_id(v.collection_root)=?');args.append(criteria['collection'])
         return ' AND '.join(where),args
@@ -209,12 +226,19 @@ class LibraryQuery:
     def query(self,query):
         criteria=self.parameters(query);offset=max(0,int(query.get('offset',0)));limit=min(96,max(1,int(query.get('limit',48))))
         self.refresh();now=time.time();ident=str(query.get('snapshot',''))
+        covers=self.cover_ids() if criteria['quality']=='no_cover' else None
+        if covers is not None:criteria['_covers']=hashlib.sha256(json.dumps(sorted(covers)).encode()).hexdigest()
         with self.db() as c:
             c.create_function('fold',1,fold,deterministic=True)
+            c.create_function('token_list',1,lambda value:json.dumps(tokens(value)),deterministic=True)
+            aliases=self.config().get('tag_aliases',{});c.create_function('facet_tags',1,lambda value:json.dumps([aliases.get(t,t) for t in tokens(value)]),deterministic=True)
             c.create_function('collection_id',1,lambda root:hashlib.sha256(fold(root).encode()).hexdigest()[:24] if root else '',deterministic=True)
             c.create_function('basename',1,lambda path:path_text(path).split('/')[-1],deterministic=True)
             c.execute('BEGIN' if ident else 'BEGIN IMMEDIATE')
             revision=c.execute('SELECT revision FROM browse_state WHERE id=1').fetchone()[0]
+            if not ident:
+                reusable=c.execute('SELECT id FROM browse_queries WHERE revision=? AND criteria=? AND created>? ORDER BY created DESC,id DESC LIMIT 1',(revision,json.dumps(criteria),now-1800)).fetchone()
+                if reusable:ident=reusable[0]
             if ident:
                 row=c.execute('SELECT * FROM browse_queries WHERE id=?',(ident,)).fetchone()
                 if not row or now-row['created']>1800:raise LibraryQueryChanged('片库查询已过期，请重新查询')
@@ -222,24 +246,40 @@ class LibraryQuery:
                 totals=json.loads(row['totals'])
             else:
                 ident=uuid.uuid4().hex;where,args=self.matching(criteria)
+                if covers is not None:
+                    c.execute('CREATE TEMP TABLE cached_covers(id INTEGER PRIMARY KEY)');c.executemany('INSERT INTO cached_covers VALUES(?)',((vid,) for vid in covers))
                 selected=self.QUERY_CTE+", ranked AS (SELECT v.*,ROW_NUMBER() OVER(PARTITION BY movie_key ORDER BY all_missing,preference_rank,preferred DESC,min_height DESC,total_size DESC,version_key) AS chosen FROM versions v WHERE "+where+")"
                 c.execute('CREATE TEMP TABLE browse_matches AS '+selected+' SELECT * FROM ranked WHERE chosen=1',args)
                 selected='WITH matched AS (SELECT * FROM browse_matches)'
                 grouped=criteria['collections']=='on' and not criteria['collection']
                 key="CASE WHEN collection_root!='' AND collection_count>1 THEN 'collection:'||collection_id(collection_root) ELSE 'movie:'||movie_key END" if grouped else "'movie:'||movie_key"
+                c.execute(selected+' INSERT INTO browse_query_members SELECT ?,'+key+',movie_key,version_key,resume_id,display_title,part_count,total_size FROM matched',(ident,))
                 cards=selected+", keyed AS (SELECT *,"+key+" AS card_key FROM matched), grouped AS (SELECT card_key,COUNT(*) AS hit_count,SUM(total_size) AS card_size,MAX(movie_mtime) AS card_mtime,MAX(rating) AS card_rating,MAX(total_duration) AS card_duration,MIN(resume_id) AS cover_id,MIN(display_title) AS card_title,MIN(collection_root) AS root,MAX(collection_count) AS collection_total FROM keyed GROUP BY card_key)"
                 # SQL JSON contains only card fields; full plot/locks/evidence remain lazy.
-                fields="'id',k.resume_id,'title',k.display_title,'movie_key',k.movie_key,'version_key',k.version_key,'code',k.code,'actors',k.actors,'studio',k.studio,'date',k.date,'rating',k.rating,'height',k.min_height,'duration',k.total_duration,'size',k.total_size,'position',k.max_position,'watched',k.all_watched,'missing',k.all_missing,'favorite',k.movie_favorite,'mtime',k.movie_mtime,'vr',k.vr,'censorship',k.censorship,'resolution_label',k.resolution_label,'part_count',k.part_count,'version_count',k.version_count,'needs_update',k.needs_update,'higher_local',k.higher_local"
-                payload="CASE WHEN g.card_key LIKE 'collection:%' THEN json_object('kind','collection','key',g.card_key,'id',collection_id(g.root),'title',basename(g.root),'hit_count',g.hit_count,'total_count',g.collection_total,'size',g.card_size,'cover_id',g.cover_id,'previews',json((SELECT json_group_array(resume_id) FROM (SELECT resume_id FROM keyed p WHERE p.card_key=g.card_key ORDER BY p.display_title,p.resume_id LIMIT 4)))) ELSE json_object('kind','movie','key',g.card_key,"+fields+") END"
+                # Cache ordered identities, then hydrate only the requested page.
+                payload="CASE WHEN g.card_key LIKE 'collection:%' THEN json_object('kind','collection','key',g.card_key,'id',collection_id(g.root),'title',basename(g.root),'hit_count',g.hit_count,'total_count',g.collection_total,'size',g.card_size,'cover_id',g.cover_id) ELSE json_object('kind','movie','key',g.card_key,'id',k.resume_id,'movie_key',k.movie_key,'version_key',k.version_key) END"
                 order={'new':'g.card_mtime DESC','title':"fold(CASE WHEN g.card_key LIKE 'collection:%' THEN basename(g.root) ELSE g.card_title END)",'duration':'g.card_duration DESC','rating':'g.card_rating DESC','size':'g.card_size DESC'}[criteria['sort']]+',g.card_key'
                 totals=dict(c.execute(cards+' SELECT COUNT(*) AS total,COALESCE(SUM(card_size),0) AS bytes FROM grouped').fetchone())
                 totals['movies']=c.execute(selected+' SELECT COUNT(*) FROM matched').fetchone()[0]
+                totals['summary']=dict(c.execute('WITH ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY movie_key ORDER BY all_missing,preference_rank,preferred DESC,min_height DESC,total_size DESC,version_key) AS rank FROM browse_version_rows) SELECT COUNT(*) AS movies,COALESCE(SUM(movie_favorite),0) AS favorites,COALESCE(SUM(total_size),0) AS bytes,COALESCE(SUM(NOT all_watched AND NOT all_missing),0) AS unwatched FROM ranked WHERE rank=1').fetchone())
+                if criteria['collection']:
+                    collection=c.execute('SELECT MIN(collection_root) AS root,MAX(collection_count) AS total FROM browse_version_rows WHERE collection_id(collection_root)=?',(criteria['collection'],)).fetchone()
+                    totals['collection_info']={'id':criteria['collection'],'title':path_text(collection['root']).split('/')[-1],'total_count':collection['total'] or 0} if collection['root'] else None
                 c.execute('INSERT INTO browse_queries VALUES(?,?,?,?,?)',(ident,now,revision,json.dumps(criteria),json.dumps(totals)))
                 c.execute(cards+' INSERT INTO browse_results SELECT ?,ROW_NUMBER() OVER(ORDER BY '+order+')-1,'+payload+' FROM grouped g LEFT JOIN keyed k ON k.card_key=g.card_key AND k.resume_id=g.cover_id',(ident,))
                 stale=[r[0] for r in c.execute('SELECT id FROM browse_queries WHERE created<? OR id NOT IN (SELECT id FROM browse_queries ORDER BY created DESC,id DESC LIMIT 16)',(now-1800,))]
                 for key in stale:
-                    c.execute('DELETE FROM browse_results WHERE query_id=?',(key,));c.execute('DELETE FROM browse_queries WHERE id=?',(key,))
+                    c.execute('DELETE FROM browse_results WHERE query_id=?',(key,));c.execute('DELETE FROM browse_query_members WHERE query_id=?',(key,));c.execute('DELETE FROM browse_queries WHERE id=?',(key,))
             items=[json.loads(r[0]) for r in c.execute('SELECT payload FROM browse_results WHERE query_id=? AND ordinal>=? AND ordinal<? ORDER BY ordinal',(ident,offset,offset+limit))]
+            for item in items:
+                if item['kind']=='collection':
+                    item['previews']=[row[0] for row in c.execute('SELECT resume_id FROM browse_query_members WHERE query_id=? AND card_key=? ORDER BY title,resume_id LIMIT 4',(ident,item['key']))]
+                    continue
+                row=c.execute('SELECT * FROM browse_version_rows WHERE movie_key=? AND version_key=?',(item['movie_key'],item['version_key'])).fetchone()
+                if not row:raise LibraryQueryChanged('作品版本已变化，请重新查询')
+                fields={'title':'display_title','height':'min_height','duration':'total_duration','size':'total_size','position':'max_position','watched':'all_watched','missing':'all_missing','favorite':'movie_favorite','mtime':'movie_mtime'}
+                item.update({key:row[column] for key,column in fields.items()})
+                item.update({key:row[key] for key in ('code','actors','studio','date','rating','vr','censorship','resolution_label','part_count','version_count','needs_update','higher_local')})
         for item in items:
             if item['kind']=='movie':item['censorship_label']={'censored':'有码','uncensored':'无码','unknown':'未知'}.get(item['censorship'],'标记不一致')
         return dict(totals,items=items,offset=offset,limit=limit,snapshot=ident,criteria=criteria,revision=revision)
@@ -252,3 +292,70 @@ class LibraryQuery:
         movies=self.core.hierarchy(movie_key=row[0])
         if not movies:raise ValueError('作品不存在或已排除')
         return movies[0]
+
+    def cover_ids(self):
+        result=set()
+        with os.scandir(self.core.data) as entries:
+            for entry in entries:
+                match=re.fullmatch(r'(\d+)-(cover|poster)\.jpg',entry.name)
+                if match and entry.is_file():result.add(int(match[1]))
+        return result
+
+    def revision(self,quality=''):
+        with self.db() as c:value=c.execute('SELECT revision FROM browse_state WHERE id=1').fetchone()[0]
+        return {'revision':value,'covers':hashlib.sha256(json.dumps(sorted(self.cover_ids())).encode()).hexdigest() if quality=='no_cover' else None}
+
+    def facets(self,kind,search='',limit=100):
+        if kind not in ('tags','actors','studio') or len(search)>200:raise ValueError('无效筛选建议')
+        self.refresh();limit=min(100,max(1,int(limit)))
+        with self.db() as c:
+            c.create_function('fold',1,fold,deterministic=True)
+            source="SELECT v.studio AS name,l.movie_key FROM videos v JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 JOIN media_links l ON l.video_id=v.id" if kind=='studio' else 'SELECT j.value AS name,l.movie_key FROM browse_projection p JOIN media_links l ON l.video_id=p.video_id,json_each(p.'+('tags' if kind=='tags' else 'actors')+') j WHERE p.visible=1'
+            items=[dict(r) for r in c.execute('SELECT name,COUNT(DISTINCT movie_key) AS movies FROM ('+source+") WHERE name!='' AND instr(fold(name),?)>0 GROUP BY name ORDER BY movies DESC,name LIMIT ?",(fold(search),limit))]
+        return {'items':items,'limit':limit}
+
+    def selection(self,snapshot,keys,offset=0,limit=100):
+        if not isinstance(keys,list) or not 1<=len(keys)<=500 or not all(isinstance(key,str) and len(key)<=250 for key in keys) or len(set(keys))!=len(keys):raise ValueError('请选择1–500张卡片')
+        offset=max(0,int(offset));limit=min(100,max(1,int(limit)));self.refresh()
+        with self.db() as c:
+            c.execute('BEGIN')
+            self.valid_scope(c,snapshot)
+            slots=','.join('?' for _ in keys);args=(snapshot,*keys)
+            rows=c.execute('SELECT COUNT(DISTINCT card_key) FROM browse_query_members WHERE query_id=? AND card_key IN ('+slots+')',args).fetchone()[0]
+            if rows!=len(keys):raise ValueError('选择含有当前查询之外的卡片')
+            base=' FROM browse_query_members WHERE query_id=? AND card_key IN ('+slots+')'
+            summary=dict(c.execute("SELECT COUNT(*) AS total,COALESCE(SUM(part_count),0) AS files,COALESCE(SUM(size),0) AS bytes,COALESCE(SUM(EXISTS(SELECT 1 FROM videos v WHERE v.id=resume_id AND trim(v.code)!='')),0) AS eligible"+base,args).fetchone())
+            items=[dict(r) for r in c.execute('SELECT movie_key,version_key,resume_id AS id,title,part_count,size,(SELECT code FROM videos v WHERE v.id=resume_id) AS code'+base+' ORDER BY movie_key LIMIT ? OFFSET ?',(*args,limit,offset))]
+        return dict(summary,items=items,offset=offset,limit=limit,snapshot=snapshot)
+
+    def valid_scope(self,c,snapshot):
+        row=c.execute('SELECT created,revision,criteria FROM browse_queries WHERE id=?',(snapshot,)).fetchone();revision=c.execute('SELECT revision FROM browse_state WHERE id=1').fetchone()[0]
+        if not row or time.time()-row['created']>1800 or row['revision']!=revision:raise LibraryQueryChanged('查询范围已变化，请重新查询')
+        criteria=json.loads(row['criteria'])
+        if '_covers' in criteria and criteria['_covers']!=hashlib.sha256(json.dumps(sorted(self.cover_ids())).encode()).hexdigest():raise LibraryQueryChanged('封面缓存已变化，请重新查询')
+
+    def random(self,snapshot):
+        self.refresh()
+        with self.db() as c:
+            c.execute('BEGIN');self.valid_scope(c,snapshot)
+            row=c.execute('SELECT resume_id FROM browse_query_members WHERE query_id=? ORDER BY RANDOM() LIMIT 1',(snapshot,)).fetchone()
+        if not row:raise ValueError('当前范围没有影片')
+        return {'id':row[0]}
+
+    def lookup(self,code):
+        if not isinstance(code,str) or not code.strip() or len(code)>100:raise ValueError('编号无效')
+        self.refresh()
+        with self.db() as c:row=c.execute('SELECT v.id FROM videos v JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 WHERE v.code=? COLLATE NOCASE ORDER BY v.missing,v.id LIMIT 1',(code.strip(),)).fetchone()
+        if not row:raise ValueError('找不到对应的本地视频')
+        return {'id':row[0]}
+
+    def relationship_options(self,search=''):
+        if len(search)>500:raise ValueError('关系名称过长')
+        self.refresh()
+        with self.db() as c:
+            c.create_function('fold',1,fold,deterministic=True)
+            movies=[dict(row) for row in c.execute("SELECT movie_key AS key,CASE WHEN code!='' THEN code||' · ' ELSE '' END||display_title AS label FROM browse_version_rows WHERE instr(fold(code||' · '||display_title),?)>0 GROUP BY movie_key ORDER BY display_title,movie_key LIMIT 100",(fold(search),))]
+            versions=[]
+            for row in c.execute("SELECT * FROM browse_version_rows WHERE instr(fold(code||' · '||display_title||' · '||resolution_label||' · '||codec),?)>0 ORDER BY movie_key,version_key LIMIT 100",(fold(search),)):
+                versions.append({'key':row['version_key'],'label':(row['code'] or row['display_title'])+' · '+row['resolution_label']+' · '+(row['codec'] or '未知编码')+' · '+path_text(row['path']).split('/')[-1]})
+        return {'movies':movies,'versions':versions,'limit':100}
