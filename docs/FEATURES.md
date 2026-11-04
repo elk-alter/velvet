@@ -1,6 +1,6 @@
-# alpha.5 开发候选
+# alpha.5 功能索引
 
-尚未发布/部署。新增任务对账、后台启停、目录政策及只读硬盘盘点，见[实现进度](ALPHA5-PROGRESS.md)、[操作指南](ALPHA5-OPERATIONS.md)和[验收证据](ALPHA5-VALIDATION.md)。下方保留已发布基线；存在候选代码不等于全部验收通过。
+本版新增任务对账、安全启停、完整离线备份、人工合集/一致排除与只读硬盘盘点/整理计划。见[操作指南](ALPHA5-OPERATIONS.md)、[验收记录](ALPHA5-VALIDATION.md)和[本版说明](RELEASE-0.1.0-alpha.5.md)。下方保留此前功能清单作为完整能力基线；复制/移动执行及服务端分页仍未交付。
 
 # alpha.4 更新索引
 

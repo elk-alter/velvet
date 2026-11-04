@@ -1,6 +1,6 @@
 # Architecture
 
-历史版本基线：0.1.0-alpha.3。alpha.5候选模块见[模块文档](development/MODULES.md)和[ADR0001](adr/0001-alpha5-reliability-and-readonly-plans.md)，尚未全部验收发布。功能范围见 [功能清单](FEATURES.md)。
+历史版本基线：0.1.0-alpha.3。alpha.5模块见[模块文档](development/MODULES.md)和[ADR0001](adr/0001-alpha5-reliability-and-readonly-plans.md)，交付证据见[验收记录](ALPHA5-VALIDATION.md)。功能范围见 [功能清单](FEATURES.md)。
 
 ## 当前实现
 

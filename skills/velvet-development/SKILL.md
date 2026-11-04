@@ -11,7 +11,7 @@ Locate the intended checkout from the user's workspace, then read its AGENTS.md.
 
 Read docs/development/README.md and docs/PLAN-INDEX.md. For alpha.5 work, select a bounded A5-ID from docs/ALPHA5-REQUIREMENTS.md; for original-media organization select an ORG-ID from docs/EPIC-RAW-MEDIA-ORGANIZATION.md. Consult docs/DELIVERY-STATUS.md before claiming a story is new or completed. Requirement acceptance criteria outrank abbreviated status summaries. Read MODULES.md for affected ownership and DATA.md for any schema, queue, exclusion or restore change.
 
-The published baseline is alpha.4, not a completed alpha.5. Existing buttons and tests do not prove story acceptance. The raw-media Epic is a plan: read-only inventory/preview is the default; copy is conditional, moving/renaming/source disposal is deferred. A request to plan or implement a planner is not authorization to reorganize actual disks. Do not silently weaken current source-read-only constraints.
+Verify VERSION, release records and HANDOFF instead of assuming the checked-out code is deployed. Existing buttons and tests do not prove story acceptance. The raw-media Epic currently provides read-only inventory/preview; the copy pilot is deferred, as are moving/renaming/source disposal. A request to plan or implement a planner is not authorization to reorganize actual disks. Do not silently weaken current source-read-only constraints.
 
 ## Implement and verify
 
