@@ -5,11 +5,14 @@ import time
 import threading
 from pathlib import Path
 from media_locations import MediaLocations
+from media_companions import destination as companion_destination
+from companion_bindings import CompanionBindings
 from organization_jobs import OrganizationJobs,identify,no_links
 from organization_executor import CopyExecutor
 from organization_moves import MoveExecutor
 from organization_cleanup import CopyCleanup
 from resource_leases import ResourceBusy
+from restore_safety import require_reconciled_files
 
 
 class OrganizationService:
@@ -18,8 +21,10 @@ class OrganizationService:
         self.jobs=OrganizationJobs(db,device_identity)
         self.locations=MediaLocations(db,device_identity)
         self.copy=CopyExecutor(self.jobs,self.bind_copy)
-        self.move=MoveExecutor(self.jobs,self.locations.bind_moves)
+        self.resources=CompanionBindings(db,device_identity)
+        self.move=MoveExecutor(self.jobs,self.bind_moves)
         self.cleanup=CopyCleanup(self.jobs)
+        with db() as c:c.execute('CREATE TABLE IF NOT EXISTS organization_draft_origins(draft_id TEXT PRIMARY KEY,preview_id TEXT)')
         self.wake=threading.Event();self.stopping=threading.Event()
         self.dispatch=threading.Lock();self.thread=None
 
@@ -36,11 +41,10 @@ class OrganizationService:
             device=self.inventory.device(row['device_id']);source_root=no_links(device['root'])
             if str(source_root)!=payload['source_root'] or device['identity']!=payload['source_device_identity'] or self.jobs.device_identity(source_root)!=device['identity']:raise ValueError('源设备或根目录变化，请重新生成预览')
             self.locations.migrate()
-            entries=[];originals={}
+            entries=[];originals={};resource_records={};retained=[];companions=[];assets={}
             for index in sorted(selected):
                 original=payload['entries'][index]
                 if original.get('conflicts'):raise ValueError('请先解决预览中的冲突')
-                if original.get('companions'):raise ValueError('包含伴随资源的执行尚未接入，请保留预览')
                 source=no_links(source_root/original['relative'])
                 if str(source)!=original['source']:raise ValueError('预览源路径变化')
                 with self.db() as c:video=c.execute('SELECT id FROM videos WHERE path=?',(str(source),)).fetchone()
@@ -50,16 +54,45 @@ class OrganizationService:
                     metadata['title']=annotation['title'];metadata['locked_fields']=json.dumps(['title'])
                 entries.append({'metadata':metadata,'source':str(source),'destination':original['destination'],'video_id':video['id'] if video else None,'operation':operation})
                 originals[str(source)]=original
+                for resource in original.get('companions',[]):
+                    name=resource['name']
+                    if Path(name).name!=name:raise ValueError('伴随资源路径无效')
+                    resource_source=source.parent/name
+                    if resource.get('shared'):
+                        retained.append({'source':str(resource_source),'reason':resource.get('reason','shared_resource'),'operation':'retain'})
+                        continue
+                    if not resource.get('available') or 'mtime_ns' not in resource:raise ValueError('伴随资源未确认或快照过旧，请重新盘点')
+                    target=companion_destination(source,original['destination'],name)
+                    companions.append({'source':str(resource_source),'destination':str(target),'video_id':None,'operation':operation,'role':'companion','metadata':{'parent_source':str(source),'kind':resource_source.suffix.lower()}})
+                    resource_records[str(no_links(resource_source))]=resource
+            entries.extend(companions)
             def register(entry,stamp,device_token):
-                original=originals[str(no_links(entry['source']))]
+                source=str(no_links(entry['source']))
+                original=resource_records[source] if entry.get('role')=='companion' else originals[source]
                 if (stamp['size'],stamp['mtime_ns'])!=(original['size'],original['mtime_ns']) or (original.get('digest') and original['digest']!=stamp['sha256']):raise ValueError('源文件已变化，请重新盘点')
-                return self.locations.register_verified(entry['source'],stamp,device_token,entry.get('video_id'),entry['metadata'])
-            return self.jobs.prepare(entries,source_root,row['target'],register=register)
+                if entry.get('role')=='companion':
+                    entry['parent_asset_id']=assets[entry['metadata']['parent_source']];return None
+                asset=self.locations.register_verified(entry['source'],stamp,device_token,entry.get('video_id'),entry['metadata'])
+                assets[entry['source']]=asset;return asset
+            draft=self.jobs.prepare(entries,source_root,row['target'],register=register,retained=list({item['source']:item for item in retained}.values()))
+            with self.db() as c:c.execute('INSERT OR IGNORE INTO organization_draft_origins VALUES(?,?)',(draft['id'],plan_id))
+            return draft
 
     def bind_copy(self,entry,job_id):
+        if entry.get('role')=='companion':return self.resources.bind_copy(entry,job_id)
         video_id,location_id=self.locations.bind_committed_copy(entry['asset_id'],entry['destination'],entry['fingerprint'],entry['target_device'],job_id,entry.get('metadata'),entry.get('verified_identity'))
         self.locations.prefer(video_id,location_id,entry.get('verified_identity'))
         return location_id
+
+    def bind_moves(self,entries,job_id):
+        media=[entry for entry in entries if entry.get('role')!='companion']
+        checked=self.resources.prepare_moves([entry for entry in entries if entry.get('role')=='companion'])
+        resource_bindings={}
+        def apply(c):resource_bindings.update(self.resources.apply_moves(c,checked,job_id))
+        return self.locations.bind_moves(media,job_id,apply)|resource_bindings
+
+    def approve_inverse(self,job_id,expected_digest):
+        inverse=self.move.approve_undo(job_id,expected_digest);self.wake.set();return inverse
 
     def approve(self,draft_id,expected_digest):
         with self.db() as c:existing=c.execute('SELECT j.id FROM organization_jobs j JOIN organization_drafts d ON d.digest=j.approval_digest WHERE d.id=? AND d.digest=?',(draft_id,expected_digest)).fetchone()
@@ -123,7 +156,7 @@ class OrganizationService:
     def work(self):
         while not self.stopping.is_set():
             with self.db() as c:
-                row=c.execute("SELECT j.id FROM organization_jobs j LEFT JOIN organization_control c ON c.job_id=j.id WHERE j.state IN ('queued','waiting') AND COALESCE(c.pause_requested,0)=0 ORDER BY j.created,j.id LIMIT 1").fetchone()
+                row=c.execute("SELECT j.id FROM organization_jobs j LEFT JOIN organization_control c ON c.job_id=j.id WHERE j.state IN ('queued','waiting') AND COALESCE(c.pause_requested,0)=0 ORDER BY CASE WHEN j.state='queued' THEN 0 ELSE 1 END,j.created,j.id LIMIT 1").fetchone()
             if not row:self.wake.wait(1);self.wake.clear();continue
             try:result=self.run_once(row['id'])
             except Exception as error:
@@ -133,6 +166,35 @@ class OrganizationService:
                 self.jobs.observe_progress(row['id'],'failed',reason=type(error).__name__)
                 continue
             if result['state']=='waiting':self.wake.wait(1);self.wake.clear()
+
+    def before_restore(self):
+        with self.db() as c:require_reconciled_files(c)
+
+    def preview(self,plan_id,offset=0,limit=50):
+        with self.db() as c:row=c.execute('SELECT * FROM organization_plans WHERE id=?',(plan_id,)).fetchone()
+        if not row:raise ValueError('整理预览不存在')
+        payload=json.loads(row['payload']);entries=payload['entries'];offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
+        return {'id':row['id'],'digest':payload['digest'],'device_id':row['device_id'],'target':row['target'],'source_root':payload['source_root'],
+                'items':[dict(entry,index=index) for index,entry in enumerate(entries[offset:offset+limit],offset)],'total':len(entries),'offset':offset,'limit':limit,'bytes':payload['bytes'],'space':payload.get('space',{})}
+
+    def selected(self,plan_id,scope):
+        if isinstance(scope,list):return scope
+        if scope not in ('all','eligible'):raise ValueError('请选择明确的操作范围')
+        with self.db() as c:row=c.execute('SELECT payload FROM organization_plans WHERE id=?',(plan_id,)).fetchone()
+        if not row:raise ValueError('整理预览不存在')
+        entries=json.loads(row[0])['entries']
+        return [i for i,entry in enumerate(entries) if scope=='all' or not entry.get('conflicts')]
+
+    def draft(self,draft_id,offset=0,limit=50,retained_offset=0):
+        with self.db() as c:
+            row=c.execute('SELECT * FROM organization_drafts WHERE id=?',(draft_id,)).fetchone()
+            inverse=c.execute('SELECT original_job_id FROM organization_inverses WHERE draft_id=?',(draft_id,)).fetchone()
+            origin=c.execute('SELECT preview_id FROM organization_draft_origins WHERE draft_id=?',(draft_id,)).fetchone()
+        if not row:raise ValueError('Unknown organization draft')
+        payload=json.loads(row['payload']);entries=payload['entries'];offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
+        return {'preview_id':origin['preview_id'] if origin else None,'id':row['id'],'digest':row['digest'],'items':entries[offset:offset+limit],'total':len(entries),'bytes':sum(entry['fingerprint']['size'] for entry in entries),'offset':offset,'limit':limit,
+                'retained':payload.get('retained',[])[max(0,int(retained_offset)):max(0,int(retained_offset))+limit],'retained_total':len(payload.get('retained',[])),'retained_offset':max(0,int(retained_offset)),'operation':entries[0]['operation'],'inverse_of':inverse['original_job_id'] if inverse else None,
+                'media_count':sum(entry.get('role')!='companion' for entry in entries),'resource_count':sum(entry.get('role')=='companion' for entry in entries)}
 
     def listing(self,offset=0,limit=25):
         offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
@@ -144,4 +206,7 @@ class OrganizationService:
     def detail(self,job_id,offset=0,limit=50):
         job=self.jobs.get(job_id);offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
         entries=[dict(entry,step=step) for entry,step in zip(job['payload']['entries'],job['steps'])]
-        return {key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id)}
+        with self.db() as c:
+            inverse=c.execute('SELECT i.inverse_job_id,j.state FROM organization_inverses i LEFT JOIN organization_jobs j ON j.id=i.inverse_job_id WHERE i.original_job_id=?',(job_id,)).fetchone()
+            inverse_of=c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)).fetchone()
+        return {'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}

@@ -10,6 +10,7 @@ import uuid
 import unicodedata
 from pathlib import Path
 from media_libraries import canonical
+from media_companions import discover
 
 EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.ts', '.webm', '.mpeg', '.mpg', '.flv'}
 SKIP = {'$recycle.bin', 'system volume information', '.git', '.venv', 'node_modules'}
@@ -56,7 +57,7 @@ def target_space(entries,target):
     free=shutil.disk_usage(parent).free if parent.exists() else None
     volume=volume_details(parent);companions={}
     for entry in entries:
-        for resource in entry['companions']:companions[str(Path(entry['relative']).parent/resource['name'])]=resource.get('size',0)
+        for resource in entry['companions']:companions[str(Path(entry['relative']).parent/resource['name'])]=resource.get('size',0) or 0
         if volume['read_only']:entry['conflicts'].append('target_read_only')
         if volume['filesystem'].upper()=='FAT32' and entry['size']>4294967295:entry['conflicts'].append('fat32_file_limit')
     estimated=sum(entry['size'] for entry in entries)+sum(companions.values())
@@ -197,7 +198,7 @@ class StorageInventory:
                     except OSError:
                         failed += 1
                 directories[:] = safe_dirs
-                resources = [base/name for name in names if Path(name).suffix.lower() in ('.srt', '.ass', '.ssa', '.vtt', '.nfo', '.jpg', '.png', '.webp')]
+                resources = discover(base,names,EXTENSIONS,allowed,hashing,cancel)
                 for name in names:
                     if cancel():
                         state = 'cancelled'; break
@@ -230,7 +231,7 @@ class StorageInventory:
                             failed += 1
                             with self.db() as c:c.execute('INSERT INTO inventory_errors VALUES(?,?,?)',(snapshot,relative,'SourceChanged'))
                             continue
-                        companions = [{'name': p.name, 'shared': p.stem.casefold() != path.stem.casefold(), 'size':p.stat().st_size} for p in resources if p.stem.casefold() == path.stem.casefold() or p.name.casefold() in ('poster.jpg', 'folder.jpg', 'movie.nfo')]
+                        companions = resources.get(name,[])
                         with self.db() as c:
                             c.execute('INSERT OR REPLACE INTO inventory_files VALUES(?,?,?,?,?,?,?,?)', (device_id, relative, before.st_size, before.st_mtime_ns, digest, json.dumps(metadata), json.dumps(companions), snapshot))
                             c.execute('UPDATE inventory_snapshots SET processed=?,failed=?,processed_bytes=? WHERE id=?', (processed+1, failed, processed_bytes+before.st_size, snapshot))

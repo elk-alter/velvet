@@ -42,3 +42,15 @@ class FullBackupTests(unittest.TestCase):
         with zipfile.ZipFile(archive) as z:self.assertNotIn('analysis/fixture.jpg',z.namelist())
         with self.assertRaises(ValueError):create(self.data,archive)
         with self.assertRaises(ValueError):create(self.data,self.data/'recursive.zip')
+
+    def test_restore_cannot_discard_physical_operation_history(self):
+        archive=self.root/'before-operations.zip';create(self.data,archive)
+        with closing(sqlite3.connect(self.data/'library.db')) as c, c:
+            c.execute('CREATE TABLE organization_steps(state TEXT)')
+            c.execute("INSERT INTO organization_steps VALUES('committed')")
+        with self.assertRaises(ValueError):restore(self.data,archive)
+        with closing(sqlite3.connect(self.data/'library.db')) as c:
+            self.assertEqual(c.execute('SELECT state FROM organization_steps').fetchone()[0],'committed')
+        advanced=self.root/'with-operations.zip';create(self.data,advanced)
+        with self.assertRaises(ValueError):restore(self.root/'new-data',advanced)
+        self.assertFalse((self.root/'new-data').exists())

@@ -159,3 +159,10 @@ python -m unittest discover -s . -p "test_*.py"
 开发流程、模块边界、测试与迁移控制见 [开发文档入口](docs/development/README.md)。
 
 [全部规划与AI接力入口](docs/PLAN-INDEX.md) · [AI开发Skill](skills/velvet-development/SKILL.md)
+
+
+### alpha.6 开发进度
+
+当前正式预发布仍为alpha.5。main分支正在开发独立硬盘工作区，支持审阅固定计划后复制或同盘移动视频及明确归属的字幕/NFO/图片；提供持久任务、暂停、恢复与移动撤销。共享资源默认保留，开发与验收仅使用合成文件。整版验收尚未完成，请先用独立测试目录评估，不将开发分支视为已发布的alpha.6。
+
+完整承诺与剩余缺口见[alpha.6需求](docs/ALPHA6-REQUIREMENTS.md)及[开发进度](docs/ALPHA6-PROGRESS.md)。

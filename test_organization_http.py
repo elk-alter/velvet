@@ -1,0 +1,105 @@
+import json
+import threading
+import time
+import unittest
+from http.client import HTTPConnection
+from pathlib import Path
+import test_organization_service as fixtures
+
+
+class OrganizationHTTPTests(unittest.TestCase):
+    shutdown=fixtures.ServiceTests.shutdown
+    def setUp(self):
+        fixtures.ServiceTests.setUp(self)
+        (self.source/'part1.en.srt').write_bytes(b'synthetic subtitle')
+        self.inventory.scan(self.device,hashing=True)
+        self.server=self.app.LocalServer(('127.0.0.1',0),self.app.Handler)
+        self.worker=threading.Thread(target=self.server.serve_forever,daemon=True);self.worker.start()
+
+    def tearDown(self):
+        try:
+            self.app.ORGANIZATION.stop()
+            if self.app.ORGANIZATION.thread:self.app.ORGANIZATION.thread.join(5)
+            self.server.shutdown();self.server.server_close();self.worker.join(5)
+        finally:fixtures.ServiceTests.tearDown(self)
+
+    def request(self,path,data=None,token=True):
+        conn=HTTPConnection('127.0.0.1',self.server.server_address[1],timeout=20)
+        headers={'Host':'127.0.0.1:'+str(self.app.RUNTIME.port)}
+        if data is not None:
+            headers['Content-Type']='application/json'
+            if token:headers['X-Velvet-Token']=self.app.TOKEN
+        conn.request('POST' if data is not None else 'GET',path,json.dumps(data) if data is not None else None,headers)
+        response=conn.getresponse();body=response.read();status=response.status;conn.close()
+        return status,json.loads(body)
+
+    def draft(self,operation='copy'):
+        status,result=self.request('/api/storage/plan',{'id':self.device,'target':str(self.target),'layout':'preserve'})
+        self.assertEqual(status,200);plan=result['plan']
+        status,result=self.request('/api/organization/prepare',{'id':plan['id'],'digest':plan['digest'],'selected':'all','operation':operation})
+        self.assertEqual(status,200,result)
+        status,draft=self.request('/api/organization/draft?id='+result['id']+'&limit=1')
+        self.assertEqual(status,200);self.assertEqual(len(draft['items']),1);self.assertEqual(draft['total'],2)
+        return draft
+
+    def wait_job(self,job_id):
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            status,job=self.request('/api/organization/job?id='+job_id)
+            self.assertEqual(status,200)
+            if job['state'] in ('done','failed','partial'):return job
+            time.sleep(.03)
+        self.fail('Synthetic organization job did not finish')
+
+    def test_copy_requires_confirmation_and_token_then_binds_resources(self):
+        draft=self.draft()
+        status,_=self.request('/api/organization/approve',{'id':draft['id'],'digest':draft['digest'],'confirmed':True},False)
+        self.assertEqual(status,403);self.assertFalse(self.target.exists())
+        status,_=self.request('/api/organization/approve',{'id':draft['id'],'digest':draft['digest'],'confirmed':False})
+        self.assertEqual(status,400);self.assertFalse(self.target.exists())
+        status,result=self.request('/api/organization/approve',{'id':draft['id'],'digest':draft['digest'],'confirmed':True})
+        self.assertEqual(status,200);job=self.wait_job(result['id']);self.assertEqual(job['state'],'done')
+        self.assertTrue(self.clip.exists());self.assertEqual((self.target/'part1.en.srt').read_bytes(),b'synthetic subtitle')
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM videos').fetchone()[0],1)
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM media_resources').fetchone()[0],1)
+        status,again=self.request('/api/organization/approve',{'id':draft['id'],'digest':draft['digest'],'confirmed':True})
+        self.assertEqual(status,200);self.assertEqual(again['id'],result['id'])
+
+    def test_move_inverse_is_previewed_and_separately_confirmed(self):
+        draft=self.draft('move')
+        status,result=self.request('/api/organization/approve',{'id':draft['id'],'digest':draft['digest'],'confirmed':True})
+        self.assertEqual(status,200);job_id=result['id'];self.assertEqual(self.wait_job(job_id)['state'],'done')
+        self.assertFalse(self.clip.exists())
+        status,result=self.request('/api/organization/undo-preview',{'id':job_id});self.assertEqual(status,200)
+        status,inverse=self.request('/api/organization/draft?id='+result['id']);self.assertEqual(status,200)
+        self.assertEqual(inverse['inverse_of'],job_id);self.assertFalse(self.clip.exists())
+        status,result=self.request('/api/organization/undo-approve',{'id':job_id,'digest':inverse['digest'],'confirmed':True})
+        self.assertEqual(status,200);self.assertEqual(self.wait_job(result['id'])['state'],'done')
+        self.assertEqual(self.clip.read_bytes(),b'synthetic raw media')
+        self.assertEqual((self.source/'part1.en.srt').read_bytes(),b'synthetic subtitle')
+        status,original=self.request('/api/organization/job?id='+job_id)
+        self.assertEqual(original['inverse']['state'],'done')
+
+    def test_changed_preview_digest_and_out_of_scope_selection_are_rejected(self):
+        status,result=self.request('/api/storage/plan',{'id':self.device,'target':str(self.target),'layout':'preserve'});plan=result['plan']
+        status,_=self.request('/api/organization/prepare',{'id':plan['id'],'digest':'wrong','selected':'all'})
+        self.assertEqual(status,400)
+        status,_=self.request('/api/organization/prepare',{'id':plan['id'],'digest':plan['digest'],'selected':[999]})
+        self.assertEqual(status,400);self.assertFalse(self.target.exists())
+
+    def test_resource_wait_and_user_pause_remain_distinct_until_explicit_resume(self):
+        draft=self.draft()
+        owner=self.app.LEASES.try_acquire('synthetic-reader')
+        try:
+            status,result=self.request('/api/organization/approve',{'id':draft['id'],'digest':draft['digest'],'confirmed':True})
+            self.assertEqual(status,200);job_id=result['id']
+            status,_=self.request('/api/organization/control',{'id':job_id,'action':'pause'})
+            self.assertEqual(status,200)
+            status,job=self.request('/api/organization/job?id='+job_id)
+            self.assertEqual(status,200);self.assertEqual(job['state'],'waiting');self.assertTrue(job['paused'])
+            self.assertFalse(self.target.exists())
+        finally:self.app.LEASES.release(owner)
+        status,_=self.request('/api/organization/control',{'id':job_id,'action':'resume'})
+        self.assertEqual(status,200);job=self.wait_job(job_id)
+        self.assertEqual(job['state'],'done');self.assertFalse(job['paused'])

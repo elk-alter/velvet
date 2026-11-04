@@ -80,6 +80,7 @@ class MoveExecutor:
                 for step in self.jobs.get(job_id)['steps']:
                     if step['state']=='binding':self.jobs.transition(job_id,step['ordinal'],'binding','needs_binding',step['details'])
                 raise
+            for entry in job['payload']['entries']:self.verify(entry['destination'],entry,check)
             self.checkpoint('bound',job_id,None)
             for ordinal,entry in enumerate(job['payload']['entries']):
                 step=self.jobs.get(job_id)['steps'][ordinal]
@@ -99,6 +100,7 @@ class MoveExecutor:
 
     def prepare_undo(self,job_id):
         job=self.jobs.get(job_id)
+        if any(entry['operation']!='move' for entry in job['payload']['entries']):raise ValueError('Only same-device moves have a reverse file plan')
         if job['state'] in ('running','queued'):raise ValueError('Stop the move before preparing rollback')
         with self.jobs.db() as c:
             existing=c.execute('SELECT * FROM organization_inverses WHERE original_job_id=?',(job_id,)).fetchone()
@@ -117,9 +119,9 @@ class MoveExecutor:
                 except (OSError,ValueError):continue
                 location=candidate;break
             if not location:raise ValueError('Cannot prove rollback ownership; review required')
-            reverse.append({'video_id':entry['video_id'],'asset_id':entry.get('asset_id'),'metadata':entry.get('metadata',{}),'operation':'move','source':location,'destination':entry['source']})
+            reverse.append({'video_id':entry['video_id'],'asset_id':entry.get('asset_id'),'metadata':entry.get('metadata',{}),'role':entry.get('role','media'),'parent_asset_id':entry.get('parent_asset_id'),'operation':'move','source':location,'destination':entry['source']})
         common=Path(os.path.commonpath([job['payload']['source_root'],job['payload']['target_root']]))
-        draft=self.jobs.prepare(reverse,common,common)
+        draft=self.jobs.prepare(reverse,common,common,retained=job['payload'].get('retained',[]))
         with self.jobs.db() as c:c.execute('INSERT INTO organization_inverses VALUES(?,?,NULL)',(job_id,draft['id']))
         return draft
 

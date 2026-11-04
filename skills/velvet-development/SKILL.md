@@ -1,6 +1,6 @@
 ---
 name: velvet-development
-description: Continue development of the Velvet local video library, including alpha.5 tasks, raw-media organization planning, regressions and development handoffs. Use in a Velvet checkout; not for unrelated media apps or organizing actual source files without an explicit execution request.
+description: Continue development of the Velvet local video library, including alpha.6 delivery, disk organization, regressions and development handoffs. Use in a Velvet checkout; not for unrelated media apps or organizing actual source files without an explicit execution request.
 ---
 
 # Velvet development relay
@@ -9,9 +9,9 @@ Locate the intended checkout from the user's workspace, then read its AGENTS.md.
 
 ## Select context by task
 
-Read docs/development/README.md and docs/PLAN-INDEX.md. For alpha.5 work, select a bounded A5-ID from docs/ALPHA5-REQUIREMENTS.md; for original-media organization select an ORG-ID from docs/EPIC-RAW-MEDIA-ORGANIZATION.md. Consult docs/DELIVERY-STATUS.md before claiming a story is new or completed. Requirement acceptance criteria outrank abbreviated status summaries. Read MODULES.md for affected ownership and DATA.md for any schema, queue, exclusion or restore change.
+Read docs/development/README.md and docs/PLAN-INDEX.md. For current alpha.6 work, select A6-IDs from docs/ALPHA6-REQUIREMENTS.md and read ALPHA6-PROGRESS.md. Use ALPHA5-REQUIREMENTS.md for alpha.5 regressions and EPIC-RAW-MEDIA-ORGANIZATION.md for underlying ORG story details; old conditional alpha.5 allocation does not override alpha.6 mandatory delivery. Consult docs/DELIVERY-STATUS.md before claiming a story is new or completed. Requirement acceptance criteria outrank abbreviated status summaries. Read MODULES.md for affected ownership and DATA.md for any schema, queue, exclusion or restore change.
 
-Verify VERSION, release records and HANDOFF instead of assuming the checked-out code is deployed. Existing buttons and tests do not prove story acceptance. The raw-media Epic currently provides read-only inventory/preview; the copy pilot is deferred, as are moving/renaming/source disposal. A request to plan or implement a planner is not authorization to reorganize actual disks. Do not silently weaken current source-read-only constraints.
+Verify VERSION, release records and HANDOFF instead of assuming the checked-out code is deployed. Existing buttons and tests do not prove story acceptance. Determine the actual development state from code and evidence: alpha.6 has a disk workspace and approved execution paths under development, while the published baseline and full acceptance differ. Disk organization is mandatory for alpha.6; do not redefine completion as preview-only or a smaller copy pilot. A request to plan or implement a planner is not authorization to reorganize actual disks. Do not silently weaken current source-read-only constraints.
 
 ## Implement and verify
 
@@ -22,6 +22,8 @@ Preserve manual metadata locks, relationship corrections, quality decisions, exc
 Use independent VELVET_DATA, synthetic media and mock services. Do not import app.py merely to inspect constants: importing initializes data. Follow TESTING.md for relevant tests; release.py --check does not run backend or browser tests and only sees tracked files. New assets need UI_ASSETS, HTML and Docker packaging agreement. OCR scores are heuristic, not calibrated probabilities.
 
 Update the authoritative requirement/status and affected usage/architecture docs. Record actual test commands and evidence, failures and unverified scenarios. Never put private paths, media, OCR output, runtime databases, credentials or real thumbnails into commits, reports or public examples.
+
+For organization, companion or restore changes, read docs/development/ORGANIZATION-API.md and ALPHA6-OPERATIONS.md. Preserve durable execution checkpoints and organize-reconcile protection across pause, cancel and restart; unblock through the corresponding task or approved inverse, not by clearing leases. Database restore does not undo physical file operations. Test public workflow entry points as well as internal executors.
 
 ## Handoff and delivery
 

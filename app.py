@@ -14,6 +14,7 @@ APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip()
 UI_ASSETS={
  '/':('index.html','text/html'),
  '/management.js':('management.js','text/javascript'),
+ '/disk_manager.js':('disk_manager.js','text/javascript'),
  '/manager_routes.js':('manager_routes.js','text/javascript'),
  '/management.css':('management.css','text/css'),
  '/browse.js':('browse.js','text/javascript'),
@@ -163,6 +164,8 @@ ARTWORK.observe=lambda vid,ordinal,state:JOURNAL.observe('images',str(vid)+':'+s
 REVIEW.observe=lambda vid,state,result='':JOURNAL.observe('review',str(vid)+':',('failed' if state=='done' and result not in ('passed','') else state),{'reason':result or 'executor_state'})
 from storage_inventory import StorageInventory
 INVENTORY=StorageInventory(db,lambda path:inventory_metadata(path),LIBRARIES.exclusions)
+from organization_service import OrganizationService
+ORGANIZATION=OrganizationService(db,INVENTORY)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
@@ -170,6 +173,7 @@ def read_metadata(p,nfo_path=None):
  result={'code':identify(p.stem) or identify(p.parent.name),'title':fallback_title(p),'source':'filename'}
  nfo=nfo_path or p.with_suffix('.nfo')
  if nfo.is_file():
+  if nfo.is_symlink() or getattr(nfo.lstat(),'st_file_attributes',0)&1024:raise ValueError('NFO链接需要人工核对')
   if nfo.stat().st_size>2_000_000:raise ValueError('NFO 过大')
   tree=ET.fromstring(nfo.read_bytes())
   for target,tag in [('title','title'),('studio','studio'),('date','premiered'),('plot','plot'),('code','id')]:
@@ -262,6 +266,10 @@ def scan(force=False,folder_path=None,automatic=False):
        if LIBRARIES.owner(p,policies)!=folder:continue
        if not LIBRARIES.included(p,policy,stat.st_size) or time.time()-stat.st_mtime<policy['settle_seconds']:continue
        if not LIBRARIES.filter_rows([{'path':str(p),'size':stat.st_size}]):continue
+       alias=ORGANIZATION.locations.scan_alias(p,stat)
+       if alias and alias['status']!='materialized':
+        if alias['status']=='changed':STATUS['errors']+=1
+        continue
        with db() as c:
         old=c.execute('SELECT * FROM videos WHERE path=?',(str(p),)).fetchone()
         c.execute('INSERT INTO videos(path,title,size,mtime) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,missing=0',(str(p),p.stem,stat.st_size,stat.st_mtime))
@@ -778,6 +786,15 @@ class Handler(BaseHTTPRequestHandler):
     except (OSError,ValueError):rules=[]
     return self.send({'rules':rules})
    if path=='/api/library-revision':return self.send({'instance':hashlib.sha256(TOKEN.encode()).hexdigest(),'revision':DB_REVISION,'scan':dict(STATUS),'review_running':REVIEW.lock.locked()})
+   if path.startswith('/api/organization/'):
+    query=parse_qs(urlparse(self.path).query);value=lambda key,default='':query.get(key,[default])[0]
+    if path=='/api/organization/preview':return self.send(ORGANIZATION.preview(value('id'),value('offset',0),value('limit',50)))
+    if path=='/api/organization/draft':return self.send(ORGANIZATION.draft(value('id'),value('offset',0),value('limit',50),value('retained_offset',0)))
+    if path=='/api/organization/jobs':return self.send(ORGANIZATION.listing(value('offset',0),value('limit',25)))
+    if path=='/api/organization/job':return self.send(ORGANIZATION.detail(value('id'),value('offset',0),value('limit',50)))
+    if path=='/api/organization/locations':
+     video_id=int(value('id'));ORGANIZATION.locations.migrate([video_id])
+     return self.send({'items':ORGANIZATION.locations.locations(video_id)})
    if path=='/api/storage':return self.send({'devices':INVENTORY.devices()})
    if path=='/api/storage/files':
     query=parse_qs(urlparse(self.path).query);return self.send({'files':INVENTORY.files(query.get('id',[''])[0],query.get('offset',[0])[0],status=query.get('status',['all'])[0])})
@@ -843,6 +860,8 @@ class Handler(BaseHTTPRequestHandler):
   except Exception as e:self.send({'error':str(e)},status=400)
  def do_POST(self):
   global ACTIVE_POSTS
+  if not self.authorize():return
+  if self.headers.get('X-Velvet-Token')!=TOKEN:return self.send({},status=403)
   with POST_LEASE:ACTIVE_POSTS+=1
   try:
    path=urlparse(self.path).path
@@ -864,18 +883,42 @@ class Handler(BaseHTTPRequestHandler):
    DB_REVISION+=1
    if RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
    if path=='/api/runtime/resume':
-    SHUTTING_DOWN.clear();REVIEW.cancel.clear();REVIEW.resume()
+    SHUTTING_DOWN.clear();ORGANIZATION.start();REVIEW.cancel.clear();REVIEW.resume()
     for engine in BUILTIN_ENGINES.values():engine.paused.clear();engine.start()
     return self.send({'ok':True})
    if path=='/api/runtime/stop':
-    SHUTTING_DOWN.set();SCAN_CANCEL.set();SYNC_CANCEL.set();DUP_CANCEL.set();REVIEW.cancel.set()
+    SHUTTING_DOWN.set();ORGANIZATION.stop();SCAN_CANCEL.set();SYNC_CANCEL.set();DUP_CANCEL.set();REVIEW.cancel.set()
     for engine in BUILTIN_ENGINES.values():engine.paused.set()
-    busy=ACTIVE_POSTS>1 or bool(LEASES.active()) or RESTORING.is_set() or POLL_LOCK.locked() or ARTWORK.lock.locked() or LOCK.locked() or AMANE_LOCK.locked() or DUP_LOCK.locked() or SUBMIT_LOCK.locked() or REVIEW.lock.locked() or PEOPLE.state.get('running') or any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values())
+    busy=ACTIVE_POSTS>1 or bool(ORGANIZATION.thread and ORGANIZATION.thread.is_alive()) or any(row['kind']!='organize-reconcile' for row in LEASES.active()) or RESTORING.is_set() or POLL_LOCK.locked() or ARTWORK.lock.locked() or LOCK.locked() or AMANE_LOCK.locked() or DUP_LOCK.locked() or SUBMIT_LOCK.locked() or REVIEW.lock.locked() or PEOPLE.state.get('running') or any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values())
     if busy:return self.send({'ok':False,'waiting':True})
     self.send({'ok':True,'waiting':False});threading.Thread(target=self.server.shutdown,daemon=True).start();return
    if SHUTTING_DOWN.is_set() and path!='/api/task-cancel':raise ValueError('服务正在安全停止，请稍后操作')
    if path.startswith('/api/storage/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
-   if path=='/api/storage/register':return self.send({'ok':True,'id':INVENTORY.register(a.get('path'),a.get('alias'))})
+   if path=='/api/organization/prepare':
+    selected=ORGANIZATION.selected(a.get('id'),a.get('selected'))
+    draft=ORGANIZATION.prepare(a.get('id'),a.get('digest'),selected,a.get('operation','copy'))
+    return self.send({'ok':True,'id':draft['id']})
+   elif path=='/api/organization/approve':
+    if a.get('confirmed') is not True:raise ValueError('请核对并确认本次固定执行计划')
+    job=ORGANIZATION.approve(a.get('id'),a.get('digest'));ORGANIZATION.start()
+    return self.send({'ok':True,'id':job})
+   elif path=='/api/organization/control':
+    job=ORGANIZATION.control(a.get('id'),a.get('action'));ORGANIZATION.start()
+    return self.send({'ok':True,'state':job['state']})
+   elif path=='/api/organization/undo-preview':
+    return self.send({'ok':True,'id':ORGANIZATION.move.prepare_undo(a.get('id'))['id']})
+   elif path=='/api/organization/undo-approve':
+    if a.get('confirmed') is not True:raise ValueError('请核对并确认反向移动计划')
+    job=ORGANIZATION.approve_inverse(a.get('id'),a.get('digest'));ORGANIZATION.start()
+    return self.send({'ok':True,'id':job})
+   elif path=='/api/organization/cleanup-preview':return self.send(ORGANIZATION.cleanup.preview(a.get('id')))
+   elif path=='/api/organization/cleanup':
+    if a.get('confirmed') is not True:raise ValueError('请确认本任务暂存清理范围')
+    return self.send(ORGANIZATION.cleanup.clean(a.get('id'),a.get('digest')))
+   elif path=='/api/organization/prefer':
+    with LEASES.hold('location-choice'):ORGANIZATION.locations.prefer(a.get('id'),a.get('location'))
+    return self.send({'ok':True})
+   elif path=='/api/storage/register':return self.send({'ok':True,'id':INVENTORY.register(a.get('path'),a.get('alias'))})
    elif path=='/api/storage/annotate':
     INVENTORY.annotate(a.get('id'),a.get('relative'),a.get('annotation'));return self.send({'ok':True})
    elif path=='/api/storage/remap':return self.send({'ok':True,'device':INVENTORY.remap(a.get('id'),a.get('path'),a.get('identity'))})
@@ -1029,22 +1072,28 @@ class Handler(BaseHTTPRequestHandler):
     if any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values()):raise ValueError('请等待内置刮削任务停止后再恢复备份')
     if a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
     locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK,POLL_LOCK,ARTWORK.lock,REVIEW.lock];acquired=[]
+    organization_was_running=bool(ORGANIZATION.thread and ORGANIZATION.thread.is_alive())
     with POST_LEASE:
      if ACTIVE_POSTS>1:raise ValueError('其它修改请求运行中，请稍后恢复')
      RESTORING.set()
     try:
+     ORGANIZATION.stop()
+     if ORGANIZATION.thread:ORGANIZATION.thread.join(3)
+     if ORGANIZATION.thread and ORGANIZATION.thread.is_alive():raise ValueError('整理服务正在停止，请稍后重试')
+     ORGANIZATION.before_restore()
      for lock in locks:
       if not lock.acquire(False):raise ValueError('后台任务运行中，请先暂停自动刮削并取消扫描/同步后重试')
       acquired.append(lock)
      with db() as c:
       if c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]:raise ValueError('仍有刮削任务，请先在任务中心取消并等待结束后恢复')
      with DB_MUTEX:
-      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover()
+      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
       with db() as c:
        if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:
      for lock in reversed(acquired):lock.release()
      RESTORING.clear()
+     if organization_was_running and not SHUTTING_DOWN.is_set():ORGANIZATION.start()
     return self.send({'ok':True,'rollback':rollback})
    elif path=='/api/field-apply':
     row=self.video(a['id']);snapshot=json.loads(row['amane_snapshot'] or '{}');field=a['field'];values={'title':snapshot.get('title'),'code':snapshot.get('number'),'actors':', '.join(snapshot.get('actors') or []),'studio':snapshot.get('studio'),'date':snapshot.get('release'),'plot':snapshot.get('plot')}
@@ -1238,10 +1287,13 @@ if __name__=='__main__':
  if NAS and len(PASSWORD)<12:raise SystemExit('NAS 模式必须设置至少 12 位 VELVET_PASSWORD')
  try:server=LocalServer((BIND,RUNTIME.port),Handler)
  except OSError as error:raise SystemExit('服务端口不可用，请检查已有实例或使用 --port；系统错误码 '+str(error.errno)) from None
- if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):CORE.backup('auto-'+time.strftime('%Y%m%d'))
+ ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+ if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):
+  with LEASES.hold('backup','write'):CORE.backup('auto-'+time.strftime('%Y%m%d'))
  JOURNAL.recover()
  JOURNAL.reconcile_sources(uncertain_remote=True)
  REVIEW.resume()
+ ORGANIZATION.start()
  threading.Thread(target=watcher,daemon=True).start()
  threading.Thread(target=amane_watcher,daemon=True).start()
  (DATA/'runtime-instance.json').write_text(json.dumps({'url':RUNTIME.local_url,'token':TOKEN,'pid':os.getpid()}),'utf-8')
@@ -1250,6 +1302,8 @@ if __name__=='__main__':
  try:server.serve_forever()
  except KeyboardInterrupt:pass
  finally:
+  ORGANIZATION.stop()
+  if ORGANIZATION.thread:ORGANIZATION.thread.join(10)
   server.server_close()
   try:
    descriptor=DATA/'runtime-instance.json'

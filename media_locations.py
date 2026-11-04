@@ -44,15 +44,19 @@ class MediaLocations:
             c.execute('DROP TRIGGER IF EXISTS media_asset_detach')
             c.execute("CREATE TRIGGER media_asset_detach AFTER DELETE ON videos BEGIN UPDATE media_locations SET device_token='detached:'||asset_id||':'||device_token,preferred=0 WHERE asset_id IN (SELECT id FROM media_assets WHERE video_id=OLD.id); UPDATE media_assets SET video_id=NULL WHERE video_id=OLD.id; END")
             c.execute('CREATE INDEX IF NOT EXISTS media_locations_asset ON media_locations(asset_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS media_locations_path ON media_locations(path)')
             c.execute('CREATE TABLE IF NOT EXISTS raw_media_assets(asset_id TEXT PRIMARY KEY,metadata TEXT)')
             c.execute('CREATE TABLE IF NOT EXISTS media_move_bindings(task_id TEXT,source_path TEXT,location_id TEXT,PRIMARY KEY(task_id,source_path))')
             c.execute('CREATE UNIQUE INDEX IF NOT EXISTS media_one_preferred ON media_locations(asset_id) WHERE preferred=1')
             c.execute('CREATE TABLE IF NOT EXISTS media_location_events(id INTEGER PRIMARY KEY,asset_id TEXT,location_id TEXT,kind TEXT,task_id TEXT,created REAL)')
 
-    def migrate(self):
+    def migrate(self,video_ids=None):
         """Idempotent alpha.5 import; offline files stay unverified, with no disk reads."""
         with self.db() as c:
-            rows=[dict(r) for r in c.execute('SELECT id,path,size FROM videos')]
+            if video_ids is not None:
+                if not isinstance(video_ids,list) or not video_ids or len(video_ids)>500 or any(type(value) is not int for value in video_ids):raise ValueError('Choose 1-500 video identities')
+                rows=[dict(r) for r in c.execute('SELECT id,path,size FROM videos WHERE id IN ('+','.join('?' for _ in video_ids)+')',video_ids)]
+            else:rows=[dict(r) for r in c.execute('SELECT id,path,size FROM videos')]
             for row in rows:
                 asset=c.execute('SELECT id FROM media_assets WHERE video_id=?',(row['id'],)).fetchone()
                 if asset:
@@ -64,6 +68,21 @@ class MediaLocations:
                 c.execute('INSERT INTO media_assets(id,video_id,sha256,created,relation_path) VALUES(?,?,?,?,?)',(asset_id,row['id'],'',time.time(),row['path']))
                 c.execute('INSERT INTO media_locations VALUES(?,?,?,?,?,?,0,1,?)',(uuid.uuid4().hex,asset_id,'legacy-unknown',row['path'],row['size'],None,'migration'))
         return len(rows)
+
+    def scan_alias(self,path,stamp):
+        """Recognize nonpreferred and provisional positions without duplicate video rows."""
+        path=str(Path(path).resolve());device=self.device_identity(Path(path))
+        with self.db() as c:
+            row=c.execute('SELECT l.*,a.video_id,v.path AS preferred_path FROM media_locations l JOIN media_assets a ON a.id=l.asset_id LEFT JOIN videos v ON v.id=a.video_id WHERE l.path=? AND l.device_token=?',(path,device)).fetchone()
+            if not row or row['preferred_path']==path:return None
+            changed=(row['size'],row['mtime_ns'])!=(stamp.st_size,stamp.st_mtime_ns)
+            if changed and row['verified']:
+                c.execute('UPDATE media_locations SET verified=0 WHERE id=?',(row['id'],))
+                c.execute('INSERT INTO media_location_events(asset_id,location_id,kind,task_id,created) VALUES(?,?,?,?,?)',(row['asset_id'],row['id'],'source_changed','scan',time.time()))
+            raw=row['video_id'] is None
+        if changed:return {'status':'changed','video_id':row['video_id']}
+        if raw:return {'status':'materialized','video_id':self.materialize(row['asset_id'])}
+        return {'status':'alias','video_id':row['video_id']}
 
     def asset(self,video_id):
         with self.db() as c:row=c.execute('SELECT * FROM media_assets WHERE video_id=?',(int(video_id),)).fetchone()
@@ -220,7 +239,7 @@ class MediaLocations:
             c.execute('UPDATE media_locations SET size=?,mtime_ns=?,verified=? WHERE id=?',(stamp['size'],stamp['mtime_ns'],time.time(),location_id))
             c.execute('INSERT INTO media_location_events(asset_id,location_id,kind,task_id,created) VALUES(?,?,?,?,?)',(asset['id'],location_id,'preferred','',time.time()))
 
-    def bind_moves(self,entries,task_id):
+    def bind_moves(self,entries,task_id,supplemental=None):
         """Atomically rebind same-device moves after their physical targets are verified."""
         checked=[];seen=set()
         for entry in entries:
@@ -270,4 +289,5 @@ class MediaLocations:
                 if not c.execute('SELECT 1 FROM media_move_bindings WHERE task_id=? AND source_path=?',(task_id,entry['source'])).fetchone():
                     c.execute('INSERT INTO media_move_bindings VALUES(?,?,?)',(task_id,entry['source'],location['id']))
                     c.execute('INSERT INTO media_location_events(asset_id,location_id,kind,task_id,created) VALUES(?,?,?,?,?)',(asset['id'],location['id'],'moved',task_id,time.time()))
+            if supplemental:supplemental(c)
         return {binding_key(original):update[3]['id'] for original,update in zip(entries,updates)}

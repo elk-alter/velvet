@@ -57,6 +57,7 @@ class P0Tests(base.FeatureTests):
    post('/api/movie-flag',{'id':b,'field':'watched','value':1})
    with app.db() as db:self.assertEqual(db.execute('SELECT SUM(watched) FROM videos').fetchone()[0],2)
    post('/api/edit',{'id':a,'rating':5});post('/api/restore',{'name':backup,'confirm':backup})
+   self.assertFalse(app.ORGANIZATION.thread and app.ORGANIZATION.thread.is_alive())
    with app.db() as db:self.assertEqual(db.execute('SELECT rating FROM videos WHERE id=?',(a,)).fetchone()[0],0)
    post('/api/task-cancel',{'kind':'scan'});self.assertTrue(app.SCAN_CANCEL.is_set())
    with app.db() as db:db.execute('INSERT INTO scrape_jobs(code,remote_id,status,created,engine) VALUES(?,?,?,?,?)',('ABC-1',101,'queued',app.time.time(),app.config().get('scrape_engine','external')))

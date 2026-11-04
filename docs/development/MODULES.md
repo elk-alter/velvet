@@ -36,14 +36,16 @@
 
 数据取舍见[ADR0001](../adr/0001-alpha5-reliability-and-readonly-plans.md)，性能限制见[测量报告](../ALPHA5-PERFORMANCE.md)。
 
-## alpha.6开发模块（执行入口尚未开放）
+## alpha.6开发模块（开发候选，尚未整版验收）
 
 - resource_leases：跨工作流共享读/独占写租约；扫描、检查、刮削、同步、播放及备份恢复接入，当前采用整个媒体工作区粒度。
-- media_locations：稳定文件身份与经过验证的位置绑定。
-- organization_service：盘点预览到身份注册/执行批准/后台调度/绑定的应用服务，支持未入库原文件；HTTP/UI及伴随资源执行尚未接入。
+- media_locations：稳定文件身份与经过验证的位置绑定、多位置扫描去重和待入库身份复用。
+- media_companions、companion_bindings：伴随资源归属、名称映射及事务绑定，不把资源建成视频。
+- disk_manager.js：独立硬盘工作区、固定计划确认、执行/恢复与分页选择；manager_routes持有地址和生命周期。
+- organization_service：盘点预览到身份注册/执行批准/后台调度/绑定的应用服务，支持未入库原文件；HTTP/UI及明确归属的伴随资源已接；完整范围与缺口见进度。
 - organization_jobs：不可变批准、执行步骤、互斥租约、持久取消与启动对账。
 - organization_executor：已批准copy计划的暂存、完整校验、不覆盖提交与绑定回调。
 - organization_cleanup：已停止copy任务的残片清理预览、日志及Windows句柄安全删除；不清理移动暂存或已提交目标。
-- organization_moves：已批准同盘move计划的全批暂存、循环改名、绑定及重新批准的反向任务；伴随资源和HTTP/UI尚未接入。
+- organization_moves：已批准同盘move计划的全批暂存、循环改名、绑定及重新批准的反向任务；伴随资源经服务适配，完整恢复和设备验收仍未完成。
 
 当前证据与缺口见[alpha.6进度](../ALPHA6-PROGRESS.md)。接生产初始化时须同步Docker资源、关系稳定策略及跨执行器租约。

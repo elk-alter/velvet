@@ -26,7 +26,8 @@ class ResourceLeases:
             if previous:
                 if previous['mode']!=mode or previous['kind']!=kind:raise ValueError('Lease owner cannot change mode')
                 return owner
-            if c.execute("SELECT 1 FROM resource_claims WHERE mode='write' OR ?='write' LIMIT 1",(mode,)).fetchone():return None
+            conflicts=c.execute("SELECT kind FROM resource_claims WHERE mode='write' OR ?='write'",(mode,)).fetchall()
+            if conflicts and not (kind=='backup' and mode=='write' and all(row['kind']=='organize-reconcile' for row in conflicts)):return None
             c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',(owner,kind,mode,time.time()))
         return owner
 

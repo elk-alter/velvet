@@ -1,5 +1,6 @@
 """Offline full application-data backup/restore. Never includes original media roots."""
 from data_guard import exclusive_data
+from restore_safety import require_reconciled_files
 import argparse
 from contextlib import closing
 import hashlib
@@ -108,10 +109,14 @@ def restore(data, archive_path):
     data, archive_path = Path(data).resolve(), Path(archive_path).resolve()
     if data == Path(data.anchor) or archive_path.is_relative_to(data):raise ValueError('Unsafe restore location')
     if data.exists() and any(data.iterdir()) and not (data/'library.db').is_file():raise ValueError('Destination contains unrelated data')
-    offline(data);data.parent.mkdir(parents=True, exist_ok=True)
+    offline(data)
+    if (data/'library.db').is_file():
+        with closing(sqlite3.connect(data/'library.db')) as connection:require_reconciled_files(connection)
+    data.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='velvet-restore-', dir=data.parent) as temp:
         stage = Path(temp)/'data';stage.mkdir()
         manifest = validate_extract(archive_path, stage)
+        with closing(sqlite3.connect(stage/'library.db')) as connection:require_reconciled_files(connection)
         offline(data)
         rollback = data.with_name(data.name+'.before-'+uuid.uuid4().hex)
         had_data = data.exists()

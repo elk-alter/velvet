@@ -61,7 +61,7 @@ class OrganizationJobs:
             if 'pause_requested' not in {r[1] for r in c.execute('PRAGMA table_info(organization_control)')}:
                 c.execute('ALTER TABLE organization_control ADD COLUMN pause_requested INTEGER DEFAULT 0')
 
-    def prepare(self,entries,source_root,target_root,rules_version=1,register=None):
+    def prepare(self,entries,source_root,target_root,rules_version=1,register=None,retained=None):
         if type(rules_version) is not int or rules_version<1:raise ValueError('Invalid rule version')
         source_root=no_links(source_root);target_root=no_links(target_root)
         if not isinstance(entries,list) or not entries:raise ValueError('Choose files before approval')
@@ -85,8 +85,8 @@ class OrganizationJobs:
             asset_id=register(entry,stamp,source_device) if register else entry.get('asset_id')
             checked.append({'source':str(source),'destination':str(target),'video_id':entry.get('video_id'),
                             'operation':entry['operation'],'fingerprint':stamp,'source_identity':[source.stat().st_dev,source.stat().st_ino],'source_device':source_device,
-                            'target_device':target_device,'asset_id':asset_id,'metadata':entry.get('metadata',{})})
-        payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version}
+                            'target_device':target_device,'asset_id':asset_id,'role':entry.get('role','media'),'parent_asset_id':entry.get('parent_asset_id'),'metadata':entry.get('metadata',{})})
+        payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version,'retained':retained or []}
         stamp=digest(payload);draft_id=uuid.uuid4().hex
         with self.db() as c:
             c.execute('INSERT OR IGNORE INTO organization_drafts VALUES(?,?,?,?)',(draft_id,stamp,json.dumps(payload),time.time()))
@@ -134,7 +134,12 @@ class OrganizationJobs:
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
             state=c.execute('SELECT state FROM organization_jobs WHERE id=?',(job_id,)).fetchone()[0]
             if state=='running' or state in TERMINAL:raise ValueError('Job already claimed or finished')
-            if c.execute('SELECT 1 FROM resource_claims').fetchone():raise ResourceBusy()
+            claims=[dict(row) for row in c.execute('SELECT * FROM resource_claims')]
+            if claims:
+                allowed={'reconcile:'+job_id}
+                if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone():
+                    allowed.update('reconcile:'+row[0] for row in c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)))
+                if any(row['kind']!='organize-reconcile' for row in claims) or not any(row['owner'] in allowed for row in claims):raise ResourceBusy()
             c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',('organize:'+job_id,'organize','write',time.time()))
             for resource in resources:
                 owner=c.execute('SELECT job_id FROM organization_leases WHERE resource=?',(resource,)).fetchone()
@@ -162,7 +167,25 @@ class OrganizationJobs:
             c.execute('UPDATE organization_jobs SET state=?,updated=? WHERE id=?',(state,time.time(),job_id))
             c.execute('DELETE FROM organization_leases WHERE job_id=?',(job_id,))
             c.execute('DELETE FROM resource_claims WHERE owner=?',('organize:'+job_id,))
+            self.refresh_reconciliation(c)
         self.observe_progress(job_id,state)
+
+    def refresh_reconciliation(self,c):
+        """Keep uncertain file mutations quarantined while paused or awaiting repair."""
+        reversed_jobs=set()
+        if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone():
+            reversed_jobs={row[0] for row in c.execute("SELECT i.original_job_id FROM organization_inverses i JOIN organization_jobs j ON j.id=i.inverse_job_id WHERE j.state='done'")}
+        c.execute("DELETE FROM resource_claims WHERE kind='organize-reconcile'")
+        for job in c.execute("SELECT id,payload FROM organization_jobs WHERE state!='done'").fetchall():
+            if job['id'] in reversed_jobs:continue
+            entries=json.loads(job['payload'])['entries']
+            steps=c.execute('SELECT ordinal,state,details FROM organization_steps WHERE job_id=?',(job['id'],)).fetchall()
+            uncertain=False
+            for step in steps:
+                operation=entries[step['ordinal']]['operation'];state=step['state']
+                if state in ('committing','committed','binding','needs_binding') or (operation=='move' and state in ('staging','staged','interrupted')):
+                    uncertain=True;break
+            if uncertain:c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',('reconcile:'+job['id'],'organize-reconcile','write',time.time()))
 
     def request_cancel(self,job_id):
         self.get(job_id)
@@ -219,5 +242,6 @@ class OrganizationJobs:
             c.execute('DELETE FROM organization_leases')
             c.execute('DELETE FROM organization_maintenance')
             c.execute("DELETE FROM resource_claims WHERE kind IN ('organize','cleanup')")
+            self.refresh_reconciliation(c)
         for job_id in jobs:self.journal.observe('organize',job_id,'interrupted',{'reason':'restart_reconciliation_required'})
         return jobs

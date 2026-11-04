@@ -177,3 +177,11 @@ class ServiceTests(unittest.TestCase):
             c.execute('UPDATE organization_plans SET payload=? WHERE id=?',(json.dumps(payload),plan['id']))
         with self.assertRaises(ValueError):self.service.prepare(plan['id'],plan['digest'],[0])
         self.assertFalse(self.target.exists())
+
+    def test_direct_index_restore_cannot_bypass_file_history_guard(self):
+        backup=self.app.CORE.backup()
+        draft=self.prepare();job=self.approve(draft)
+        self.assertEqual(self.service.run_once(job)['state'],'done')
+        with self.assertRaises(ValueError):self.app.CORE.restore(backup)
+        with self.app.db() as c:self.assertEqual(c.execute('SELECT COUNT(*) FROM videos').fetchone()[0],1)
+        self.assertTrue(self.clip.exists())
