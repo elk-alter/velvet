@@ -107,3 +107,12 @@ preview.items附conflict_messages；space含required（新增量）、data_bytes
 copy目标继续独立于全部所选源；move允许原盘点根或其子目录，修正大小写或对调只认本次选中的源。修改目标仍产生新计划/摘要。raw_target在规范化前拒绝链接/重解析点，普通路径可含合法隐藏目录。当前240 UTF-16单位限制同时包含随机暂存名；超过时缩短路径，不能仅看最终文件名长度。此规则不宣称已验证全部旧长路径恢复。
 
 已有源完整证明不能由新检测静默替换；完整校验期间设备变化拒绝，不登记到新卷。所有检查是当时条件，执行时继续核对归属/指纹，不覆盖外部文件。详见ADR0008。
+
+
+## 备份恢复文件对账（开发候选）
+
+POST /api/restore-preview，正文name（已存在的主库备份名），要求Host/Token及全局恢复写租约。与恢复共用后台静止检查，不跳过任务。响应id、digest、backup、ready、verified_count、retained_count、problem_count，以及最多50个retained_files.path、problems（code/job/path）；完整私有清单、指纹与日志不返回HTTP。预览只读原媒体，并保存私有固定计划。
+
+POST /api/restore沿用name/confirm精确名称，新增reconciliation:{id,digest}。有物理历史须指定已保存且重新全量审计一致的计划；任意布尔值无效。资料/文件/归档变化400，需重新预览；租约冲突409。ready:false不自动修复/清日志。兼容终止纯资料keep/unbind_copy时保留旧无计划入口。恢复前保留完整旧DB及私有回执，恢复不移动/删除视频；返回rollback备份名。前端未通过不显示确认按钮，完整核对后列出留盘副本及数量。
+
+文件位置不符须先在原整理任务审阅/确认反向；绑定未完/暂存存在须从对应任务处理。备份中的物理位置本已匹配时无需撤销。对账不将只读复制输入算作已重新校验对象。私有计划和回执格式见DATA/ADR0009，不能作为公开附件。

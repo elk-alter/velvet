@@ -176,13 +176,33 @@ class LibraryCore:
      value=json.loads(z.read(filename))
      if not isinstance(value,dict if filename=='settings.json' else list):raise ValueError('备份配置格式错误')
   return path
- def restore(self,name):
-  with self.db() as c:
-   require_reconciled_files(c);watermark=high_watermark(c,self.data)
-  path=self.validate_backup(name);rollback=self.backup('before-restore')
+ def preview_restore(self,name):
+  from restore_reconciliation import RestoreAudit,settings_signature,file_hash,store_plan
+  path=self.validate_backup(name)
+  with zipfile.ZipFile(path) as z,tempfile.TemporaryDirectory(dir=self.data) as temp:
+   incoming=Path(temp)/'incoming.db';incoming.write_bytes(z.read('library.db'))
+   with self.db() as current,closing(sqlite3.connect(incoming)) as source:
+    report=RestoreAudit(current,source).inspect(file_hash(path),settings_signature(self.data))
+  return store_plan(self.data,report,name)
+
+ def restore(self,name,reconciliation=None):
+  from restore_reconciliation import approve_report,settings_signature,file_hash,save_private_json,load_plan
+  import uuid
+  path=self.validate_backup(name)
   with zipfile.ZipFile(path) as z,tempfile.TemporaryDirectory(dir=self.data) as temp:
    p=Path(temp)/'restore.db';p.write_bytes(z.read('library.db'))
-   with closing(sqlite3.connect(p)) as source:require_reconciled_files(source)
+   permit=None
+   if reconciliation is not None:
+    previous=load_plan(self.data,reconciliation,name)
+    with self.db() as current,closing(sqlite3.connect(p)) as source:
+     permit=approve_report(current,source,previous,file_hash(path),settings_signature(self.data))
+   with self.db() as c:
+    require_reconciled_files(c,permit,'current');watermark=high_watermark(c,self.data)
+   with closing(sqlite3.connect(p)) as source:require_reconciled_files(source,permit,'incoming')
+   rollback=self.backup('before-restore')
+   if permit:
+    receipt=dict(permit.report,before_backup=rollback,backup=name,media_modified=False)
+    save_private_json(self.data/'restore-audits'/(uuid.uuid4().hex+'.json'),receipt)
    ensure_video_ids(lambda:closing(sqlite3.connect(p)),self.data,minimum=watermark)
    with closing(sqlite3.connect(p)) as source:
     with self.db() as dest:source.backup(dest)

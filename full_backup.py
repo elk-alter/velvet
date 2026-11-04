@@ -56,6 +56,7 @@ def create(data, output, include_cache=False):
             try:source.backup(target)
             finally:source.close();target.close()
         for path in candidates:shutil.copyfile(path, staging/path.name)
+        copy_audits(data,staging)
         if include_cache:
             for path in data.rglob('*'):
                 if path.is_symlink() or not path.resolve().is_relative_to(data) or 'backups' in path.relative_to(data).parts:continue
@@ -105,8 +106,38 @@ def validate_extract(archive_path, target, max_bytes=100*1024**3):
         return manifest
 
 
+def copy_audits(source,target):
+    """Carry private receipts across full snapshots without following links."""
+    from organization_preflight import no_links
+    folder=source/'restore-audits'
+    if not folder.exists():return
+    if no_links(folder)!=folder:raise ValueError('Unsafe restore audit directory')
+    for path in folder.glob('*.json'):
+        if no_links(path)!=path or not path.is_file():raise ValueError('Unsafe restore audit record')
+        destination=target/'restore-audits'/path.name
+        if destination.exists():
+            if file_hash(destination)==file_hash(path):continue
+            destination=destination.with_name(uuid.uuid4().hex+'.json')
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(path,destination)
+
+
 @exclusive_data
-def restore(data, archive_path):
+def preview_restore(data,archive_path):
+    from restore_reconciliation import RestoreAudit,settings_signature,store_plan
+    data,archive_path=Path(data).resolve(),Path(archive_path).resolve()
+    if not (data/'library.db').is_file():raise ValueError('Reconciliation requires an existing Velvet database')
+    if archive_path.is_relative_to(data):raise ValueError('Choose an archive outside the data directory')
+    offline(data)
+    with tempfile.TemporaryDirectory(prefix='velvet-audit-',dir=data.parent) as temp:
+        stage=Path(temp);validate_extract(archive_path,stage)
+        with closing(sqlite3.connect(data/'library.db')) as current,closing(sqlite3.connect(stage/'library.db')) as incoming:
+            report=RestoreAudit(current,incoming).inspect(file_hash(archive_path),settings_signature(data))
+    return store_plan(data,report,str(archive_path))
+
+
+@exclusive_data
+def restore(data, archive_path,reconciliation=None):
     data, archive_path = Path(data).resolve(), Path(archive_path).resolve()
     if data == Path(data.anchor) or archive_path.is_relative_to(data):raise ValueError('Unsafe restore location')
     if data.exists() and any(data.iterdir()) and not (data/'library.db').is_file():raise ValueError('Destination contains unrelated data')
@@ -114,15 +145,27 @@ def restore(data, archive_path):
     watermark=0
     if (data/'library.db').is_file():
         with closing(sqlite3.connect(data/'library.db')) as connection:
-            require_reconciled_files(connection);watermark=high_watermark(connection,data)
+            if reconciliation is None:require_reconciled_files(connection)
+            watermark=high_watermark(connection,data)
     data.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='velvet-restore-', dir=data.parent) as temp:
         stage = Path(temp)/'data';stage.mkdir()
         manifest = validate_extract(archive_path, stage)
-        with closing(sqlite3.connect(stage/'library.db')) as connection:require_reconciled_files(connection)
+        permit=None
+        if reconciliation is not None:
+            from restore_reconciliation import approve_report,load_plan,settings_signature,save_private_json
+            if not (data/'library.db').is_file():raise ValueError('Reconciliation requires an existing Velvet database')
+            previous=load_plan(data,reconciliation,str(archive_path))
+            with closing(sqlite3.connect(data/'library.db')) as current,closing(sqlite3.connect(stage/'library.db')) as incoming:
+                permit=approve_report(current,incoming,previous,file_hash(archive_path),settings_signature(data))
+                require_reconciled_files(current,permit,'current')
+        with closing(sqlite3.connect(stage/'library.db')) as connection:require_reconciled_files(connection,permit,'incoming')
         watermark=ensure_video_ids(lambda:closing(sqlite3.connect(stage/'library.db')),stage,minimum=watermark)
         offline(data)
         rollback = data.with_name(data.name+'.before-'+uuid.uuid4().hex)
+        copy_audits(data,stage)
+        if permit:
+            save_private_json(stage/'restore-audits'/(uuid.uuid4().hex+'.json'),dict(permit.report,before_directory=str(rollback),backup=str(archive_path),media_modified=False))
         had_data = data.exists()
         if had_data:data.rename(rollback)
         try:stage.rename(data)
@@ -134,10 +177,21 @@ def restore(data, archive_path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['create', 'restore'])
+    parser.add_argument('action', choices=['create', 'preview-restore', 'restore'])
     parser.add_argument('--data', type=Path, required=True)
     parser.add_argument('--archive', type=Path, required=True)
     parser.add_argument('--include-cache', action='store_true')
+    parser.add_argument('--plan-id')
+    parser.add_argument('--plan-digest')
     args = parser.parse_args()
-    try:print(json.dumps(create(args.data,args.archive,args.include_cache) if args.action=='create' else restore(args.data,args.archive)))
+    try:
+        if args.action=='create':result=create(args.data,args.archive,args.include_cache)
+        elif args.action=='preview-restore':
+            report=preview_restore(args.data,args.archive)
+            result={key:report[key] for key in ('id','digest','ready')}
+            result.update(problems=len(report['problems']),verified_files=len(report['files']),retained_files=len(report['retained_files']),report=str(args.data.resolve()/'restore-plans'/(report['id']+'.json')))
+        else:
+            token={'id':args.plan_id,'digest':args.plan_digest} if args.plan_id or args.plan_digest else None
+            result=restore(args.data,args.archive,token)
+        print(json.dumps(result))
     except (OSError,ValueError,sqlite3.DatabaseError,zipfile.BadZipFile) as error:parser.exit(1,str(error)+'\n')

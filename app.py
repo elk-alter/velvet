@@ -908,7 +908,7 @@ class Handler(BaseHTTPRequestHandler):
    if path.startswith('/api/organization/') or path in ('/api/runtime/stop','/api/runtime/resume','/api/task-cancel'):
     return self._post()
    dispatch=path in ('/api/scan','/api/library-scan','/api/storage/scan','/api/file-review/check','/api/file-review/resume','/api/artwork-retry')
-   with LEASES.hold('restore' if path=='/api/restore' else 'backup' if path=='/api/backup' else 'http-change','write' if path in ('/api/restore','/api/backup') else 'read',resources=['metadata'] if dispatch else None):
+   with LEASES.hold('restore' if path in ('/api/restore','/api/restore-preview') else 'backup' if path=='/api/backup' else 'http-change','write' if path in ('/api/restore','/api/restore-preview','/api/backup') else 'read',resources=['metadata'] if dispatch else None):
     return self._post()
   except ResourceBusy as error:return self.send({'error':str(error)},status=409)
   finally:
@@ -1120,11 +1120,12 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/backup':return self.send({'ok':True,'name':CORE.backup()})
    elif path=='/api/backup-validate':
     CORE.validate_backup(a['name']);return self.send({'ok':True})
-   elif path=='/api/restore':
+   elif path in ('/api/restore','/api/restore-preview'):
+    preview=path=='/api/restore-preview'
     if ARTWORK.status['running']:raise ValueError('请等待剧照下载完成后再恢复备份')
     if PEOPLE.state['running']:raise ValueError('请等待演员资料与头像同步完成后再恢复备份')
     if any(engine.worker_lock.locked() for engine in BUILTIN_ENGINES.values()):raise ValueError('请等待内置刮削任务停止后再恢复备份')
-    if a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
+    if not preview and a.get('confirm')!=a.get('name'):raise ValueError('请明确确认恢复的备份名称')
     locks=[LOCK,AMANE_LOCK,DUP_LOCK,SUBMIT_LOCK,POLL_LOCK,ARTWORK.lock,REVIEW.lock];acquired=[]
     organization_was_running=bool(ORGANIZATION.thread and ORGANIZATION.thread.is_alive())
     with POST_LEASE:
@@ -1134,21 +1135,25 @@ class Handler(BaseHTTPRequestHandler):
      ORGANIZATION.stop()
      if ORGANIZATION.thread:ORGANIZATION.thread.join(3)
      if ORGANIZATION.thread and ORGANIZATION.thread.is_alive():raise ValueError('整理服务正在停止，请稍后重试')
-     ORGANIZATION.before_restore()
      for lock in locks:
       if not lock.acquire(False):raise ValueError('后台任务运行中，请先暂停自动刮削并取消扫描/同步后重试')
       acquired.append(lock)
      with db() as c:
       if c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]:raise ValueError('仍有刮削任务，请先在任务中心取消并等待结束后恢复')
      with DB_MUTEX:
-      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
-      with db() as c:
-       if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
+      if preview:
+       report=CORE.preview_restore(a['name'])
+       result={key:report[key] for key in ('id','digest','ready','backup')}
+       result.update(problems=report['problems'][:50],problem_count=len(report['problems']),verified_count=len(report['files']),retained_count=len(report['retained_files']),retained_files=[{'path':item['path']} for item in report['retained_files'][:50]])
+      else:
+       rollback=CORE.restore(a['name'],a.get('reconciliation'));REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+       with db() as c:
+        if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:
      for lock in reversed(acquired):lock.release()
      RESTORING.clear()
      if organization_was_running and not SHUTTING_DOWN.is_set():ORGANIZATION.start()
-    return self.send({'ok':True,'rollback':rollback})
+    return self.send(dict(ok=True,**result) if preview else {'ok':True,'rollback':rollback})
    elif path=='/api/field-apply':
     row=self.video(a['id']);snapshot=json.loads(row['amane_snapshot'] or '{}');field=a['field'];values={'title':snapshot.get('title'),'code':snapshot.get('number'),'actors':', '.join(snapshot.get('actors') or []),'studio':snapshot.get('studio'),'date':snapshot.get('release'),'plot':snapshot.get('plot')}
     if field not in values or not values[field]:raise ValueError('来源未返回此字段')

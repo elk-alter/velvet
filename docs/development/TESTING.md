@@ -47,3 +47,10 @@ Windows可选命令：`python scripts/rehearse_cross_volume.py --target-parent D
 test_organization_preflight使用独立临时文件，覆盖只读预检、大小写/Unicode、暂存名预算与UTF-16、原目录合法名称、所选资源整批容量、源证明及设备变化。Windows NTFS用可用pwsh/Windows PowerShell对自有临时目录/文件设置DACL，验证拒绝创建/读取后恢复原SDDL；输出不含账户SID或安全描述符。优先符号链接，当前机器无该权限时用自有目录junction验证拒绝，结束只移除自建链接。
 
 FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过。rehearse_cross_volume仍独立验证实际C/D NTFS，断点是合成SystemExit，不是物理拔盘。浏览器目标抢占使用自建外部哨兵，修正路径绕开，结束核对哨兵及源/目标哈希、mtime与受保护字段。
+
+
+### alpha.6恢复与升级
+
+`python -m unittest test_restore_reconciliation test_full_backup test_video_ids test_organization_http -q`覆盖主库/离线对账、完整回执、恢复ID水位、真实HTTP名称确认/鉴权/计划过期。移动六个检查点使用合成SystemExit，保留步骤并通过批准反向后对账；不是物理拔盘或进程强杀。
+
+`python scripts/rehearse_upgrade.py`当前默认从alpha.5发布提交44f7373取源码，重复迁移后复制/移动/反向，恢复前完整对账、保留副本与回执，再启动旧程序核对五类资料及源哈希/mtime。可用--baseline指定兼容历史；不是全部图片/OCR/队列/灾难恢复矩阵。源码包没有Git历史，演练从checkout运行，不能冒充包内测试。默认提交依据本地Git历史，不假设存在版本标签。

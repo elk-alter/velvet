@@ -73,3 +73,7 @@
 
 - organization_preflight：只读名称/链接/权限/容量预检、合法名称验证和人类可读代码映射；草稿、批准、执行及提交边界接入。no_links在此实现，organization_jobs保留兼容导出；safe_component仍只负责生成名称。
 - storage_inventory/organization_planner：共用预检名称索引与按操作估算；copy保留独立目标，move可在原根内整理。organization_service回传预检摘要/提示并再次核对盘点设备，不自动采纳替换卷。
+
+
+- restore_reconciliation：只读重放物理日志、完整文件证明、权威DB/归档/配置摘要、固定计划与私有回执；不执行文件修复。restore_safety验证内部新审计许可，兼容已终止纯资料操作。
+- library_core：主库恢复预览和最终门禁/回滚备份；app负责全局独占、后台静止及有限HTTP结果。full_backup复用审计，持DataGuard离线恢复并保留旧目录/私有回执。index/manager_routes显示问题和留盘副本、传计划令牌，不自己推断安全。详见ADR0009。

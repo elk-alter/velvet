@@ -69,14 +69,14 @@ organization_superseded记录被重新审阅替代的撤销任务及新草稿、
 
 ### 原位保留操作
 
-organization_plans标记operation=keep，requested_operation供页面恢复选择；普通搬迁预览标记relocate，兼容未带该字段的旧copy/move预览。keep草稿固定source=destination及设备/完整指纹，不依赖目标空间；pending→binding→done，失败needs_binding后重新验证再关联。新原文件成功关联才materialize，已有UUID、video_id、人工字段和默认副本不重建。无需新增业务表。暂停/取消保留已完成关联；恢复后幂等重试。当前restore_safety仍保守拒绝已有步骤的数据库恢复，完整迁移/文件对账门禁未放宽。
+organization_plans标记operation=keep，requested_operation供页面恢复选择；普通搬迁预览标记relocate，兼容未带该字段的旧copy/move预览。keep草稿固定source=destination及设备/完整指纹，不依赖目标空间；pending→binding→done，失败needs_binding后重新验证再关联。新原文件成功关联才materialize，已有UUID、video_id、人工字段和默认副本不重建。无需新增业务表。暂停/取消保留已完成关联；恢复后幂等重试。恢复门禁现区分纯资料历史与物理操作，必须遵守末节“恢复文件对账”和ADR0009，完整矩阵仍待验收。
 
 
 ### 受控源归档
 
 organization_archive_roots(path,device_token,created)记录强制排除根；organization_archive_plans(draft_id,original_job_id,archive_job_id,root,device_token)关联原copy、固定草稿和归档任务。archive条目保存archive_guard的副本完整指纹、文件身份、绑定/资产/播放身份；普通approve拒绝此操作。
 
-archive沿用move状态及未完成物理操作对账隔离，不能将暂停/取消视作已恢复。原文件位置非默认时才可归档，绑定后保持默认副本。归档根在执行前保留，即使取消/恢复也不静默移除强制排除。恢复反向计划可核验日志所属源文件而不依赖外部副本健康。根与关联均在主库备份内，但备份恢复不撤销归档，原保守文件日志门禁不放宽。详见[ADR0005](../adr/0005-controlled-source-archive.md)。
+archive沿用move状态及未完成物理操作对账隔离，不能将暂停/取消视作已恢复。原文件位置非默认时才可归档，绑定后保持默认副本。归档根在执行前保留，即使取消/恢复也不静默移除强制排除。恢复反向计划可核验日志所属源文件而不依赖外部副本健康。根与关联均在主库备份内，但备份恢复不撤销归档，物理文件恢复仍需末节及ADR0009的完整对账。详见[ADR0005](../adr/0005-controlled-source-archive.md)。
 
 
 ### 多来源固定计划
@@ -108,3 +108,10 @@ storage_file_details不新增业务表或迁移资产；固定成员复用invent
 organization_drafts/jobs.payload新增可选preflight（version=1、targets的device/filesystem/required/reserve，或keep.files_unchanged）；进入原不可变摘要，不纳入浮动free。旧日志不改写，无字段也按当前规则在批准/执行重检。步骤details.preflight保存失败代码，响应额外preflight_messages为派生显示，不回写批准。
 
 源已有source_device/source_identity/fingerprint证明不得被新探测覆盖，完整哈希后复核设备/身份，盘点设备在资产登记前再核对。不增加业务表/后台系统。预检的目录名称/属性/权限缓存仅本次调用，后续执行用新结果；不通过清日志绕过历史长路径或未完成操作保护。详见[ADR0008](../adr/0008-organization-preflight.md)。
+
+
+### 恢复文件对账（开发候选）
+
+restore_reconciliation检查两端organization_jobs/steps/inverses的清单摘要与完整步骤，以卷/文件身份重放位置链并完整校验应用改动的现存文件。无业务表迁移。私有restore-plans/<id>.json存固定计划，restore-audits/<uuid>.json存恢复前的双方日志/文件证明/回滚位置；均可能含私人路径，不进Git。实际恢复重新审计，绑定归档SHA、配置和权威DB签名；运行租约/已知派生缓存不入签名，不能用HTTP布尔值放行。
+
+兼容终止状态的keep/unbind_copy可作为纯资料恢复；物理移动须匹配备份所需位置，通常先确认反向。副本留盘，不能为回滚资料删除副本。遗留暂存/未完日志/文件不可验证仍拒绝。主库先完整备份旧DB，完整恢复保留原目录并携带回执；重复恢复旧快照也不抹去本机回执。数字ID水位规则保持。旧文中“所有已执行步骤均拒绝”为此前门禁，现由本节及ADR0009替代，不表示全部升级/灾难恢复已验收。

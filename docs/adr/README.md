@@ -32,3 +32,5 @@
 
 
 - [0008：统一整理预检与同盘原目录整理](0008-organization-preflight.md)
+
+- [0009：数据库恢复前核对物理日志并保留证据](0009-restore-file-journal-reconciliation.md)

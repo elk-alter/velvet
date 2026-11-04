@@ -13,13 +13,14 @@ from contextlib import closing
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from full_backup import create,restore
+from full_backup import create,restore,preview_restore
 
 
 def run(baseline):
     with tempfile.TemporaryDirectory(prefix='velvet-upgrade-') as temp:
-        root=Path(temp).resolve();data=root/'data';media=root/'Example.mp4';media.write_bytes(b'synthetic source')
+        root=Path(temp).resolve();data=root/'data';source=root/'source';source.mkdir();media=source/'Example.mp4';media.write_bytes(b'synthetic source')
         original=hashlib.sha256(media.read_bytes()).hexdigest()
+        stamp=media.stat().st_mtime_ns
         env=dict(os.environ,VELVET_DATA=str(data),VELVET_SERVER='0')
         subprocess.run([sys.executable,'-c','import app; app.LIBRARIES.exclusions()'],cwd=baseline,env=env,check=True,capture_output=True)
         with closing(sqlite3.connect(data/'library.db')) as c,c:
@@ -40,18 +41,49 @@ def run(baseline):
         with closing(sqlite3.connect(data/'library.db')) as c:
             tables={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             assert {'task_journal','collection_rules','inventory_snapshots'}<=tables
-        result=restore(data,archive)
+        physical=r'''
+import app,sys
+from pathlib import Path
+source,target=map(Path,sys.argv[1:3]);inventory=app.INVENTORY;service=app.ORGANIZATION
+device=inventory.register(str(source),'Synthetic upgrade disk');inventory.scan(device,hashing=True)
+def execute(operation,destination):
+    plan=inventory.plan(device,str(destination),layout='preserve')
+    draft=service.prepare(plan['id'],plan['digest'],[0],operation)
+    job=service.approve(draft['id'],draft['digest'])
+    assert service.run_once(job)['state']=='done'
+    return job
+copy=execute('copy',target/'copy')
+move=execute('move',target/'move')
+blocked=app.CORE.preview_restore(app.CORE.backup('post-move'))
+assert blocked['ready'],blocked['problems']
+reverse=service.move.prepare_undo(move);undo=service.move.approve_undo(move,reverse['digest'])
+assert service.run_once(undo)['state']=='done'
+assert (source/'Example.mp4').exists() and (target/'copy'/'Example.mp4').exists()
+'''
+        completed=subprocess.run([sys.executable,'-c',physical,str(source),str(root/'organized')],cwd=ROOT,env=env,capture_output=True,text=True)
+        if completed.returncode:raise RuntimeError(completed.stderr)
+        try:restore(data,archive)
+        except ValueError:pass
+        else:raise AssertionError('Physical history restored without reconciliation')
+        report=preview_restore(data,archive)
+        assert report['ready'],report['problems']
+        assert len(report['retained_files'])==1
+        result=restore(data,archive,report)
+        assert (Path(result['rollback'])/'library.db').is_file()
+        assert list((data/'restore-audits').glob('*.json'))
         assert snapshot()==before,'Rollback changed baseline data'
         subprocess.run([sys.executable,'-c','import app; app.LIBRARIES.exclusions()'],cwd=baseline,env=env,check=True,capture_output=True)
         assert snapshot()==before,'Baseline could not read restored snapshot'
         assert hashlib.sha256(media.read_bytes()).hexdigest()==original
-        return {'baseline':'alpha.4','upgrade_idempotent':True,'protected_tables':5,'rollback_verified':True,'source_hash_unchanged':True,'remote_completed_jobs_not_replayed':True}
+        assert media.stat().st_mtime_ns==stamp
+        assert hashlib.sha256((root/'organized'/'copy'/'Example.mp4').read_bytes()).hexdigest()==original
+        return {'baseline':'selected Git ref','upgrade_idempotent':True,'protected_tables':5,'copy_move_inverse_verified':True,'rollback_verified':True,'journal_receipt_preserved':True,'source_hash_mtime_unchanged':True,'copy_retained':True,'remote_completed_jobs_not_replayed':True}
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--baseline',default='a98609a');args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--baseline',default='44f7373');args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='velvet-baseline-') as temp:
         root=Path(temp);archive=root/'baseline.zip'
         subprocess.run(['git','archive','--format=zip','--output',str(archive),args.baseline],cwd=ROOT,check=True)
         with zipfile.ZipFile(archive) as z:z.extractall(root/'code')
-        print(json.dumps(run(root/'code'),indent=2))
+        result=run(root/'code');result['baseline']=args.baseline;print(json.dumps(result,indent=2))
