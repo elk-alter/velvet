@@ -168,6 +168,8 @@ from organization_service import OrganizationService
 ORGANIZATION=OrganizationService(db,INVENTORY)
 from inventory_query import InventoryQuery,InventoryQueryChanged
 INVENTORY_QUERY=InventoryQuery(INVENTORY)
+from library_query import LibraryQuery,LibraryQueryChanged
+BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
@@ -794,6 +796,8 @@ class Handler(BaseHTTPRequestHandler):
     except (OSError,ValueError):rules=[]
     return self.send({'rules':rules})
    if path=='/api/context':return self.send(browser_context())
+   if path=='/api/library/query':return self.send(BROWSE.query({key:values[0] for key,values in parse_qs(urlparse(self.path).query).items()}))
+   if path=='/api/library/movie':return self.send({'movie':BROWSE.movie(parse_qs(urlparse(self.path).query).get('id',['0'])[0])})
    if path=='/api/library-revision':return self.send({'instance':hashlib.sha256(TOKEN.encode()).hexdigest(),'revision':DB_REVISION,'scan':dict(STATUS),'review_running':REVIEW.lock.locked()})
    if path.startswith('/api/organization/'):
     query=parse_qs(urlparse(self.path).query);value=lambda key,default='':query.get(key,[default])[0]
@@ -866,7 +870,7 @@ class Handler(BaseHTTPRequestHandler):
      return
    return self.send({},status=404)
   except (BrokenPipeError,ConnectionResetError):pass
-  except (ResourceBusy,InventoryQueryChanged) as error:self.send({'error':str(error)},status=409)
+  except (ResourceBusy,InventoryQueryChanged,LibraryQueryChanged) as error:self.send({'error':str(error)},status=409)
   except Exception as e:self.send({'error':str(e)},status=400)
  def do_POST(self):
   global ACTIVE_POSTS
@@ -1097,7 +1101,7 @@ class Handler(BaseHTTPRequestHandler):
      with db() as c:
       if c.execute("SELECT COUNT(*) FROM scrape_jobs WHERE status IN ('queued','running','submitting','cancelling')").fetchone()[0]:raise ValueError('仍有刮削任务，请先在任务中心取消并等待结束后恢复')
      with DB_MUTEX:
-      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+      rollback=CORE.restore(a['name']);REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
       with db() as c:
        if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:

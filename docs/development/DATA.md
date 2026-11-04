@@ -41,3 +41,11 @@ resource_claims是进程内线程和独立连接共享的持久读/写租约，�
 ## alpha.6查询缓存
 
 inventory_query_snapshots保存30分钟内的筛选、盘点ID、设备/规则/建议签名及一致统计；inventory_query_items仅存有序物理标识和历史重复数量。最多16份，淘汰时同步清理条目。inventory_query_revision由位置、建议、偏好和排除表的写触发器递增，防止暖翻页使用过期范围。重复初始化幂等；原盘点文件、元数据和执行清单不因缓存到期删除。缓存恢复不能替代执行日志对账。
+
+## 片库读模型（alpha.6开发后端）
+
+media_relation_revision记录推断输入代数及已完成代数；video路径/编号/画质/编码/内容类型、手工关系状态和稳定关系路径变化才重推断。media_links仍是人工/自动关系权威，缓存不能覆盖manual。
+
+browse_projection只存按文件派生的搜索/展示/质量摘要；browse_dirty由权威表触发器登记。browse_state记录源revision、投影模式和已聚合revision；规则/可见性/质量目标变化重算，普通字段变化重算脏文件，再刷新可复用SQL版本聚合browse_version_rows。构建前复查上下文与关系代数，变化返回409，避免使用旧规则标记新投影完成。这里的DDL、投影和失效不构成物理文件操作。
+
+browse_queries/browse_results保存最多16份、30分钟的固定排序卡片查询，源revision变化即拒绝旧页。与持久任务/批准计划无关；恢复后幂等补模式及触发器。还没有全量故障/升级验收，旧前端没有切换。质量证据和完整资料留在权威表，不进入卡片JSON。

@@ -138,32 +138,36 @@ class FileReview:
         result = {}
         for video in videos:
             row = records.get(video['id'], {})
-            stale = bool(row) and ((row['size'], row['mtime']) != (video['size'], video['mtime']) or row.get('result')=='changed' or row.get('auto_status')=='stale')
-            flags = [] if stale else json.loads(row.get('flags', '[]'))
-            issues = [{'code': f, 'label': ISSUES[f], 'source': 'manual'} for f in flags]
-            findings = [] if stale else json.loads(row.get('auto_findings') or '[]')
-            overrides = {} if stale else json.loads(row.get('auto_overrides') or '{}')
-            findings = [dict(item, review=overrides.get(item['code'],'pending')) for item in findings]
-            for item in findings:
-                if item['review'] != 'dismissed':
-                    issues.append(dict(item, source='automatic_confirmed' if item['review']=='confirmed' else 'automatic'))
-            outcome = 'changed' if stale and row.get('result')=='changed' else '' if stale else row.get('result', '')
-            if outcome == 'decode_error':
-                issues.append({'code': 'decode_error', 'label': '解码异常，疑似损坏', 'source': 'inspection'})
-            if target and 0 < (video.get('height') or 0) < target:
-                issues.append({'code': 'below_target', 'label': f'低于目标 {target}p', 'source': 'rule'})
-            if video['id'] in higher:
-                issues.append({'code': 'higher_local', 'label': '本地有更高分辨率版本（待对比）', 'source': 'rule'})
-            decision = 'open' if stale else row.get('decision', 'open')
-            result[video['id']] = dict(issues=issues, needs_update=bool(issues) and decision == 'open',
-                                      has_cover=bool(self.data and any((self.data / f"{video['id']}-{kind}.jpg").is_file() for kind in ('cover','poster'))),
-                                      automatic_findings=findings,
-                                      auto_status='' if stale else row.get('auto_status',''), auto_error='' if stale else row.get('auto_error',''), auto_updated=row.get('auto_updated',0),
-                                      decision=decision, status='stale' if stale else row.get('status', 'unchecked'),
-                                      mode=row.get('mode', ''), result=outcome, note=row.get('note', ''),
-                                      detail='' if stale else row.get('detail', ''), updated=row.get('updated', 0))
+            result[video['id']] = self.describe(video,row,target,video['id'] in higher,bool(self.data and any((self.data / f"{video['id']}-{kind}.jpg").is_file() for kind in ('cover','poster'))))
         return {'files': result, 'target': target, 'running': self.lock.locked(),
                 'queued': sum(r['status'] == 'queued' for r in records.values()), 'automatic': self.auto_settings()}
+
+    @staticmethod
+    def describe(video,row,target,higher=False,has_cover=False):
+        stale = bool(row) and ((row['size'], row['mtime']) != (video['size'], video['mtime']) or row.get('result')=='changed' or row.get('auto_status')=='stale')
+        flags = [] if stale else json.loads(row.get('flags', '[]'))
+        issues = [{'code': f, 'label': ISSUES[f], 'source': 'manual'} for f in flags]
+        findings = [] if stale else json.loads(row.get('auto_findings') or '[]')
+        overrides = {} if stale else json.loads(row.get('auto_overrides') or '{}')
+        findings = [dict(item, review=overrides.get(item['code'],'pending')) for item in findings]
+        for item in findings:
+            if item['review'] != 'dismissed':
+                issues.append(dict(item, source='automatic_confirmed' if item['review']=='confirmed' else 'automatic'))
+        outcome = 'changed' if stale and row.get('result')=='changed' else '' if stale else row.get('result', '')
+        if outcome == 'decode_error':
+            issues.append({'code': 'decode_error', 'label': '解码异常，疑似损坏', 'source': 'inspection'})
+        if target and 0 < (video.get('height') or 0) < target:
+            issues.append({'code': 'below_target', 'label': f'低于目标 {target}p', 'source': 'rule'})
+        if higher:
+            issues.append({'code': 'higher_local', 'label': '本地有更高分辨率版本（待对比）', 'source': 'rule'})
+        decision = 'open' if stale else row.get('decision', 'open')
+        return dict(issues=issues, needs_update=bool(issues) and decision == 'open',
+                                  has_cover=has_cover,
+                                  automatic_findings=findings,
+                                  auto_status='' if stale else row.get('auto_status',''), auto_error='' if stale else row.get('auto_error',''), auto_updated=row.get('auto_updated',0),
+                                  decision=decision, status='stale' if stale else row.get('status', 'unchecked'),
+                                  mode=row.get('mode', ''), result=outcome, note=row.get('note', ''),
+                                  detail='' if stale else row.get('detail', ''), updated=row.get('updated', 0))
 
     def enqueue(self, ids, mode):
         if mode not in ('quick', 'sample', 'full', 'auto'):

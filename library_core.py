@@ -15,6 +15,16 @@ class LibraryCore:
    c.execute('CREATE TABLE IF NOT EXISTS duplicate_preference_history(group_key TEXT PRIMARY KEY,payload TEXT)')
    c.execute('CREATE TABLE IF NOT EXISTS relationship_undo(id INTEGER PRIMARY KEY,created REAL,payload TEXT)')
    c.execute('CREATE TABLE IF NOT EXISTS app_state(name TEXT PRIMARY KEY,value TEXT)')
+   c.execute('CREATE TABLE IF NOT EXISTS media_relation_revision(id INTEGER PRIMARY KEY,generation INTEGER,reconciled INTEGER)')
+   c.execute('INSERT OR IGNORE INTO media_relation_revision VALUES(1,1,0)')
+   for action in ('INSERT','DELETE','UPDATE OF path,code,height,codec,censor_override,amane_snapshot'):
+    name=action.split()[0].lower()
+    c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_'+name+' AFTER '+action+' ON videos BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
+   c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_manual AFTER UPDATE OF manual ON media_links WHEN OLD.manual!=NEW.manual BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
+   c.execute('CREATE INDEX IF NOT EXISTS media_link_movie ON media_links(movie_key,version_key,part_no,video_id)')
+   c.execute('CREATE INDEX IF NOT EXISTS duplicate_preferred_id ON duplicate_choices(preferred_id)')
+   for action in ('INSERT','DELETE'):
+    c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_link_'+action+' AFTER '+action+' ON media_links BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
  def infer(self,row):
   p=Path(row['path']);r=self.present(row);code=row.get('code','').strip().upper()
   stem=re.sub(r'(?i)(?<![a-z0-9])(?:part|pt|cd|disc|disk)[ ._-]*\d{1,2}(?![a-z0-9])|第\s*\d{1,2}\s*(?:部分|段|集)','',p.stem)
@@ -25,10 +35,17 @@ class LibraryCore:
   with self.db() as c:
    occupied=set()
    relation_paths={}
+   asset_table=c.execute("SELECT 1 FROM sqlite_master WHERE name='media_assets'").fetchone()
+   if asset_table and 'relation_path' in {r[1] for r in c.execute('PRAGMA table_info(media_assets)')}:
+    c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_path AFTER UPDATE OF relation_path ON media_assets WHEN OLD.relation_path!=NEW.relation_path BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
+   revision=c.execute('SELECT generation,reconciled FROM media_relation_revision WHERE id=1').fetchone()
+   if revision[0]==revision[1]:return
+   old_links={r['video_id']:r for r in c.execute('SELECT * FROM media_links')}
    if c.execute("SELECT 1 FROM sqlite_master WHERE name='media_assets'").fetchone() and 'relation_path' in {r[1] for r in c.execute('PRAGMA table_info(media_assets)')}:
     relation_paths={r['video_id']:r['relation_path'] for r in c.execute("SELECT video_id,relation_path FROM media_assets WHERE video_id IS NOT NULL AND relation_path!=''")}
-   for raw in c.execute('SELECT * FROM videos ORDER BY id').fetchall():
-    row=dict(raw);old=c.execute('SELECT * FROM media_links WHERE video_id=?',(row['id'],)).fetchone()
+   cursor=c.execute('SELECT id,path,code,height,codec,censor_override,amane_snapshot FROM videos ORDER BY id')
+   for raw in cursor:
+    row=dict(raw);old=old_links.get(row['id'])
     if old and old['manual']:
      occupied.add((old['movie_key'],old['version_key'],old['part_no']));continue
     inference=dict(row,path=relation_paths.get(row['id'],row['path']))
@@ -37,13 +54,14 @@ class LibraryCore:
     occupied.add((movie,version,part))
     if old and (old['movie_key'],old['version_key'],old['part_no'])==(movie,version,part):continue
     c.execute('INSERT INTO media_links VALUES(?,?,?,?,0) ON CONFLICT(video_id) DO UPDATE SET movie_key=excluded.movie_key,version_key=excluded.version_key,part_no=excluded.part_no',(row['id'],movie,version,part))
- def hierarchy(self):
+   c.execute('UPDATE media_relation_revision SET reconciled=generation WHERE id=1')
+ def hierarchy(self,movie_key=None):
   self.reconcile()
   with self.db() as c:
-   links={r['video_id']:dict(r) for r in c.execute('SELECT * FROM media_links')}
-   pref_rows=[dict(r) for r in c.execute('SELECT * FROM movie_preferences')];prefs={r['movie_key']:r['version_key'] for r in pref_rows};preferred_ids={r['movie_key']:r['preferred_id'] for r in pref_rows}
-   choices=[r[0] for r in c.execute('SELECT preferred_id FROM duplicate_choices')]
-   rows=[self.present(r) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')]
+   links={r['video_id']:dict(r) for r in c.execute('SELECT * FROM media_links'+(' WHERE movie_key=?' if movie_key is not None else ''),(movie_key,) if movie_key is not None else ())}
+   pref_rows=[dict(r) for r in c.execute('SELECT * FROM movie_preferences'+(' WHERE movie_key=?' if movie_key is not None else ''),(movie_key,) if movie_key is not None else ())];prefs={r['movie_key']:r['version_key'] for r in pref_rows};preferred_ids={r['movie_key']:r['preferred_id'] for r in pref_rows}
+   choices=[r[0] for r in c.execute('SELECT preferred_id FROM duplicate_choices'+(' WHERE preferred_id IN (SELECT video_id FROM media_links WHERE movie_key=?)' if movie_key is not None else ''),(movie_key,) if movie_key is not None else ())]
+   rows=[self.present(r) for r in c.execute('SELECT v.* FROM videos v'+(' JOIN media_links l ON l.video_id=v.id WHERE l.movie_key=?' if movie_key is not None else '')+' ORDER BY v.mtime DESC',(movie_key,) if movie_key is not None else ())]
   excluded=getattr(self,'excluded',lambda:[])()
   rows=[r for r in rows if not any(Path(r['path']).is_relative_to(Path(root)) for root in excluded)]
   rows=getattr(self,'filter_rows',lambda rows:rows)(rows)

@@ -51,3 +51,5 @@
 当前证据与缺口见[alpha.6进度](../ALPHA6-PROGRESS.md)。接生产初始化时须同步Docker资源、关系稳定策略及跨执行器租约。
 
 - inventory_query：跨盘SQL范围、重叠根去重、固定排序标识缓存及分页DTO；独立于整理批准和主片库全图。
+
+- library_query：开发中的片库派生投影、SQL版本/合集聚合、固定分页卡片与按作品详情后端；旧前端尚未切换。FileReview.describe为旧/新查询共享的单文件质量推导。

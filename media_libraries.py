@@ -7,9 +7,16 @@ import time
 from pathlib import Path
 
 
-def canonical(path):
+def canonical(path,short_prefixes=None):
     path=Path(path)
-    return path.resolve() if os.name=='nt' and '~' in str(path) else path
+    if os.name!='nt' or '~' not in str(path):return path
+    if short_prefixes is None:return path.resolve()
+    # Query-local cache: expand only the last short-name prefix once. The
+    # remaining indexed suffix may be offline/nonexistent and needs no stat.
+    parts=path.parts;last=max(i for i,part in enumerate(parts) if '~' in part)
+    prefix=Path(*parts[:last+1]);key=str(prefix)
+    if key not in short_prefixes:short_prefixes[key]=prefix.resolve()
+    return short_prefixes[key].joinpath(*parts[last+1:])
 
 
 class MediaLibraries:
