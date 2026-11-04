@@ -7,6 +7,8 @@ description: Continue development of the Velvet local video library, including a
 
 Locate the intended checkout from the user's workspace, then read its AGENTS.md. Use git status and recent commits to establish reality; do not assume the installed skill directory is the repository. If no checkout is available, ask for its location rather than cloning or modifying an unrelated project.
 
+Before editing, check whether a running Velvet process serves files from that checkout. Independent VELVET_DATA alone does not isolate static assets: edits can change the live UI without a restart. Develop in a separate checkout, keep the serving checkout on its deployed revision, and record both roles in docs/HANDOFF.md. In the current workspace, outputs/Velvet is the alpha.5 serving checkout and outputs/Velvet-development is the development clone; verify those roles on arrival rather than editing the older directory by habit. Do not copy runtime data, locks or media into the development clone. A deployed-revision switch is a runtime change, not a routine cleanup.
+
 ## Select context by task
 
 Read docs/development/README.md and docs/PLAN-INDEX.md. For current alpha.6 work, select A6-IDs from docs/ALPHA6-REQUIREMENTS.md and read ALPHA6-PROGRESS.md. Use ALPHA5-REQUIREMENTS.md for alpha.5 regressions and EPIC-RAW-MEDIA-ORGANIZATION.md for underlying ORG story details; old conditional alpha.5 allocation does not override alpha.6 mandatory delivery. Consult docs/DELIVERY-STATUS.md before claiming a story is new or completed. Requirement acceptance criteria outrank abbreviated status summaries. Read MODULES.md for affected ownership and DATA.md for any schema, queue, exclusion or restore change.
