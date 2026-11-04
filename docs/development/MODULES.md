@@ -88,3 +88,5 @@
 - movie_details：单作品/版本/分段分页、首选/续播、相邻分段与完整质量依据；无全图呈现，读取实例在HTTP恢复后换代。for_edit对全部索引成员先限制100，再兼容完整小图，保持应用DB互斥范围。
 - library_query的schema3版本聚合预计算最大可见mtime及该时间最小ID供详情排序；仅派生投影升级，业务字段/关系键不变。schema1/2复用逐文件投影，不能为性能隐藏预热成本。
 - movie_detail_view.js：详情页导航、固定当前/默认项、未保存切换保护、页码/焦点/取消及迟到隔离；server_browse只缓存有界页面，关系编辑用明确范围，不能从部分缓存推断全片。UI_ASSETS/HTML/Docker同步。
+
+- file_review的当前质量编辑器保存单文件note/decision基线，重绘先保留尚未保存的值、成功保存后与权威结果比较；close或确认移除库记录后释放草稿。已有openVideo包装转发上游结果，false不重绘，也不吞掉自动续播取消信号。index的detailHasChanges聚合影片资料与质量表单状态，server_browse/disk_file_view/manager_routes复用，不另叠导航包装。

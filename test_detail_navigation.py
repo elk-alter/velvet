@@ -11,14 +11,15 @@ class DetailNavigationTests(unittest.TestCase):
         source = Path(__file__).with_name('index.html')
         script = r'''
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+let completed=false;process.on('beforeExit',()=>{if(!completed){console.error('Navigation scenario did not complete');process.exitCode=1}});
 const html=fs.readFileSync(SOURCE,'utf8');
 const handlers=html.match(/((?:async )?function closeDetail\([\s\S]*?)function randomPick\(/);
 assert.ok(handlers,'detail handlers exist');
-let decide,asked=0,closed=0,paused=0,progress=0,refreshed=0,saved=0,actor=null;
+let decide,asked=0,closed=0,paused=0,progress=0,refreshed=0,saved=0,actor=null,reviewDirty=false;
 const events={},nodes={editDirty:{textContent:'unsaved'},player:{pause(){paused++}}};
 const tags=new Set();let rendered=0;
 const context={detail:{open:true,close(){this.open=false;closed++},addEventListener(name,fn){events[name]=fn}},selected:{id:1},activeTags:tags,render:()=>rendered++,page:9,pushViewState(){},
- $:id=>nodes[id],allowManagementLeave:()=>{asked++;return new Promise(resolve=>decide=resolve)},saveProgress:()=>progress++,refresh:()=>refreshed++,saveViewState:()=>saved++,openActor:name=>actor=name};
+ $:id=>nodes[id],hasFileReviewChanges:()=>reviewDirty,discardFileReviewDraft:()=>reviewDirty=false,confirm:()=>true,api:async()=>({}),allowManagementLeave:()=>{asked++;return new Promise(resolve=>decide=resolve)},saveProgress:()=>progress++,refresh:()=>refreshed++,saveViewState:()=>saved++,openActor:name=>actor=name};
 vm.createContext(context);vm.runInContext(handlers[1],context);
 (async()=>{
  const canceled=context.closeDetail();
@@ -43,7 +44,15 @@ vm.createContext(context);vm.runInContext(handlers[1],context);
  const acceptTag=context.openDetailTag('Synthetic Tag');decide(true);assert.equal(await acceptTag,true);
  assert.equal(tags.has('Synthetic Tag'),true);assert.equal(context.page,1);assert.equal(rendered,1);
  context.detail.open=true;
- nodes.editDirty.textContent='';const prior=asked;assert.equal(await context.closeDetail(),true);assert.equal(asked,prior);
+ nodes.editDirty.textContent='';reviewDirty=true;const qualityCancel=context.closeDetail();decide(false);assert.equal(await qualityCancel,false);assert.equal(context.detail.open,true);
+ reviewDirty=false;const prior=asked;assert.equal(await context.closeDetail(),true);assert.equal(asked,prior);
+ context.detail.open=true;reviewDirty=true;
+ const questions=asked,forgot=context.forget();await Promise.resolve();assert.equal(asked,questions,'removed record cannot offer to keep editing');await forgot;assert.equal(context.detail.open,false);
+ context.detail.open=true;context.selected={id:1};reviewDirty=true;let remove;
+ context.api=()=>new Promise(resolve=>remove=resolve);
+ const staleRemoval=context.forget();context.selected={id:2};remove({});await Promise.resolve();
+ assert.equal(asked,questions,'stale removal cannot prompt for another file');await staleRemoval;assert.equal(context.detail.open,true);assert.equal(reviewDirty,true);
+ completed=true;
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''.replace('SOURCE', json.dumps(str(source)))
         with tempfile.TemporaryDirectory() as root:

@@ -68,3 +68,5 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 `python -m unittest test_detail_navigation test_library_query test_movie_details test_movie_detail_view test_server_browse -q`覆盖关闭确认的取消/放弃/Esc、演员/标签跳转、确认过期后不关另一文件，以及非代表分段的演员/标签/厂商/标题命中、跨版本标签隔离、排除目录和旧匹配快照失效。Node用例执行实际内联处理器；不等于真实视频播放或浏览器原生离页提示验证。质量备注等其它表单、全部管理/历史入口仍需分别审计。
 
 `python -m unittest test_presentation_identity test_library_query test_movie_details test_library_query_core -q`还覆盖列表窄投影的384组合与人工标题保护、旧自定义完整展示回调、HTTP主库恢复后重新查询、NULL/缺列升级及匹配/选择结果。完整展示的Git基线差分在开发checkout核对；不是只比较两个同用新helper的实现。benchmark_browse计入首次投影与范围构建，不预热后再冒充冷启动。
+
+`python -m unittest test_review_navigation test_detail_navigation test_server_browse test_movie_detail_view -q`验证取消/迟到结果转发、质量草稿刷新及保存中继续编辑、关闭清理与分段隔离、质量独立离开确认、移除库记录的当前/迟到处理。异步Node场景需显式完成标记，未完成不能仅凭进程exit0通过。浏览器合成样本另验证只改质量表单的切换/物理入口/工作台/关闭、标记刷新、独立保存和丢弃后重开；不是实际视频解码/续播或全部管理/排除入口验收。

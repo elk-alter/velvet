@@ -14,7 +14,7 @@ const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('nod
 const nodes={};function element(id=''){const e={id,textContent:'',options:[{textContent:'Any'}],children:[],value:'',setAttribute(){},insertAdjacentHTML(){},addEventListener(){}};e.replaceWith=input=>nodes[id]=input;return e}
 for(const id of ['tag','excludeTag','actor','studio','editDirty'])nodes[id]=element(id);
 let release,shown=0,generation=0;
-const context={window:{MovieDetailView:{cancelPending(){++generation},get generation(){return generation}}},library:{},detail:{open:true,addEventListener(){}},document:{createElement:()=>element()},$:id=>nodes[id],fetch:()=>new Promise(resolve=>release=resolve),URL,URLSearchParams,AbortController,setTimeout,clearTimeout,console,toast:message=>{throw Error(message)}};
+const context={window:{MovieDetailView:{cancelPending(){++generation},get generation(){return generation}}},library:{},detailHasChanges:()=>false,detail:{open:true,addEventListener(){}},document:{createElement:()=>element()},$:id=>nodes[id],fetch:()=>new Promise(resolve=>release=resolve),URL,URLSearchParams,AbortController,setTimeout,clearTimeout,console,toast:message=>{throw Error(message)}};
 vm.createContext(context);vm.runInContext(fs.readFileSync(SOURCE,'utf8'),context);
 (async()=>{
  const pending=context.window.serverBrowse.openMovie(1,true,()=>++shown);
@@ -38,7 +38,7 @@ function element(id=''){
  e.replaceWith=input=>nodes[id]=input;return e;
 }
 for(const id of ['tag','excludeTag','actor','studio'])nodes[id]=element(id);
-const responses=[],context={window:{},library:{},detail:{addEventListener(){}},document:{createElement:()=>element()},$:id=>nodes[id],fetch:async()=>({ok:true,json:async()=>responses.shift()}),URL,URLSearchParams,AbortController,setTimeout,clearTimeout,console};
+const responses=[],context={window:{},library:{},detailHasChanges:()=>false,detail:{addEventListener(){}},document:{createElement:()=>element()},$:id=>nodes[id],fetch:async()=>({ok:true,json:async()=>responses.shift()}),URL,URLSearchParams,AbortController,setTimeout,clearTimeout,console};
 vm.createContext(context);vm.runInContext(fs.readFileSync(SOURCE,'utf8'),context);
 const movie=(key,ids)=>({movie_key:key,_versions:[{_parts:ids.map(id=>({id}))}]});
 async function load(key,ids){responses.push({movie:movie(key,ids),review:{files:Object.fromEntries(ids.map(id=>[id,{issues:[]}]))}});await context.window.serverBrowse.loadMovie(ids[0])}

@@ -6,7 +6,7 @@ window.DiskFileView=(()=>{
  const text=value=>esc(value??'未记录');
  function remember(){managerNavigationState.diskFileReturn={params:{...managerNavigationState.params},scroll:window.scrollY||0,focus:document.activeElement?.id||''}}
  function open(button){remember();return goManage('storage-file',{...managerNavigationState.params,file:button.dataset.ordinal})}
- async function fromVideo(id){if(detail.open&&$('editDirty').textContent&&!await allowManagementLeave(true))return false;managerNavigationState.diskFileReturn=null;if(detail.open){saveProgress(false);$('player').pause();detail.close()}return goManage('storage-video',{source:id})}
+ async function fromVideo(id){if(detail.open&&detailHasChanges()&&!await allowManagementLeave(true))return false;managerNavigationState.diskFileReturn=null;if(detail.open){saveProgress(false);$('player').pause();detail.close()}return goManage('storage-video',{source:id})}
  function back(){const saved=managerNavigationState.diskFileReturn||history.state?.diskFileReturn;if(saved)return goManage('storage-files',saved.params,{restorePosition:saved});const params=managerNavigationState.params;if(params.video)return goManage('storage-video',{source:params.video});const restored={...params};delete restored.file;delete restored.resource_offset;return goManage('storage-files',restored)}
  async function file(params){
   const endpoint=params.location?'/api/storage/indexed-file?'+new URLSearchParams({id:params.video,location:params.location,resource_offset:params.resource_offset||0}):'/api/storage/file?'+new URLSearchParams({snapshot:params.snapshot||'',ordinal:params.file||'0',resource_offset:params.resource_offset||0});
