@@ -40,3 +40,6 @@ Thumbs.db
 /dist/
 
 !/AGENTS.md
+
+# Runtime data ownership locks are never public sources.
+.velvet-lock-*
