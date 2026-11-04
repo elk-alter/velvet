@@ -5,6 +5,7 @@ import json
 import os
 import time
 from pathlib import Path
+from archive_policy import archive_roots,is_archive_path
 
 
 def canonical(path,short_prefixes=None):
@@ -28,12 +29,14 @@ class MediaLibraries:
     def exclusions(self):
         with self.db() as c:
             c.execute("CREATE TABLE IF NOT EXISTS excluded_directories(path TEXT PRIMARY KEY)")
-            return [r[0] for r in c.execute('SELECT path FROM excluded_directories ORDER BY path')]
+            paths=[r[0] for r in c.execute('SELECT path FROM excluded_directories ORDER BY path')]
+        return sorted(set(paths+archive_roots(self.db)))
 
     def exclude(self, raw, enabled=True):
         if not isinstance(raw,str) or not raw.strip() or type(enabled) is not bool:
             raise ValueError('请选择有效目录')
         path=Path(raw).expanduser().resolve()
+        if not enabled and is_archive_path(path,archive_roots(self.db)):raise ValueError('归档目录由整理记录保护，不能取消排除；请按归档任务恢复文件')
         if enabled and not any(path.is_relative_to(canonical(p['path'])) for p in self.policies()):
             raise ValueError('只能排除媒体库内的目录')
         self.exclusions()
@@ -90,6 +93,7 @@ class MediaLibraries:
         if not isinstance(raw, str) or not raw.strip():
             raise ValueError('请选择媒体库目录')
         path = Path(raw).expanduser().resolve()
+        if is_archive_path(path,archive_roots(self.db)):raise ValueError('归档目录不能作为默认媒体库，请从归档任务恢复')
         if not path.is_dir():
             raise ValueError('媒体库目录不存在或离线')
         name = data.get('name', '')
@@ -134,6 +138,7 @@ class MediaLibraries:
 
     @staticmethod
     def included(path, policy, size):
+        if is_archive_path(path):return False
         if any(canonical(path).is_relative_to(canonical(root)) for root in policy.get('excluded_directories',[])):return False
         relative = canonical(path).relative_to(canonical(policy['path'])).as_posix()
         relative = os.path.normcase(relative)
@@ -144,6 +149,7 @@ class MediaLibraries:
         result=[]
         for row in rows:
             path=canonical(row['path'])
+            if is_archive_path(path):continue
             if any(path.is_relative_to(canonical(root)) for root in excluded):continue
             owner=self.owner(path,policies)
             policy=next((p for p in policies if p['path']==owner),None)

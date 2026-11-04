@@ -933,6 +933,12 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/organization/control':
     job=ORGANIZATION.control(a.get('id'),a.get('action'));ORGANIZATION.start()
     return self.send({'ok':True,'state':job['state']})
+   elif path=='/api/organization/archive-preview':
+    return self.send({'ok':True,'id':ORGANIZATION.archive.prepare(a.get('id'))['id']})
+   elif path=='/api/organization/archive-approve':
+    if a.get('confirmed') is not True:raise ValueError('请核对并单独确认源文件归档计划，目标副本将保留')
+    job=ORGANIZATION.archive.approve(a.get('id'),a.get('draft'),a.get('digest'));ORGANIZATION.start()
+    return self.send({'ok':True,'id':job})
    elif path=='/api/organization/undo-preview':
     return self.send({'ok':True,'id':ORGANIZATION.prepare_inverse(a.get('id'))['id']})
    elif path=='/api/organization/undo-approve':

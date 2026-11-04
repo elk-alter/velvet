@@ -11,9 +11,10 @@ import unicodedata
 from pathlib import Path
 from media_libraries import canonical
 from media_companions import discover
+from archive_policy import archive_roots,is_archive_path,ARCHIVE_NAME
 
 EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.ts', '.webm', '.mpeg', '.mpg', '.flv'}
-SKIP = {'$recycle.bin', 'system volume information', '.git', '.venv', 'node_modules'}
+SKIP = {'$recycle.bin', 'system volume information', '.git', '.venv', 'node_modules',ARCHIVE_NAME}
 
 
 def volume_identity(root):
@@ -106,6 +107,7 @@ class StorageInventory:
         if not isinstance(raw, str) or not raw.strip() or not isinstance(alias, str) or not 1 <= len(alias.strip()) <= 100:
             raise ValueError('请填写目录和1–100字设备别名')
         root = Path(raw).expanduser().resolve()
+        if is_archive_path(root,archive_roots(self.db)):raise ValueError('归档目录不能作为默认盘点位置，请按任务恢复文件')
         if not root.is_dir():
             raise ValueError('盘点目录不存在或离线')
         identity, stable = volume_identity(root)
@@ -173,12 +175,13 @@ class StorageInventory:
 
     def scan(self, device_id, cancel=lambda: False, progress=lambda **_: None, hashing=False):
         device = self.device(device_id); root = Path(device['root'])
+        if is_archive_path(root,archive_roots(self.db)):raise ValueError('归档目录不参与默认盘点，请按归档任务恢复')
         if not root.is_dir() or volume_identity(root)[0] != device['identity']:
             raise ValueError('设备离线或身份不匹配')
         snapshot = uuid.uuid4().hex; processed = failed = processed_bytes = 0
         with self.db() as c:
             c.execute('INSERT INTO inventory_snapshots(id,device_id,state,processed,failed,created,finished) VALUES(?,?,?,?,?,?,?)', (snapshot, device_id, 'running', 0, 0, time.time(), None))
-        excluded = [Path(p).resolve() for p in self.excluded()]
+        excluded = [Path(p).resolve() for p in self.excluded()+archive_roots(self.db)]
         def allowed(path):
             return not any(canonical(path).is_relative_to(p) for p in excluded)
         state = 'done'

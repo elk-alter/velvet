@@ -70,3 +70,10 @@ organization_superseded记录被重新审阅替代的撤销任务及新草稿、
 ### 原位保留操作
 
 organization_plans标记operation=keep，requested_operation供页面恢复选择；普通搬迁预览标记relocate，兼容未带该字段的旧copy/move预览。keep草稿固定source=destination及设备/完整指纹，不依赖目标空间；pending→binding→done，失败needs_binding后重新验证再关联。新原文件成功关联才materialize，已有UUID、video_id、人工字段和默认副本不重建。无需新增业务表。暂停/取消保留已完成关联；恢复后幂等重试。当前restore_safety仍保守拒绝已有步骤的数据库恢复，完整迁移/文件对账门禁未放宽。
+
+
+### 受控源归档
+
+organization_archive_roots(path,device_token,created)记录强制排除根；organization_archive_plans(draft_id,original_job_id,archive_job_id,root,device_token)关联原copy、固定草稿和归档任务。archive条目保存archive_guard的副本完整指纹、文件身份、绑定/资产/播放身份；普通approve拒绝此操作。
+
+archive沿用move状态及未完成物理操作对账隔离，不能将暂停/取消视作已恢复。原文件位置非默认时才可归档，绑定后保持默认副本。归档根在执行前保留，即使取消/恢复也不静默移除强制排除。恢复反向计划可核验日志所属源文件而不依赖外部副本健康。根与关联均在主库备份内，但备份恢复不撤销归档，原保守文件日志门禁不放宽。详见[ADR0005](../adr/0005-controlled-source-archive.md)。

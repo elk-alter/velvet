@@ -9,6 +9,7 @@ from media_locations import fingerprint
 from storage_inventory import volume_identity, destination_key, safe_component
 from task_journal import TaskJournal
 from resource_leases import ResourceLeases,ResourceBusy
+from archive_policy import ARCHIVE_NAME
 
 TERMINAL={'done','cancelled'}
 TRANSITIONS={
@@ -67,8 +68,8 @@ class OrganizationJobs:
         source_root=no_links(source_root);target_root=no_links(target_root)
         if not isinstance(entries,list) or not entries:raise ValueError('Choose files before approval')
         operations={entry.get('operation') for entry in entries}
-        if len(operations)!=1 or not operations<={'copy','move','keep'}:raise ValueError('Choose a single supported operation')
-        moving=operations=={'move'}
+        if len(operations)!=1 or not operations<={'copy','move','keep','archive'}:raise ValueError('Choose a single supported operation')
+        moving=operations in ({'move'},{'archive'})
         keeping=operations=={'keep'}
         if not moving and not keeping and (source_root.is_relative_to(target_root) or target_root.is_relative_to(source_root)):raise ValueError('Copy target must be independent of source scope')
         sources={destination_key(no_links(entry['source'])) for entry in entries}
@@ -79,7 +80,7 @@ class OrganizationJobs:
             if not source.is_relative_to(source_root) or not target.is_relative_to(target_root):raise ValueError('Entry escapes approved roots')
             key=destination_key(target)
             if keeping and source!=target:raise ValueError('原位保留不能修改路径')
-            if not keeping and any(safe_component(part)!=part for part in target.parts[1:]):raise ValueError('Invalid target path component')
+            if not keeping and any(safe_component(part)!=part and not (operations=={'archive'} and part==ARCHIVE_NAME) for part in target.parts[1:]):raise ValueError('Invalid target path component')
             if (target.exists() and not keeping and not (moving and key in sources)) or key in destinations:raise ValueError('Target collision')
             source_device=self.device_identity(source);target_device=self.device_identity(target.parent)
             if moving and source_device!=target_device:raise ValueError('Cross-device moves must use verified copy first')
@@ -89,6 +90,9 @@ class OrganizationJobs:
             checked.append({'source':str(source),'destination':str(target),'video_id':entry.get('video_id'),
                             'operation':entry['operation'],'fingerprint':stamp,'source_identity':[source.stat().st_dev,source.stat().st_ino],'source_device':source_device,
                             'target_device':target_device,'asset_id':asset_id,'role':entry.get('role','media'),'parent_asset_id':entry.get('parent_asset_id'),'metadata':entry.get('metadata',{})})
+            if operations=={'archive'}:
+                if not isinstance(entry.get('archive_guard'),dict):raise ValueError('归档需要目标副本证明')
+                checked[-1]['archive_guard']=entry['archive_guard']
         payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version,'retained':retained or []}
         stamp=digest(payload);draft_id=uuid.uuid4().hex
         with self.db() as c:
@@ -104,12 +108,12 @@ class OrganizationJobs:
         if existing:return existing['id']
         payload=json.loads(draft['payload'])
         if digest(payload)!=expected_digest:raise ValueError('Stored approval content changed')
-        if any(entry['operation'] not in ('copy','move','keep') for entry in payload['entries']):raise ValueError('此计划需要使用对应撤销批准入口')
+        if any(entry['operation'] not in ('copy','move','keep','archive') for entry in payload['entries']):raise ValueError('此计划需要使用对应撤销批准入口')
         sources={destination_key(e['source']) for e in payload['entries']}
         for entry in payload['entries']:
             source=no_links(entry['source']);raw_target=Path(entry['destination']);target=no_links(raw_target.parent)/raw_target.name
             if entry['operation']=='keep' and source!=target:raise ValueError('原位保留不能修改路径')
-            allowed_existing=entry['operation']=='keep' or entry['operation']=='move' and destination_key(target) in sources
+            allowed_existing=entry['operation']=='keep' or entry['operation'] in ('move','archive') and destination_key(target) in sources
             if str(source)!=entry['source'] or str(target)!=entry['destination'] or (target.exists() and not allowed_existing):raise ValueError('Path changed since preview')
             if self.device_identity(source)!=entry['source_device'] or self.device_identity(target.parent)!=entry['target_device']:raise ValueError('Device changed since preview')
             if fingerprint(source)!=entry['fingerprint'] or [source.stat().st_dev,source.stat().st_ino]!=entry['source_identity']:raise ValueError('Source changed since preview')
@@ -189,7 +193,7 @@ class OrganizationJobs:
             uncertain=False
             for step in steps:
                 operation=entries[step['ordinal']]['operation'];state=step['state']
-                if state in ('committing','committed','binding','needs_binding') or (operation=='move' and state in ('staging','staged','interrupted')):
+                if state in ('committing','committed','binding','needs_binding') or (operation in ('move','archive') and state in ('staging','staged','interrupted')):
                     uncertain=True;break
             if uncertain:c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',('reconcile:'+job['id'],'organize-reconcile','write',time.time()))
 

@@ -13,6 +13,8 @@ from organization_moves import MoveExecutor
 from organization_cleanup import CopyCleanup
 from organization_copy_undo import CopyUndo
 from organization_keep import KeepExecutor
+from organization_archive import SourceArchive
+from archive_policy import is_archive_path
 from resource_leases import ResourceBusy
 from restore_safety import require_reconciled_files
 
@@ -28,6 +30,8 @@ class OrganizationService:
         self.cleanup=CopyCleanup(self.jobs)
         self.copy_undo=CopyUndo(self.jobs,self.locations)
         self.keep=KeepExecutor(self.jobs,self.bind_keep)
+        self.archive=SourceArchive(self.jobs)
+        self.move.validator=self.archive.validate_guard
         with db() as c:c.execute('CREATE TABLE IF NOT EXISTS organization_draft_origins(draft_id TEXT PRIMARY KEY,preview_id TEXT)')
         self.wake=threading.Event();self.stopping=threading.Event()
         self.dispatch=threading.Lock();self.thread=None
@@ -51,6 +55,7 @@ class OrganizationService:
                 original=payload['entries'][index]
                 if original.get('conflicts'):raise ValueError('请先解决预览中的冲突')
                 source=no_links(source_root/original['relative'])
+                if is_archive_path(source) or is_archive_path(original['destination']):raise ValueError('归档目录仅通过受控归档/恢复任务操作')
                 if str(source)!=original['source']:raise ValueError('预览源路径变化')
                 with self.db() as c:video=c.execute('SELECT id FROM videos WHERE path=?',(str(source),)).fetchone()
                 metadata=dict(original.get('source_metadata') or {})
@@ -113,6 +118,10 @@ class OrganizationService:
         return (self.copy_undo.prepare if job['payload']['entries'][0]['operation']=='copy' else self.move.prepare_undo)(job_id)
 
     def approve(self,draft_id,expected_digest):
+        with self.db() as c:
+            stored=c.execute('SELECT payload FROM organization_drafts WHERE id=?',(draft_id,)).fetchone()
+            if c.execute('SELECT 1 FROM organization_inverses WHERE draft_id=?',(draft_id,)).fetchone():raise ValueError('反向计划需要使用撤销确认入口')
+        if stored and any(e['operation']=='archive' for e in json.loads(stored[0])['entries']):raise ValueError('归档计划需要单独确认并使用归档批准入口')
         with self.db() as c:existing=c.execute('SELECT j.id FROM organization_jobs j JOIN organization_drafts d ON d.digest=j.approval_digest WHERE d.id=? AND d.digest=?',(draft_id,expected_digest)).fetchone()
         if existing:return existing['id']
         with self.jobs.leases.hold('organization-approval'):
@@ -154,6 +163,7 @@ class OrganizationService:
             if operations=={'move'}:return self.move.run(job_id,draining)
             if operations=={'unbind_copy'}:return self.copy_undo.run(job_id,draining)
             if operations=={'keep'}:return self.keep.run(job_id,draining)
+            if operations=={'archive'}:return self.move.run(job_id,draining)
             raise ValueError('Unsupported approved operation')
         except ResourceBusy:
             self.jobs.finish(job_id,'waiting')
@@ -210,9 +220,10 @@ class OrganizationService:
             row=c.execute('SELECT * FROM organization_drafts WHERE id=?',(draft_id,)).fetchone()
             inverse=c.execute('SELECT original_job_id FROM organization_inverses WHERE draft_id=?',(draft_id,)).fetchone()
             origin=c.execute('SELECT preview_id FROM organization_draft_origins WHERE draft_id=?',(draft_id,)).fetchone()
+            archive=c.execute('SELECT original_job_id FROM organization_archive_plans WHERE draft_id=?',(draft_id,)).fetchone()
         if not row:raise ValueError('Unknown organization draft')
         payload=json.loads(row['payload']);entries=payload['entries'];offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
-        return {'preview_id':origin['preview_id'] if origin else None,'id':row['id'],'digest':row['digest'],'items':entries[offset:offset+limit],'total':len(entries),'bytes':sum(entry['fingerprint']['size'] for entry in entries),'offset':offset,'limit':limit,
+        return {'archive_of':archive[0] if archive else None,'preview_id':origin['preview_id'] if origin else None,'id':row['id'],'digest':row['digest'],'items':entries[offset:offset+limit],'total':len(entries),'bytes':sum(entry['fingerprint']['size'] for entry in entries),'offset':offset,'limit':limit,
                 'retained':payload.get('retained',[])[max(0,int(retained_offset)):max(0,int(retained_offset))+limit],'retained_total':len(payload.get('retained',[])),'retained_offset':max(0,int(retained_offset)),'operation':entries[0]['operation'],'inverse_of':inverse['original_job_id'] if inverse else None,
                 'media_count':sum(entry.get('role')!='companion' for entry in entries),'resource_count':sum(entry.get('role')=='companion' for entry in entries)}
 
@@ -230,5 +241,11 @@ class OrganizationService:
             inverse=c.execute('SELECT i.inverse_job_id,j.state,COALESCE(control.pause_requested,0) AS paused FROM organization_inverses i LEFT JOIN organization_jobs j ON j.id=i.inverse_job_id LEFT JOIN organization_control control ON control.job_id=j.id WHERE i.original_job_id=?',(job_id,)).fetchone()
             inverse_of=c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)).fetchone()
             superseded=c.execute('SELECT * FROM organization_superseded WHERE job_id=?',(job_id,)).fetchone()
+            archive=c.execute('SELECT original_job_id FROM organization_archive_plans WHERE archive_job_id=?',(job_id,)).fetchone()
+            archives=[dict(r) for r in c.execute('SELECT p.archive_job_id AS id,j.state,i.inverse_job_id,reverse.state AS reverse_state FROM organization_archive_plans p JOIN organization_jobs j ON j.id=p.archive_job_id LEFT JOIN organization_inverses i ON i.original_job_id=j.id LEFT JOIN organization_jobs reverse ON reverse.id=i.inverse_job_id WHERE p.original_job_id=? ORDER BY j.created DESC LIMIT 20',(job_id,))]
             if superseded:inverse_of=(superseded['original_job'],)
-        return {'superseded':dict(superseded) if superseded else None,'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}
+        capability=None
+        if job['payload']['entries'][0]['operation']=='copy' and job['state']=='done':
+            try:self.archive.capability(job['payload']['source_root']);capability={'supported':True}
+            except (OSError,ValueError) as error:capability={'supported':False,'reason':str(error)}
+        return {'archive_capability':capability,'archive_of':archive[0] if archive else None,'source_archives':archives,'superseded':dict(superseded) if superseded else None,'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}

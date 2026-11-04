@@ -3,6 +3,7 @@ import hashlib
 import json
 import time
 import uuid
+from archive_policy import archive_roots
 
 
 class InventoryQueryChanged(ValueError):pass
@@ -43,7 +44,7 @@ class InventoryQuery:
         devices=self.inventory.devices()
         if criteria['device']!='all' and not any(device['id']==criteria['device'] for device in devices):raise ValueError('未知盘点位置')
         device_state=[(d['id'],d['identity'],d['root'],d['alias'],d['online']) for d in devices]
-        excluded=sorted(normalized(path) for path in self.inventory.excluded())
+        excluded=sorted(set(normalized(path) for path in self.inventory.excluded()+archive_roots(self.db)))
         now=time.time();snapshot_id=str(query.get('snapshot',''));created=now
         with self.db() as c:
             c.create_function('casefold',1,lambda value:str(value or '').casefold(),deterministic=True)

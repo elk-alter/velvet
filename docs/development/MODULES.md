@@ -61,3 +61,5 @@
 - organization_copy_undo：复制绑定撤销的固定审阅/专用批准/原子元数据事务，与既有队列、控制、租约和反向任务关系共用；不写物理媒体。
 
 - organization_keep：原位保留执行器；复用固定批准、控制、租约及稳定身份/资源适配，校验和关联现有文件，不写媒体目录。
+
+- organization_archive：已完成复制后的独立归档预览/批准、目标副本证明、设备能力和持久来源关系；复用MoveExecutor执行/恢复。archive_policy集中保留namespace和强制根排除，供片库、盘点、查询、播放和副本解绑使用。

@@ -10,10 +10,14 @@ from organization_executor import CopyCancelled,CopyPaused,file_identity,publish
 class MoveExecutor:
     def __init__(self,jobs,binder,checkpoint=lambda *args:None):
         self.jobs,self.binder,self.checkpoint=jobs,binder,checkpoint
+        self.validator=None
         with jobs.db() as c:
             c.execute('CREATE TABLE IF NOT EXISTS organization_inverses(original_job_id TEXT PRIMARY KEY,draft_id TEXT,inverse_job_id TEXT)')
 
-    def verify(self,path,entry,check=None):
+    def verify(self,path,entry,check=None,validate_target=True):
+        if entry['operation']=='archive' and validate_target:
+            if not self.validator:raise ValueError('归档校验器未配置')
+            self.validator(entry,check)
         path=Path(path)
         if no_links(path)!=path:raise ValueError('Move path changed')
         if self.jobs.device_identity(path)!=entry['source_device']:raise ValueError('Move device changed')
@@ -29,7 +33,7 @@ class MoveExecutor:
     def run(self,job_id,cancel=lambda:False):
         job=self.jobs.get(job_id)
         if job['state']=='done':return job
-        if digest(job['payload'])!=job['approval_digest'] or any(e['operation']!='move' for e in job['payload']['entries']):raise ValueError('Invalid move approval')
+        if digest(job['payload'])!=job['approval_digest'] or any(e['operation'] not in ('move','archive') for e in job['payload']['entries']):raise ValueError('Invalid move approval')
         self.jobs.claim(job_id);current=None
         def check():
             if cancel() or self.jobs.cancel_requested(job_id):raise CopyCancelled()
@@ -100,7 +104,7 @@ class MoveExecutor:
 
     def prepare_undo(self,job_id):
         job=self.jobs.get(job_id)
-        if any(entry['operation']!='move' for entry in job['payload']['entries']):raise ValueError('Only same-device moves have a reverse file plan')
+        if any(entry['operation'] not in ('move','archive') for entry in job['payload']['entries']):raise ValueError('Only same-device moves have a reverse file plan')
         if job['state'] in ('running','queued'):raise ValueError('Stop the move before preparing rollback')
         with self.jobs.db() as c:
             existing=c.execute('SELECT * FROM organization_inverses WHERE original_job_id=?',(job_id,)).fetchone()
@@ -115,7 +119,7 @@ class MoveExecutor:
             location=None
             for candidate in candidates:
                 if not candidate or not Path(candidate).exists():continue
-                try:self.verify(candidate,entry)
+                try:self.verify(candidate,entry,validate_target=False)
                 except (OSError,ValueError):continue
                 location=candidate;break
             if not location:raise ValueError('Cannot prove rollback ownership; review required')

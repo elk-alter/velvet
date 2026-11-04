@@ -57,3 +57,10 @@ GET /api/storage/query参数：device=all或登记位置ID；online=all/online/o
 ## 原位保留
 
 POST /api/storage/plan新增operation=copy/move/keep（默认copy）；keep无需target，不创建目标/不计算复制空间，预览source=destination。GET organization/preview返回operation供恢复规则选择。organization/prepare支持keep，但仅接受原位预览；copy/move不可借用keep预览，storage/revise也不能把keep改成重命名。approve仍需confirmed:true和对应摘要。keep任务通过原队列运行，已有默认副本保持，只有源原位是当前播放路径时补齐其验证/可用状态。关联资源沿用身份校验，事件kind=kept_bound，未写物理媒体。取消后保留已完成关联；不提供虚假的文件反向移动入口。
+
+
+## 复制后单独归档
+
+POST /api/organization/archive-preview：id为已完成copy任务，返回独立草稿id；不移动源、不创建物理归档目录。GET draft返回operation=archive、archive_of、每项源/归档路径及archive_guard保留副本证据。POST archive-approve：id为原copy、draft、digest、confirmed:true；幂等排队返回新任务id。普通approve不能替代该确认。job返回archive_of、source_archives（最近20项）、以及已完成copy的archive_capability（supported/reason）；不支持时界面禁用并说明。
+
+归档使用固定原设备namespace，不允许任意归档根输入。只支持策略确认的可写Windows NTFS/ReFS，实际本批NTFS测试。目标副本变化/外部同内容替换/绑定变化/源为默认等拒绝。控制沿用pause/cancel/resume，archive步骤按move持久化。undo-preview/undo-approve生成并批准恢复原路径的反向move；归档根继续排除。locations增加archived布尔，prefer拒绝归档位置；完整源与目标对账见ADR0005。

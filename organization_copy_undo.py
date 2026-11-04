@@ -8,6 +8,7 @@ from media_locations import fingerprint
 from organization_jobs import digest,no_links
 from organization_executor import CopyCancelled,CopyPaused,file_identity
 from resource_leases import ResourceBusy
+from archive_policy import is_archive_path
 
 
 class CopyUndo:
@@ -85,6 +86,7 @@ class CopyUndo:
                 replacement=None
                 if not companion and owner['preferred']:
                     for candidate in sorted(candidates,key=lambda r:r['path']!=entry['source']):
+                        if is_archive_path(candidate['path']):continue
                         try:verified=self.verify_file(candidate['path'],candidate['device_token'],entry['fingerprint'])
                         except (OSError,ValueError):continue
                         replacement={'row':candidate,'proof':verified};break

@@ -4,6 +4,7 @@ import time
 import uuid
 from pathlib import Path
 from storage_inventory import volume_identity
+from archive_policy import archive_roots,is_archive_path
 
 
 def fingerprint(raw,check=None):
@@ -91,7 +92,7 @@ class MediaLocations:
 
     def locations(self,video_id):
         asset=self.asset(video_id)
-        with self.db() as c:return [dict(r) for r in c.execute('SELECT * FROM media_locations WHERE asset_id=? ORDER BY preferred DESC,id',(asset['id'],))]
+        with self.db() as c:return [dict(r,archived=is_archive_path(r['path'])) for r in c.execute('SELECT * FROM media_locations WHERE asset_id=? ORDER BY preferred DESC,id',(asset['id'],))]
 
     def register_verified(self,source,stamp,device_token,video_id=None,metadata=None):
         """Register an already-hashed source without adding a premature library card."""
@@ -224,6 +225,7 @@ class MediaLocations:
         asset=self.asset(video_id)
         with self.db() as c:row=c.execute('SELECT * FROM media_locations WHERE id=? AND asset_id=?',(location_id,asset['id'])).fetchone()
         if not row or not row['verified']:raise ValueError('Choose a verified location')
+        if is_archive_path(row['path'],archive_roots(self.db)):raise ValueError('归档位置不能直接设为默认播放，请先按任务恢复')
         if self.device_identity(Path(row['path']))!=row['device_token']:raise ValueError('Location device changed')
         stamp=fingerprint(row['path'])
         if expected_identity:

@@ -22,3 +22,5 @@
 - [0003：移除与恢复后不复用数字视频ID](0003-monotonic-video-ids.md)
 
 - [0004：复制绑定撤销并保留文件](0004-copy-binding-undo.md)
+
+- [0005：受控可恢复源归档](0005-controlled-source-archive.md)
