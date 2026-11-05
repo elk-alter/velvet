@@ -103,7 +103,7 @@ class StorageTests(unittest.TestCase):
         if old['stable']:
             with patch('storage_inventory.volume_identity',return_value=('different-volume',True)):
                 with self.assertRaises(ValueError):inv.remap(device,str(new),old['identity'])
-        inv.remap(device,str(new),old['identity'])
+        inv.remap(device,str(new),old['identity'],manual_confirmed=not bool(old['stable']))
         self.assertTrue(inv.devices()[0]['online'])
         self.assertEqual(len(inv.files(device)),1)
         self.assertTrue(inv.plan(device,str(self.root/'Target'))['source_unchanged'])

@@ -806,6 +806,7 @@ class Handler(BaseHTTPRequestHandler):
     if path=='/api/storage/video':return self.send(STORAGE_FILES.locations(value('id'),value('offset',0),value('limit',20)))
     return self.send(STORAGE_FILES.locate(value('id'),value('location')))
    if path=='/api/storage':return self.send({'devices':INVENTORY.devices()})
+   if path=='/api/storage/device':return self.send({'device':INVENTORY.devices(parse_qs(urlparse(self.path).query).get('id',[''])[0])[0]})
    if path=='/api/storage/query':return self.send(INVENTORY_QUERY.query({key:values[0] for key,values in parse_qs(urlparse(self.path).query).items()}))
    if path=='/api/storage/files':
     query=parse_qs(urlparse(self.path).query);return self.send({'files':INVENTORY.files(query.get('id',[''])[0],query.get('offset',[0])[0],status=query.get('status',['all'])[0])})
@@ -942,10 +943,13 @@ class Handler(BaseHTTPRequestHandler):
     with LEASES.hold('location-choice'):ORGANIZATION.locations.prefer(a.get('id'),a.get('location'))
     return self.send({'ok':True})
    elif path=='/api/library/selection':return self.send(BROWSE.selection(a.get('snapshot',''),a.get('keys'),a.get('offset',0),a.get('limit',100)))
-   elif path=='/api/storage/register':return self.send({'ok':True,'id':INVENTORY.register(a.get('path'),a.get('alias'))})
+   elif path=='/api/storage/register':return self.send({'ok':True,'id':INVENTORY.register(a.get('path'),a.get('alias'),a.get('new_location',False))})
    elif path=='/api/storage/annotate':
     INVENTORY.annotate(a.get('id'),a.get('relative'),a.get('annotation'));return self.send({'ok':True})
-   elif path=='/api/storage/remap':return self.send({'ok':True,'device':INVENTORY.remap(a.get('id'),a.get('path'),a.get('identity'))})
+   elif path=='/api/storage/remap-preview':return self.send(INVENTORY.remap_preview(a.get('id'),a.get('path')))
+   elif path=='/api/storage/remap':
+    if a.get('confirmed') is not True or not isinstance(a.get('digest'),str) or not a['digest']:raise ValueError('请先审阅并确认重连范围')
+    return self.send({'ok':True,'device':INVENTORY.remap(a.get('id'),a.get('path'),a.get('identity'),a['digest'],a.get('manual_confirmed',False))})
    elif path=='/api/storage/scan':
     INVENTORY.device(a.get('id'))
     if type(a.get('hashing',False)) is not bool:raise ValueError('哈希开关无效')

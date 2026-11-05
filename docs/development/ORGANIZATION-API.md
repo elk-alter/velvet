@@ -127,3 +127,16 @@ POST /api/organization/skip：id、ordinal、digest、confirmed:true；确认不
 progress新增skipped计数，processed仍仅done；listing新增total/processed/skipped聚合，来自本页任务的步骤，不加载清单全文。全部done或skip且含skip时以cancelled结束，界面“已结束 · 含跳过”，绝不标全批done；此时resume返回400。其它错误仍failed/partial。再次处理跳过文件需新计划。
 
 执行器claim后重读决定；清理复制残片保留skip。旧checkpoint继续供对账/清理使用；详细安全边界见[ADR0011](../adr/0011-explicit-precommit-group-skip.md)。不支持跳过撤销任务或已进入不可安全省略阶段的文件，不把拒绝当作故障已解决。
+
+
+## 盘点位置重连与替换登记（第三十三批）
+
+GET /api/storage/device?id=...：只读取已登记ID，返回device，与设备列表的状态/快照摘要一致；未知400，沿用Host/NAS保护。
+
+POST /api/storage/remap-preview：id、path；Token保护。返回id/alias/old_root/root/previous_identity/identity/stable/directory_matches/manual_required/digest/snapshot_files。只核对目录元数据，不创建目录或搬文件；链接、归档、稳定卷/已记录目录身份不符、另一登记或盘点运行均400。
+
+POST /api/storage/remap：id、path、identity（原登记身份）、digest、confirmed:true；manual_required时另须manual_confirmed:true。确认事务重新核对当前登记、候选目录、证明和最新盘点；失效400，需重新预览。保留登记ID、快照与人工建议。此接口现在要求预览和精确确认，旧原生prompt调用已转到新页面；尚无稳定外部API承诺。
+
+POST /api/storage/register新增new_location布尔值，默认false；卷或目录已变化默认拒绝，true明确创建独立登记并保留旧记录。当前对象已有匹配登记则复用，避免重复创建。设备列表新增status（online/offline/identity_changed/directory_changed/permission_denied/linked/not_directory/unavailable）及directory_verified；online为可用状态，不等于完整内容已校验。
+
+storage_root_proofs是新增登记证据，不改变物理任务批准。已批准任务在挂载变化后的路径恢复仍未完成，不能拿此登记接口代替；详见[ADR0012](../adr/0012-recorded-directory-proof-and-reconnection.md)。

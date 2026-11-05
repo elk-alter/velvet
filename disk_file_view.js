@@ -1,6 +1,6 @@
 /* Physical-file reading and navigation stay separate from movie identity/editing. */
 window.DiskFileView=(()=>{
- const states={identity_unverified:['当前属性一致，设备身份尚未记录','这里只读取已有索引与当前属性；登记盘点位置后可核对稳定卷身份。'],current:['文件属性与快照一致','尚未重新校验完整内容。整理执行前仍会核对完整哈希。'],changed:['文件已变化','大小或修改时间与盘点不同，请重新盘点后制定计划。'],missing:['文件不在原位置','设备在线，但原路径已找不到文件。请重新盘点核对。'],offline:['离线快照','连接原设备后重新打开；不会将离线视为删除。'],device_changed:['设备身份不一致','当前挂载卷与登记卷不同，请连接原设备或使用重新映射流程。'],permission_denied:['没有读取权限','检查此目录和文件的系统权限后重试。'],linked_or_unsafe:['路径需要人工核对','发现链接或不安全路径；不会从这里执行文件操作。'],unavailable:['暂时无法读取文件属性','保留原快照，请检查设备与系统错误后重试。']};
+ const states={identity_unverified:['当前属性一致，设备身份尚未记录','这里只读取已有索引与当前属性；登记盘点位置后可核对稳定卷身份。'],current:['文件属性与快照一致','尚未重新校验完整内容。整理执行前仍会核对完整哈希。'],changed:['文件已变化','大小或修改时间与盘点不同，请重新盘点后制定计划。'],missing:['文件不在原位置','设备在线，但原路径已找不到文件。请重新盘点核对。'],offline:['离线快照','连接原设备后重新打开；不会将离线视为删除。'],directory_changed:['目录身份不一致','当前目录不是登记时的目录，请重连原目录或独立登记新位置，旧快照保留。'],device_changed:['设备身份不一致','当前挂载卷与登记卷不同，请连接原设备或使用重新映射流程。'],permission_denied:['没有读取权限','检查此目录和文件的系统权限后重试。'],linked_or_unsafe:['路径需要人工核对','发现链接或不安全路径；不会从这里执行文件操作。'],unavailable:['暂时无法读取文件属性','保留原快照，请检查设备与系统错误后重试。']};
  const date=seconds=>seconds?new Date(seconds*1000).toLocaleString():'未记录';
  const facts=items=>`<dl class="diskFileFacts">${items.map(([key,value])=>`<dt>${esc(key)}</dt><dd>${value}</dd>`).join('')}</dl>`;
  const text=value=>esc(value??'未记录');

@@ -139,3 +139,8 @@ NULL兼容修复将窗口中的missing/watched/position及聚合中的height/siz
 
 
 第三十二批不增加业务表/列或改变批准摘要。organization_steps.details.skip保存confirmed_at/group_ordinal，organization_step_events追加skipped事件；step.state仍保留原checkpoint。无skip的旧记录行为保持。processed仅done，skipped另计；有跳过且所有条目已处理时job.state使用cancelled，界面解释为“已结束 · 含跳过”，不是成功done。resume拒绝已处理完的范围。领取后重读决定，移动绑定排除跳过组；反向只涉及未跳过范围。复制清理支持verified暂存且保留skip。主库备份恢复已有JSON字段保真，物理对账保护不因跳过取消；决策和完整消费者见[ADR0011](../adr/0011-explicit-precommit-group-skip.md)。
+
+
+第三十三批新增storage_root_proofs(device_id TEXT PRIMARY KEY,identity TEXT,file_id TEXT,root TEXT,recorded REAL)。file_id是目录st_ino字符串，配合卷身份使用，有文件系统及删除重用边界；不替代文件SHA或稳定资产UUID。旧库只建空表，重复ensure不伪造历史证明，旧登记重连须人工核对；主库/完整SQLite备份自然包含新表。storage_devices六列保持，登记/重连事务同步证据，新位置保留旧ID/快照，不迁移或覆盖用户媒体。
+
+设备状态、盘点、规划、准备和物理详情复用目录身份规则；盘点途中卷/根改变令新快照interrupted，不替换最后完成/部分快照。重连digest含当前登记/证明/候选身份及最新盘点状态。没有改写已批准payload、media_locations或videos.path；已有任务的有效挂载路径恢复仍是未完P0，见[ADR0012](../adr/0012-recorded-directory-proof-and-reconnection.md)。

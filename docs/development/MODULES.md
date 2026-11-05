@@ -100,3 +100,6 @@
 
 
 - organization_jobs拥有跳过范围预览、事务确认、事件、计数与resume完成门槛；原批准清单/阶段不变。copy/move/keep领取后重读并执行未跳过范围，MoveExecutor反向省略跳过原位文件；CopyCleanup清理时保留决定。organization_service.listing聚合当前页任务步骤计数；app提供Token/确认路由。disk_manager/manager_routes提供独立可刷新的文件组审阅页、提交锁定、历史显示和迟到响应隔离。见ADR0011及ORGANIZATION-API，不能在其它消费者把skip当done。
+
+
+- storage_inventory拥有逐项设备状态、storage_root_proofs、verify_root、可审阅重连和替换对象新登记；设备与目录身份分层。scan/plan、organization_service.prepare和storage_file_details使用登记目录证据，disk_file_view展示目录变化。disk_manager/manager_routes提供重连页面和异步隔离，旧management.remapStorage只跳转，不再用原生prompt。重连目前不解析已批准任务的变化挂载路径，不能擅自改manifest或清reconcile；后续按ADR0012/ORGANIZATION-API延伸。

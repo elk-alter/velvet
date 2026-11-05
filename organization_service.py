@@ -57,6 +57,7 @@ class OrganizationService:
                 device_id=payload['entries'][index].get('device_id',row['device_id'])
                 if device_id in contexts:continue
                 device=self.inventory.device(device_id);source_root=no_links(device['root'])
+                self.inventory.verify_root(device)
                 if device_id not in frozen or str(source_root)!=frozen[device_id]['root'] or device['identity']!=frozen[device_id]['identity'] or self.jobs.device_identity(source_root)!=device['identity']:raise ValueError('源设备或根目录变化，请重新生成预览')
                 contexts[device_id]=source_root
             self.locations.migrate()

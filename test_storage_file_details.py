@@ -21,6 +21,13 @@ class StorageFileDetailsTests(unittest.TestCase):
         with self.app.db() as c:
             return c.execute('INSERT INTO videos(path,title,size,mtime,code,locked_fields) VALUES(?,?,?,?,?,?)',(str(self.clip),'Manual title',self.clip.stat().st_size,self.clip.stat().st_mtime,'DEMO-1','["title"]')).lastrowid
 
+    def test_identical_file_in_a_replacement_directory_is_not_a_current_snapshot(self):
+        import shutil
+        original=self.root/'Retained source';self.source.rename(original);self.source.mkdir()
+        shutil.copy2(original/self.clip.name,self.clip)
+        detail=self.detail()
+        self.assertEqual(detail['status'],'directory_changed');self.assertFalse(detail['current_content_verified'])
+
     def test_detail_keeps_historical_proof_separate_from_current_stat(self):
         before=(self.clip.read_bytes(),self.clip.stat().st_mtime_ns)
         detail=self.detail()

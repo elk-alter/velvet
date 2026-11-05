@@ -38,3 +38,5 @@
 - [0010：单作品分页读取与明确的编辑范围](0010-bounded-work-details-and-edit-scope.md)
 
 - [0011：明确跳过尚未提交的文件组](0011-explicit-precommit-group-skip.md)
+
+- [0012：登记目录身份与可审阅重连](0012-recorded-directory-proof-and-reconnection.md)

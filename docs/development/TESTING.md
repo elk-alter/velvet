@@ -97,3 +97,10 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 `python scripts/preview_alpha6_organization.py --report work/organization-ui.json`只在新临时目录建立两段合成字节视频及一份字幕、哨兵，批准并暂停一个copy任务，不开自动刮削。用输出URL打开任务，审阅Skip Example文件组，返回应不执行；确认后刷新仍2项跳过；继续应只生成Continue Example目标，已完成1/跳过2及历史一致。它不是播放编码或真实媒体测试。安全runtime/stop可能先waiting:true，应等工作线程停止后同端点再试；成功退出复核源/哨兵SHA和mtime不变。descriptor含临时本机路径，仅留本地。
 
 test_disk_skip执行真实确认处理器，验证请求中同时锁按钮/复选框、重复提交、失败解锁、旧响应不跳转新页面；Node必须有显式完成标记，不把挂起Promise的exit0计为通过。
+
+
+### 登记目录身份与重连
+
+`python -m unittest test_storage_reconnect test_storage_reconnect_http test_storage_reconnect_client test_storage_inventory test_storage_file_details test_organization_service -q`覆盖同目录改名、同卷其它目录/等属性替换拒绝、独立根/模拟新卷、旧表重复升级/不编造证明、扫描和摘要变化、盘点途中换卷、单设备权限失败、规划/准备及详情目录保护。HTTP覆盖ID、Token/NAS、确认/摘要和独立人工确认。Node用真实表单处理器验证单次提交、失败/迟到隔离和登记期间继续输入保留；不等于浏览器注入网络延迟。
+
+`python scripts/preview_alpha6_reconnect.py --report work/reconnect-ui.json`建立独立临时合成位置：一个目录登记后改名、一个删除应用证明的旧登记、一个路径替换后保留原目录、一个等内容错误目录及哨兵。使用输出设备页及descriptor的候选路径；验证错误目录拒绝、确认重连/快照/详情、旧登记双确认/390px、替换目录默认拒绝及明确新登记保留旧快照。所有源SHA/mtime退出复核，runtime/stop安全结束。它模拟目录位置变化，不是实际拔盘、盘符变化、exFAT或已批准任务的路径恢复测试。

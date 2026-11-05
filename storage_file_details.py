@@ -4,7 +4,7 @@ from pathlib import Path
 from inventory_query import InventoryQueryChanged
 from organization_jobs import no_links
 from resource_leases import path_resource
-from storage_inventory import volume_identity
+from storage_inventory import volume_identity,DeviceChangedError,DirectoryChangedError
 
 
 class StorageFileDetails:
@@ -39,9 +39,11 @@ class StorageFileDetails:
                 if Path(device['root']).is_dir():
                     if volume_identity(Path(device['root']))[0]!=device['identity']:status='device_changed'
                     else:
-                        no_links(path);stat=path.stat()
+                        self.inventory.verify_root(device);no_links(path);stat=path.stat();self.inventory.verify_root(device)
                         status='current' if (stat.st_size,stat.st_mtime_ns)==(row['size'],row['mtime_ns']) else 'changed'
                         current={'size':stat.st_size,'mtime_ns':stat.st_mtime_ns}
+            except DirectoryChangedError:status='directory_changed'
+            except DeviceChangedError:status='device_changed'
             except PermissionError:status='permission_denied'
             except FileNotFoundError:status='missing'
             except ValueError:status='linked_or_unsafe'
