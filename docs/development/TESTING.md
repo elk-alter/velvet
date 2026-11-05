@@ -79,3 +79,12 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 
 
 `python -m unittest test_detail_metadata test_detail_navigation test_review_navigation test_movie_detail_view test_server_browse -q`还覆盖资料保存期间继续输入、单次提交、失败保留、另一详情/同ID重开/待定导航的迟到隔离，关系改变的400分页重试、人工+自动标签和演员链接即时更新、历史演员页标题与分页。保存回读使用原详情及既有导航代数；不是另一个业务任务代数。浏览器用上述可播放样本验证实际保存后的链接/锁/分页、独立质量草稿、演员历史和播放器在桌面/390px内容区内可见；模型网络延迟不能写成浏览器实测。
+
+
+### 未预热的大库浏览器样本
+
+`python scripts/preview_alpha6_browse.py --count 50000 --port 9873 --report work/browse-ui.json`（另以10000运行）生成独立临时虚构索引，断言未建作品关系/投影；仅自有本机服务，无后台刮削或媒体读取。使用终端输出的完整URL，它显式给出全部视频/第一页/48条，避免浏览器旧view污染；descriptor含私有临时数据路径，只保留本地。脚本记录首页请求的User-Agent供环境核对。
+
+浏览器只读body[data-library-ready-ms]，它从导航起计时，在卡片绘制后两次requestAnimationFrame设置；等待该属性再记录卡片数量/总数，reload后另记暖首屏。不是图片解码/LCP或20次暖HTTP的替代；不要把误恢复旧筛选的空页当成大库首屏。通过带Token的runtime/stop退出，关闭测试页。生产进程保持原样。
+
+`python -m unittest test_library_query_core test_library_query test_movie_details test_server_browse test_presentation_identity -q`包含质量空记录两种等价规则状态、无画质/NULL/负值、人工水印/接受/指纹过期、目标变化，以及过滤条件下全局统计的偏好/缺失/分段语义。卡片TEMP聚合仅当前连接，不改范围缓存或持久schema。

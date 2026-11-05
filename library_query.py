@@ -101,6 +101,7 @@ class LibraryQuery:
                 c.execute('INSERT OR IGNORE INTO browse_dirty SELECT id FROM videos')
                 c.execute('UPDATE browse_state SET rebuild=0 WHERE id=1')
             setting=c.execute("SELECT value FROM review_settings WHERE key='target'").fetchone();target=int(setting[0]) if setting else 1080
+            unreviewed={}
             # Batches bound Python memory and avoid holding full metadata graphs.
             while True:
                 batch=c.execute("SELECT v.*,COALESCE(a.relation_path,'') AS relation_path,l.manual AS relation_manual FROM browse_dirty q CROSS JOIN videos v ON v.id=q.video_id JOIN media_links l ON l.video_id=v.id LEFT JOIN media_assets a ON a.video_id=v.id ORDER BY q.video_id LIMIT 500").fetchall()
@@ -112,12 +113,21 @@ class LibraryQuery:
                     row=dict(raw);raw_path=Path(row['path']);present=self.project(row,raw_path);path=canonical(raw_path,short_prefixes);owner=self.libraries.owner(path,policies)
                     policy=next((p for p in policies if p['path']==owner),None)
                     visible=not any(path.is_relative_to(canonical(root)) for root in excluded) and (not policy or self.libraries.included(path,policy,row['size'] or 0))
-                    review=FileReview.describe(row,records.get(row['id'],{}),target)
-                    # Evidence/notes remain on the per-file detail endpoint.
-                    summary={key:review[key] for key in ('needs_update','decision','status','result','auto_status')}
-                    summary['issues']=[{'code':item['code'],'source':item['source']} for item in review['issues']]
-                    summary['pending_automatic']=any(item['review']=='pending' for item in review['automatic_findings'])
-                    values.append((row['id'],present['title'],present['vr'],present['censorship'],present['resolution_label'],self.folder(row,rules,short_prefixes,folder_cache),visible,json.dumps(list(dict.fromkeys(tokens(row['tags'])+tokens(row['auto_tags'])))),json.dumps(tokens(row['actors'])),json.dumps(summary)))
+                    record=records.get(row['id']);below_target=bool(target and 0<(row['height'] or 0)<target)
+                    if record is None and below_target in unreviewed:review_json=unreviewed[below_target]
+                    else:
+                        review=FileReview.describe(row,record or {},target)
+                        # Evidence/notes remain on the per-file detail endpoint.
+                        summary={key:review[key] for key in ('needs_update','decision','status','result','auto_status')}
+                        summary['issues']=[{'code':item['code'],'source':item['source']} for item in review['issues']]
+                        summary['pending_automatic']=any(item['review']=='pending' for item in review['automatic_findings'])
+                        review_json=json.dumps(summary)
+                        # With no review record, only the target-height rule varies.
+                        # Keep this cache local to the current target/transaction.
+                        if record is None:unreviewed[below_target]=review_json
+                    tag_json=json.dumps(list(dict.fromkeys(tokens(row['tags'])+tokens(row['auto_tags'])))) if row['tags'] or row['auto_tags'] else '[]'
+                    actor_json=json.dumps(tokens(row['actors'])) if row['actors'] else '[]'
+                    values.append((row['id'],present['title'],present['vr'],present['censorship'],present['resolution_label'],self.folder(row,rules,short_prefixes,folder_cache),visible,tag_json,actor_json,review_json))
                 c.executemany('INSERT OR REPLACE INTO browse_projection VALUES(?,?,?,?,?,?,?,?,?,?)',values)
                 c.execute('DELETE FROM browse_dirty WHERE video_id IN ('+slots+')',ids)
             c.execute('DELETE FROM browse_dirty WHERE video_id NOT IN (SELECT id FROM videos)')
@@ -274,19 +284,20 @@ class LibraryQuery:
                 grouped=criteria['collections']=='on' and not criteria['collection']
                 key="CASE WHEN collection_root!='' AND collection_count>1 THEN 'collection:'||collection_id(collection_root) ELSE 'movie:'||movie_key END" if grouped else "'movie:'||movie_key"
                 c.execute(selected+' INSERT INTO browse_query_members SELECT ?,'+key+',movie_key,version_key,resume_id,display_title,part_count,total_size FROM matched',(ident,))
-                cards=selected+", keyed AS (SELECT *,"+key+" AS card_key FROM matched), grouped AS (SELECT card_key,COUNT(*) AS hit_count,SUM(total_size) AS card_size,MAX(movie_mtime) AS card_mtime,MAX(rating) AS card_rating,MAX(total_duration) AS card_duration,MIN(resume_id) AS cover_id,MIN(display_title) AS card_title,MIN(collection_root) AS root,MAX(collection_count) AS collection_total FROM keyed GROUP BY card_key)"
+                cards=selected+", keyed AS (SELECT *,"+key+" AS card_key FROM matched) SELECT card_key,COUNT(*) AS hit_count,SUM(total_size) AS card_size,MAX(movie_mtime) AS card_mtime,MAX(rating) AS card_rating,MAX(total_duration) AS card_duration,MIN(resume_id) AS cover_id,MIN(display_title) AS card_title,MIN(collection_root) AS root,MAX(collection_count) AS collection_total,MIN(movie_key) AS movie_key,MIN(version_key) AS version_key FROM keyed GROUP BY card_key"
+                c.execute('CREATE TEMP TABLE browse_cards AS '+cards)
                 # SQL JSON contains only card fields; full plot/locks/evidence remain lazy.
                 # Cache ordered identities, then hydrate only the requested page.
-                payload="CASE WHEN g.card_key LIKE 'collection:%' THEN json_object('kind','collection','key',g.card_key,'id',collection_id(g.root),'title',basename(g.root),'hit_count',g.hit_count,'total_count',g.collection_total,'size',g.card_size,'cover_id',g.cover_id) ELSE json_object('kind','movie','key',g.card_key,'id',k.resume_id,'movie_key',k.movie_key,'version_key',k.version_key) END"
+                payload="CASE WHEN g.card_key LIKE 'collection:%' THEN json_object('kind','collection','key',g.card_key,'id',collection_id(g.root),'title',basename(g.root),'hit_count',g.hit_count,'total_count',g.collection_total,'size',g.card_size,'cover_id',g.cover_id) ELSE json_object('kind','movie','key',g.card_key,'id',g.cover_id,'movie_key',g.movie_key,'version_key',g.version_key) END"
                 order={'new':'g.card_mtime DESC','title':"fold(CASE WHEN g.card_key LIKE 'collection:%' THEN basename(g.root) ELSE g.card_title END)",'duration':'g.card_duration DESC','rating':'g.card_rating DESC','size':'g.card_size DESC'}[criteria['sort']]+',g.card_key'
-                totals=dict(c.execute(cards+' SELECT COUNT(*) AS total,COALESCE(SUM(card_size),0) AS bytes FROM grouped').fetchone())
+                totals=dict(c.execute('SELECT COUNT(*) AS total,COALESCE(SUM(card_size),0) AS bytes FROM browse_cards').fetchone())
                 totals['movies']=c.execute(selected+' SELECT COUNT(*) FROM matched').fetchone()[0]
-                totals['summary']=dict(c.execute('WITH ranked AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY movie_key ORDER BY all_missing,preference_rank,preferred DESC,min_height DESC,total_size DESC,version_key) AS rank FROM browse_version_rows) SELECT COUNT(*) AS movies,COALESCE(SUM(movie_favorite),0) AS favorites,COALESCE(SUM(total_size),0) AS bytes,COALESCE(SUM(NOT all_watched AND NOT all_missing),0) AS unwatched FROM ranked WHERE rank=1').fetchone())
+                totals['summary']=dict(c.execute('WITH ranked AS (SELECT movie_favorite,total_size,all_watched,all_missing,ROW_NUMBER() OVER(PARTITION BY movie_key ORDER BY all_missing,preference_rank,preferred DESC,min_height DESC,total_size DESC,version_key) AS rank FROM browse_version_rows) SELECT COUNT(*) AS movies,COALESCE(SUM(movie_favorite),0) AS favorites,COALESCE(SUM(total_size),0) AS bytes,COALESCE(SUM(NOT all_watched AND NOT all_missing),0) AS unwatched FROM ranked WHERE rank=1').fetchone())
                 if criteria['collection']:
                     collection=c.execute('SELECT MIN(collection_root) AS root,MAX(collection_count) AS total FROM browse_version_rows WHERE collection_id(collection_root)=?',(criteria['collection'],)).fetchone()
                     totals['collection_info']={'id':criteria['collection'],'title':path_text(collection['root']).split('/')[-1],'total_count':collection['total'] or 0} if collection['root'] else None
                 c.execute('INSERT INTO browse_queries VALUES(?,?,?,?,?)',(ident,now,revision,json.dumps(criteria),json.dumps(totals)))
-                c.execute(cards+' INSERT INTO browse_results SELECT ?,ROW_NUMBER() OVER(ORDER BY '+order+')-1,'+payload+' FROM grouped g LEFT JOIN keyed k ON k.card_key=g.card_key AND k.resume_id=g.cover_id',(ident,))
+                c.execute('INSERT INTO browse_results SELECT ?,ROW_NUMBER() OVER(ORDER BY '+order+')-1,'+payload+' FROM browse_cards g',(ident,))
                 stale=[r[0] for r in c.execute('SELECT id FROM browse_queries WHERE created<? OR id NOT IN (SELECT id FROM browse_queries ORDER BY created DESC,id DESC LIMIT 16)',(now-1800,))]
                 for key in stale:
                     c.execute('DELETE FROM browse_results WHERE query_id=?',(key,));c.execute('DELETE FROM browse_query_members WHERE query_id=?',(key,));c.execute('DELETE FROM browse_queries WHERE id=?',(key,))

@@ -94,3 +94,6 @@
 - file_review的requestDirectoryExclusion持有专用确认dialog，确认内容含影响范围与丢弃草稿说明；应用期间保持modal并禁止取消/重复提交。confirmDirectoryExclusion按原详情ID/代数审计生命周期，失败或陈旧预览不清理，新详情不受迟到结果影响；仍使用既有后端摘要校验。
 - index播放启动先配置元数据回调再主动play，使用当前播放请求代数；ended在进度和refresh前后核对原详情/文件/DOM源/请求代数/ended状态，分页下一段来自后端next。它不是文件身份或持久任务代数，不新增全局导航包装。
 - scripts/preview_alpha6_playback.py仅开发合成验收，生成VP8 WebM和哨兵，独立数据/端口、无扫描/来源线程；退出校验媒体SHA及mtime。不进入运行时和Docker资产表。
+
+
+- library_query第三十一批：无file_reviews记录时，当前refresh事务的两种目标画质摘要复用权威FileReview.describe结果；非空记录逐项处理，不缓存其人工/自动证据。固定匹配先生成当前连接TEMP browse_cards，统计与排序复用一次聚合；原持久范围、上限、接口及schema3保持。脚本preview_alpha6_browse为不预建关系/投影的独立浏览器性能样本，不是运行初始化入口。
