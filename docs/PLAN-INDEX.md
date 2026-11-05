@@ -27,6 +27,6 @@ alpha.5：A5-01–32可靠性/目录政策；E-ORG的F01–F05及F09首批。F06
 
 开发候选证据：[alpha.5进度](ALPHA5-PROGRESS.md) · [验收](ALPHA5-VALIDATION.md) · [运行指南](ALPHA5-OPERATIONS.md) · [性能](ALPHA5-PERFORMANCE.md)。
 
-alpha.6开发候选入口：[操作流程](ALPHA6-OPERATIONS.md) · [整理接口](development/ORGANIZATION-API.md) · [实现与验收缺口](ALPHA6-PROGRESS.md)。
+alpha.6基础发行入口：[操作流程](ALPHA6-OPERATIONS.md) · [整理接口](development/ORGANIZATION-API.md) · [实现与验收缺口](ALPHA6-PROGRESS.md)。
 
-alpha.6升级与受控回滚的可复现证据：[A6-29验收](ALPHA6-UPGRADE-VALIDATION.md)。其它P0仍按完整需求/台账跟踪。
+alpha.6升级与受控回滚的可复现证据：[A6-29验收](ALPHA6-UPGRADE-VALIDATION.md)。首发与后续范围分别按需求首发栏及台账跟踪。
