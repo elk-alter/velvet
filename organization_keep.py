@@ -20,14 +20,14 @@ class KeepExecutor:
         job=self.jobs.get(job_id)
         if job['state']=='done':return job
         if digest(job['payload'])!=job['approval_digest'] or any(e['operation']!='keep' for e in job['payload']['entries']):raise ValueError('Invalid keep approval')
-        self.jobs.claim(job_id);current=None
+        self.jobs.claim(job_id);job=self.jobs.get(job_id);current=None
         def check():
             if cancel() or self.jobs.cancel_requested(job_id):raise CopyCancelled()
             if self.jobs.pause_requested(job_id):raise CopyPaused()
         try:
             for ordinal,entry in enumerate(job['payload']['entries']):
                 check();current=ordinal;step=self.jobs.get(job_id)['steps'][ordinal]
-                if step['state']=='done':continue
+                if step['state']=='done' or step['details'].get('skip'):continue
                 self.verify(entry,check)
                 if step['state'] in ('pending','needs_binding'):
                     self.jobs.transition(job_id,ordinal,step['state'],'binding',{'files_unchanged':True})
@@ -37,7 +37,7 @@ class KeepExecutor:
                 if not binding:raise ValueError('原位关联未完成')
                 self.verify(entry,check);self.checkpoint('bound',job_id,ordinal)
                 self.jobs.transition(job_id,ordinal,'binding','done',{'files_unchanged':True,'binding_id':binding})
-            self.jobs.finish(job_id,'done')
+            self.jobs.finish(job_id,'cancelled' if any(s['details'].get('skip') for s in job['steps']) else 'done')
         except CopyPaused:self.jobs.finish(job_id,'waiting')
         except CopyCancelled:self.jobs.finish(job_id,'cancelled')
         except Exception as error:

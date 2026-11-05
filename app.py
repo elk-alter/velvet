@@ -918,6 +918,10 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/organization/control':
     job=ORGANIZATION.control(a.get('id'),a.get('action'));ORGANIZATION.start()
     return self.send({'ok':True,'state':job['state']})
+   elif path=='/api/organization/skip-preview':return self.send(ORGANIZATION.jobs.skip_preview(a.get('id'),a.get('ordinal')))
+   elif path=='/api/organization/skip':
+    if a.get('confirmed') is not True:raise ValueError('请核对并确认本次跳过范围')
+    return self.send({'ok':True,**ORGANIZATION.jobs.skip(a.get('id'),a.get('ordinal'),a.get('digest'))})
    elif path=='/api/organization/archive-preview':
     return self.send({'ok':True,'id':ORGANIZATION.archive.prepare(a.get('id'))['id']})
    elif path=='/api/organization/archive-approve':

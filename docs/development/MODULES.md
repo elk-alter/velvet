@@ -97,3 +97,6 @@
 
 
 - library_query第三十一批：无file_reviews记录时，当前refresh事务的两种目标画质摘要复用权威FileReview.describe结果；非空记录逐项处理，不缓存其人工/自动证据。固定匹配先生成当前连接TEMP browse_cards，统计与排序复用一次聚合；原持久范围、上限、接口及schema3保持。脚本preview_alpha6_browse为不预建关系/投影的独立浏览器性能样本，不是运行初始化入口。
+
+
+- organization_jobs拥有跳过范围预览、事务确认、事件、计数与resume完成门槛；原批准清单/阶段不变。copy/move/keep领取后重读并执行未跳过范围，MoveExecutor反向省略跳过原位文件；CopyCleanup清理时保留决定。organization_service.listing聚合当前页任务步骤计数；app提供Token/确认路由。disk_manager/manager_routes提供独立可刷新的文件组审阅页、提交锁定、历史显示和迟到响应隔离。见ADR0011及ORGANIZATION-API，不能在其它消费者把skip当done。

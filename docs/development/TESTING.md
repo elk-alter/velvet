@@ -88,3 +88,12 @@ FAT32/只读卷/空间容量为模拟；实际DACL不等于所有网络ACL通过
 浏览器只读body[data-library-ready-ms]，它从导航起计时，在卡片绘制后两次requestAnimationFrame设置；等待该属性再记录卡片数量/总数，reload后另记暖首屏。不是图片解码/LCP或20次暖HTTP的替代；不要把误恢复旧筛选的空页当成大库首屏。通过带Token的runtime/stop退出，关闭测试页。生产进程保持原样。
 
 `python -m unittest test_library_query_core test_library_query test_movie_details test_server_browse test_presentation_identity -q`包含质量空记录两种等价规则状态、无画质/NULL/负值、人工水印/接受/指纹过期、目标变化，以及过滤条件下全局统计的偏好/缺失/分段语义。卡片TEMP聚合仅当前连接，不改范围缓存或持久schema。
+
+
+### 文件组跳过
+
+`python -m unittest test_organization_skip test_organization_cleanup test_organization_http test_restore_reconciliation test_disk_skip -q`验证成组/摘要/停止状态、commit/bind/move-stage拒绝、copy/move/keep其余范围、重启和claim竞态、暂停/继续、复制及verified暂存清理保留决定、复制解绑/移动反向和主库备份恢复。跳过不修改批准清单或伪造done。
+
+`python scripts/preview_alpha6_organization.py --report work/organization-ui.json`只在新临时目录建立两段合成字节视频及一份字幕、哨兵，批准并暂停一个copy任务，不开自动刮削。用输出URL打开任务，审阅Skip Example文件组，返回应不执行；确认后刷新仍2项跳过；继续应只生成Continue Example目标，已完成1/跳过2及历史一致。它不是播放编码或真实媒体测试。安全runtime/stop可能先waiting:true，应等工作线程停止后同端点再试；成功退出复核源/哨兵SHA和mtime不变。descriptor含临时本机路径，仅留本地。
+
+test_disk_skip执行真实确认处理器，验证请求中同时锁按钮/复选框、重复提交、失败解锁、旧响应不跳转新页面；Node必须有显式完成标记，不把挂起Promise的exit0计为通过。

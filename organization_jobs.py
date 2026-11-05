@@ -219,6 +219,48 @@ class OrganizationJobs:
             c.execute('INSERT INTO organization_control(job_id,cancel_requested) VALUES(?,1) ON CONFLICT(job_id) DO UPDATE SET cancel_requested=1',(job_id,))
             c.execute('DELETE FROM resource_waiters WHERE owner=?',('organize:'+job_id,))
 
+    def _skip_preview(self,c,job_id,ordinal):
+        job=c.execute('SELECT * FROM organization_jobs WHERE id=?',(job_id,)).fetchone()
+        if not job:raise ValueError('整理任务不存在')
+        paused=c.execute('SELECT pause_requested FROM organization_control WHERE job_id=?',(job_id,)).fetchone()
+        if job['state'] in ('queued','running','done') or job['state']=='waiting' and not (paused and paused[0]):raise ValueError('请先暂停任务并等待停止，再审阅跳过范围')
+        if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('任务维护中，请稍后重试')
+        if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? OR inverse_job_id=?',(job_id,job_id)).fetchone():raise ValueError('已有撤销计划，请先处理该计划，不能跳过其中条目')
+        payload=json.loads(job['payload']);entries=payload['entries']
+        if digest(payload)!=job['approval_digest']:raise ValueError('批准清单已变化，保留现场核对')
+        if type(ordinal) is not int or not 0<=ordinal<len(entries):raise ValueError('请选择当前任务中的文件')
+        entry=entries[ordinal]
+        if entry['operation'] not in ('copy','move','keep'):raise ValueError('归档或撤销任务须完整处理，不能跳过')
+        owner=entry.get('parent_asset_id') if entry.get('role')=='companion' else entry.get('asset_id')
+        indices=[i for i,e in enumerate(entries) if i==ordinal or owner and (e.get('parent_asset_id')==owner or e.get('asset_id')==owner)]
+        steps=[dict(r) for r in c.execute('SELECT * FROM organization_steps WHERE job_id=? ORDER BY ordinal',(job_id,))]
+        for step in steps:step['details']=json.loads(step['details'])
+        if [s['ordinal'] for s in steps]!=list(range(len(entries))):raise ValueError('步骤记录不完整，请保留现场核对')
+        if any(steps[i]['details'].get('skip') for i in indices):raise ValueError('此文件组已跳过；需要重新整理时请制定新计划')
+        if any(steps[i]['state'] not in ({'pending','copying','verified'} if entries[i]['operation']=='copy' else {'pending'}) for i in indices):raise ValueError('此文件组已有提交、绑定或移动暂存，请继续核对或预览撤销，不能跳过')
+        frozen={'job':job_id,'approval':job['approval_digest'],'state':job['state'],'updated':job['updated'],'members':[{'ordinal':i,'entry':entries[i],'step':steps[i]} for i in indices]}
+        return {'id':job_id,'ordinal':ordinal,'digest':digest(frozen),'bytes':sum(entries[i]['fingerprint']['size'] for i in indices),'items':[{'ordinal':i,'source':entries[i]['source'],'destination':entries[i]['destination'],'role':entries[i].get('role','media'),'state':steps[i]['state']} for i in indices]},steps
+
+    def skip_preview(self,job_id,ordinal):
+        with self.db() as c:return self._skip_preview(c,job_id,ordinal)[0]
+
+    def skip(self,job_id,ordinal,expected_digest):
+        with self.db() as c:
+            c.execute('BEGIN IMMEDIATE');preview,steps=self._skip_preview(c,job_id,ordinal)
+            if preview['digest']!=expected_digest:raise ValueError('跳过范围已变化，请重新审阅')
+            now=time.time()
+            for item in preview['items']:
+                step=steps[item['ordinal']];step['details']['skip']={'confirmed_at':now,'group_ordinal':ordinal}
+                c.execute('UPDATE organization_steps SET details=?,updated=? WHERE job_id=? AND ordinal=?',(json.dumps(step['details']),now,job_id,item['ordinal']))
+                c.execute("INSERT INTO organization_step_events(job_id,ordinal,state,created) VALUES(?,?,'skipped',?)",(job_id,item['ordinal'],now))
+            settled=all(s['state']=='done' or s['details'].get('skip') for s in steps)
+            state='cancelled' if settled else 'partial'
+            c.execute('UPDATE organization_jobs SET state=?,updated=? WHERE id=?',(state,now,job_id))
+            c.execute('DELETE FROM resource_waiters WHERE owner=?',('organize:'+job_id,))
+            self.refresh_reconciliation(c)
+        self.observe_progress(job_id,state,reason='explicit_skip')
+        return {'skipped':len(preview['items']),'state':state}
+
     def cancel_requested(self,job_id):
         with self.db() as c:row=c.execute('SELECT cancel_requested FROM organization_control WHERE job_id=?',(job_id,)).fetchone()
         return bool(row and row[0])
@@ -243,7 +285,7 @@ class OrganizationJobs:
                 copied+=size if full else min(size,max(0,step['details'].get('bytes',0))) if state=='copying' else 0
             if full:verified+=size
             if state in ('committed','binding','needs_binding','done'):committed+=size
-        return {'total':len(job['steps']),'processed':counts.get('done',0),'bytes_total':sum(e['fingerprint']['size'] for e in job['payload']['entries']),
+        return {'total':len(job['steps']),'processed':counts.get('done',0),'skipped':sum(bool(s['details'].get('skip')) for s in job['steps']),'bytes_total':sum(e['fingerprint']['size'] for e in job['payload']['entries']),
                 'bytes_processed':copied,'bytes_verified':verified,'bytes_committed':committed,'phases':counts}
 
     def observe_progress(self,job_id,state='running',phase=None,reason=None):
@@ -257,6 +299,8 @@ class OrganizationJobs:
     def resume(self,job_id):
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
+            steps=c.execute('SELECT state,details FROM organization_steps WHERE job_id=?',(job_id,)).fetchall()
+            if steps and all(s['state']=='done' or json.loads(s['details']).get('skip') for s in steps):raise ValueError('全部条目已处理或跳过；跳过文件需制定新计划')
             if c.execute('SELECT 1 FROM organization_superseded WHERE job_id=?',(job_id,)).fetchone():raise ValueError('撤销计划已重新审阅，请使用新任务')
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? AND inverse_job_id IS NOT NULL',(job_id,)).fetchone():raise ValueError('Rollback approved; original execution cannot resume')
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')

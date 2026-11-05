@@ -158,6 +158,7 @@ class CopyExecutor:
         if job['state']=='done':return job
         if digest(job['payload'])!=job['approval_digest']:raise ValueError('Approved manifest changed')
         self.jobs.claim(job_id)
+        job=self.jobs.get(job_id)
         external_cancel=cancel
         def cancel():
             if external_cancel() or self.jobs.cancel_requested(job_id):return True
@@ -165,7 +166,7 @@ class CopyExecutor:
             return False
         cancelled=paused=False
         for step in job['steps']:
-            if step['state']=='done':continue
+            if step['state']=='done' or step['details'].get('skip'):continue
             try:
                 if cancel():cancelled=True;break
                 self.execute_step(job_id,step,job['payload']['entries'][step['ordinal']],cancel)
@@ -175,7 +176,8 @@ class CopyExecutor:
                 current=self.jobs.get(job_id)['steps'][step['ordinal']]
                 details=dict(current['details'],error=type(error).__name__,**({'preflight':error.codes} if isinstance(error,PreflightError) else {}))
                 self.save_details(job_id,step['ordinal'],current['state'],details)
-        states=[step['state'] for step in self.jobs.get(job_id)['steps']]
-        outcome='done' if all(state=='done' for state in states) else 'cancelled' if cancelled else 'waiting' if paused else 'partial' if any(state in ('committed','binding','needs_binding','done') for state in states) else 'failed'
+        steps=self.jobs.get(job_id)['steps'];states=[step['state'] for step in steps]
+        settled=all(step['state']=='done' or step['details'].get('skip') for step in steps)
+        outcome='done' if all(state=='done' for state in states) else 'cancelled' if cancelled or settled else 'waiting' if paused else 'partial' if any(state in ('committed','binding','needs_binding','done') for state in states) else 'failed'
         self.jobs.finish(job_id,outcome)
         return self.jobs.get(job_id)

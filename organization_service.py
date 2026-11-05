@@ -252,7 +252,7 @@ class OrganizationService:
         offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
         with self.db() as c:
             total=c.execute('SELECT COUNT(*) FROM organization_jobs').fetchone()[0]
-            rows=[dict(r) for r in c.execute('SELECT id,state,created,updated FROM organization_jobs ORDER BY created DESC,id DESC LIMIT ? OFFSET ?',(limit,offset))]
+            rows=[dict(r) for r in c.execute("WITH page AS (SELECT id,state,created,updated FROM organization_jobs ORDER BY created DESC,id DESC LIMIT ? OFFSET ?) SELECT p.*,COUNT(s.ordinal) AS total,COALESCE(SUM(s.state='done'),0) AS processed,COALESCE(SUM(json_type(s.details,'$.skip')='object'),0) AS skipped FROM page p LEFT JOIN organization_steps s ON s.job_id=p.id GROUP BY p.id ORDER BY p.created DESC,p.id DESC",(limit,offset))]
         return {'items':rows,'total':total,'offset':offset,'limit':limit}
 
     def detail(self,job_id,offset=0,limit=50):

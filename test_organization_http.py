@@ -51,6 +51,25 @@ class OrganizationHTTPTests(unittest.TestCase):
             time.sleep(.03)
         self.fail('Synthetic organization job did not finish')
 
+    def test_skip_group_requires_token_confirmation_and_current_digest(self):
+        draft=self.draft();job=self.app.ORGANIZATION.approve(draft['id'],draft['digest'])
+        self.app.ORGANIZATION.control(job,'pause')
+        request={'id':job,'ordinal':0}
+        self.assertEqual(self.request('/api/organization/skip-preview',request,token=False)[0],403)
+        status,preview=self.request('/api/organization/skip-preview',request);self.assertEqual(status,200)
+        self.assertEqual(len(preview['items']),2)
+        request.update(digest=preview['digest'],confirmed=False)
+        self.assertEqual(self.request('/api/organization/skip',request)[0],400)
+        request.update(confirmed=True)
+        self.assertEqual(self.request('/api/organization/skip',request,token=False)[0],403)
+        self.assertEqual(self.request('/api/organization/skip',dict(request,digest='stale'))[0],400)
+        status,result=self.request('/api/organization/skip',request)
+        self.assertEqual((status,result['skipped'],result['state']),(200,2,'cancelled'))
+        _,current=self.request('/api/organization/job?id='+job)
+        self.assertEqual((current['progress']['processed'],current['progress']['skipped']),(0,2))
+        self.assertEqual(self.request('/api/organization/control',{'id':job,'action':'resume'})[0],400)
+        self.assertTrue(self.clip.exists());self.assertFalse(self.target.exists())
+
     def test_restore_preview_is_bounded_authenticated_and_revalidated(self):
         status,result=self.request('/api/backup',{});self.assertEqual(status,200)
         backup=result['name'];draft=self.draft()

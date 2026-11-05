@@ -86,7 +86,7 @@ class CopyCleanup:
             if entry['operation']!='copy':continue
             details=step['details'];records=list(details.get('previous_temporaries',[]))
             current=None
-            if step['state'] in ('copying','interrupted') and details.get('temporary'):
+            if step['state'] in ('copying','verified','interrupted') and details.get('temporary'):
                 current=details['temporary']
                 records.append({'path':current,'file_identity':details.get('file_identity'),'bytes':details.get('bytes'),'sha256':details.get('partial_sha256')})
             for record in records:
@@ -121,5 +121,6 @@ class CopyCleanup:
                     c.execute("UPDATE organization_cleanups SET state='removed',updated=? WHERE job_id=? AND path=?",(time.time(),job_id,str(path)))
                     if row['current']:
                         preserved={'previous_temporaries':job['steps'][row['ordinal']]['details'].get('previous_temporaries',[])}
-                        c.execute("UPDATE organization_steps SET state='pending',details=?,updated=? WHERE job_id=? AND ordinal=? AND state IN ('copying','interrupted')",(json.dumps(preserved),time.time(),job_id,row['ordinal']))
+                        if job['steps'][row['ordinal']]['details'].get('skip'):preserved['skip']=job['steps'][row['ordinal']]['details']['skip']
+                        c.execute("UPDATE organization_steps SET state='pending',details=?,updated=? WHERE job_id=? AND ordinal=? AND state IN ('copying','verified','interrupted')",(json.dumps(preserved),time.time(),job_id,row['ordinal']))
         return {'removed':removed,'review':sum(row['status']=='review' for row in plan['entries'])}

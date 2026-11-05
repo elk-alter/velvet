@@ -36,3 +36,5 @@
 - [0009：数据库恢复前核对物理日志并保留证据](0009-restore-file-journal-reconciliation.md)
 
 - [0010：单作品分页读取与明确的编辑范围](0010-bounded-work-details-and-edit-scope.md)
+
+- [0011：明确跳过尚未提交的文件组](0011-explicit-precommit-group-skip.md)

@@ -116,3 +116,14 @@ POST /api/restore-preview，正文name（已存在的主库备份名），要求
 POST /api/restore沿用name/confirm精确名称，新增reconciliation:{id,digest}。有物理历史须指定已保存且重新全量审计一致的计划；任意布尔值无效。资料/文件/归档变化400，需重新预览；租约冲突409。ready:false不自动修复/清日志。兼容终止纯资料keep/unbind_copy时保留旧无计划入口。恢复前保留完整旧DB及私有回执，恢复不移动/删除视频；返回rollback备份名。前端未通过不显示确认按钮，完整核对后列出留盘副本及数量。
 
 文件位置不符须先在原整理任务审阅/确认反向；绑定未完/暂存存在须从对应任务处理。备份中的物理位置本已匹配时无需撤销。对账不将只读复制输入算作已重新校验对象。私有计划和回执格式见DATA/ADR0009，不能作为公开附件。
+
+
+## 停止任务后的文件组跳过（第三十二批）
+
+POST /api/organization/skip-preview：id、ordinal（JSON整数，步骤序号）。只读，沿用Host/NAS/Token保护。返回id/ordinal/digest、items（ordinal/source/destination/role/state）、bytes。视频及asset_id关联的字幕等共同列入；不单独遗弃拥有者。任务必须停止，waiting须已暂停；queued/running/维护、已有撤销、archive/unbind_copy及不完整日志拒绝400。
+
+POST /api/organization/skip：id、ordinal、digest、confirmed:true；确认不是布尔真或摘要/状态已变化均400。事务内核对并追加持久skip决定及事件，批准payload不变，不写媒体。copy只允许pending/copying/verified，move/keep只允许pending；任一组成员有暂存移动/提交/绑定/完成则拒绝。返回ok、skipped（本组条目数）、state。不自动启动其余步骤，仍需既有control/resume。
+
+progress新增skipped计数，processed仍仅done；listing新增total/processed/skipped聚合，来自本页任务的步骤，不加载清单全文。全部done或skip且含skip时以cancelled结束，界面“已结束 · 含跳过”，绝不标全批done；此时resume返回400。其它错误仍failed/partial。再次处理跳过文件需新计划。
+
+执行器claim后重读决定；清理复制残片保留skip。旧checkpoint继续供对账/清理使用；详细安全边界见[ADR0011](../adr/0011-explicit-precommit-group-skip.md)。不支持跳过撤销任务或已进入不可安全省略阶段的文件，不把拒绝当作故障已解决。

@@ -35,16 +35,17 @@ class MoveExecutor:
         job=self.jobs.get(job_id)
         if job['state']=='done':return job
         if digest(job['payload'])!=job['approval_digest'] or any(e['operation'] not in ('move','archive') for e in job['payload']['entries']):raise ValueError('Invalid move approval')
-        self.jobs.claim(job_id);current=None
+        self.jobs.claim(job_id);job=self.jobs.get(job_id);current=None
+        active=[(i,e) for i,e in enumerate(job['payload']['entries']) if not job['steps'][i]['details'].get('skip')]
         def check():
             if cancel() or self.jobs.cancel_requested(job_id):raise CopyCancelled()
             if self.jobs.pause_requested(job_id):raise CopyPaused()
         try:
-            pending=[job['payload']['entries'][step['ordinal']] for step in job['steps'] if step['state']=='pending']
-            if pending:current=next(step['ordinal'] for step in job['steps'] if step['state']=='pending')
+            pending=[e for i,e in active if job['steps'][i]['state']=='pending']
+            if pending:current=next(i for i,e in active if job['steps'][i]['state']=='pending')
             validate_manifest(pending,self.jobs.device_identity)
             # Stage every source first, so cyclic destinations are vacant before publishing.
-            for ordinal,entry in enumerate(job['payload']['entries']):
+            for ordinal,entry in active:
                 check();current=ordinal;step=self.jobs.get(job_id)['steps'][ordinal]
                 state,details=step['state'],step['details']
                 if state=='pending':
@@ -60,7 +61,7 @@ class MoveExecutor:
                     self.verify(temporary,entry,check)
                     self.jobs.transition(job_id,ordinal,'staging','staged',details)
                     self.checkpoint('staged',job_id,ordinal)
-            for ordinal,entry in enumerate(job['payload']['entries']):
+            for ordinal,entry in active:
                 check();current=ordinal;step=self.jobs.get(job_id)['steps'][ordinal]
                 state,details=step['state'],step['details'];target=self.target(entry)
                 if state=='staged':
@@ -80,24 +81,24 @@ class MoveExecutor:
                     self.jobs.transition(job_id,ordinal,'committing','committed',details)
                     self.checkpoint('committed',job_id,ordinal)
             # Bind as a single DB transaction through the adapter, including path swaps.
-            for ordinal,entry in enumerate(job['payload']['entries']):
+            for ordinal,entry in active:
                 self.verify(entry['destination'],entry,check)
                 step=self.jobs.get(job_id)['steps'][ordinal]
                 if step['state'] in ('committed','needs_binding'):self.jobs.transition(job_id,ordinal,step['state'],'binding',step['details'])
             try:
                 if not self.binder:raise ValueError('Move binder not configured')
-                bindings=self.binder(job['payload']['entries'],job_id)
-                if not bindings or any(not bindings.get(binding_key(e)) for e in job['payload']['entries']):raise ValueError('Move binding incomplete')
+                bindings=self.binder([e for _,e in active],job_id)
+                if not bindings or any(not bindings.get(binding_key(e)) for _,e in active):raise ValueError('Move binding incomplete')
             except Exception:
                 for step in self.jobs.get(job_id)['steps']:
                     if step['state']=='binding':self.jobs.transition(job_id,step['ordinal'],'binding','needs_binding',step['details'])
                 raise
-            for entry in job['payload']['entries']:self.verify(entry['destination'],entry,check)
+            for _,entry in active:self.verify(entry['destination'],entry,check)
             self.checkpoint('bound',job_id,None)
-            for ordinal,entry in enumerate(job['payload']['entries']):
+            for ordinal,entry in active:
                 step=self.jobs.get(job_id)['steps'][ordinal]
                 if step['state']=='binding':self.jobs.transition(job_id,ordinal,'binding','done',dict(step['details'],binding_id=bindings[binding_key(entry)]))
-            self.jobs.finish(job_id,'done')
+            self.jobs.finish(job_id,'cancelled' if any(s['details'].get('skip') for s in job['steps']) else 'done')
         except CopyPaused:self.jobs.finish(job_id,'waiting')
         except CopyCancelled:self.jobs.finish(job_id,'cancelled')
         except Exception as error:
@@ -122,6 +123,7 @@ class MoveExecutor:
                 return {'id':row['id'],'digest':row['digest'],'payload':json.loads(row['payload'])}
         reverse=[]
         for step,entry in zip(job['steps'],job['payload']['entries']):
+            if step['details'].get('skip'):continue
             state=step['state']
             candidates=([entry['destination']] if state in ('committed','binding','needs_binding','done') else [entry['destination'],step['details'].get('temporary'),entry['source']] if state=='committing' else [step['details'].get('temporary'),entry['source']])
             location=None
@@ -134,6 +136,7 @@ class MoveExecutor:
             origin=Path(entry.get('source_root',job['payload']['source_root']));target=Path(entry.get('target_root',job['payload']['target_root']))
             source_root=target if Path(location).is_relative_to(target) else origin
             reverse.append({'video_id':entry['video_id'],'asset_id':entry.get('asset_id'),'metadata':entry.get('metadata',{}),'role':entry.get('role','media'),'parent_asset_id':entry.get('parent_asset_id'),'operation':'move','source':location,'destination':entry['source'],'source_root':str(source_root),'target_root':str(origin)})
+        if not reverse:raise ValueError('没有需要撤销的文件；已跳过文件保持原位')
         roots=list(dict.fromkeys(e['source_root'] for e in reverse));targets=list(dict.fromkeys(e['target_root'] for e in reverse))
         draft=self.jobs.prepare(reverse,roots[0],targets[0],retained=job['payload'].get('retained',[]),source_roots=roots,target_roots=targets)
         with self.jobs.db() as c:c.execute('INSERT INTO organization_inverses VALUES(?,?,NULL)',(job_id,draft['id']))
