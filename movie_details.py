@@ -29,7 +29,29 @@ class MovieDetails:
                 'part_count':row['part_count'],'height':height,'size':row['total_size'],'duration':row['total_duration'],
                 'watched':bool(row['all_watched']),'position':row['max_position'],'missing':bool(row['all_missing']),
                 'preferred':bool(row['preferred']),'resolution_label':resolution,
+                'codec':row['codec'] or '', 'estimated_bitrate':round(row['total_size']*8/row['total_duration']) if row['total_duration'] and row['total_duration']>0 and row['total_size'] else None,
                 'version_label':label[:120]+' · '+('最低 ' if row['part_count']>1 and height else '')+resolution+' · '+self.LABELS[row['censorship']]+' · '+(row['codec'] or '未知编码')}
+
+    def compare_versions(self, connection, movie_key, versions):
+        keys=[version['version_key'] for version in versions]
+        placeholders=','.join('?' for _ in keys)
+        checks={row['version_key']:row for row in connection.execute(f'''
+            SELECT l.version_key,
+                SUM(CASE WHEN r.result='decode_error' THEN 1 ELSE 0 END) AS errors,
+                SUM(CASE WHEN r.result='probe_error' THEN 1 ELSE 0 END) AS probe_errors,
+                SUM(CASE WHEN r.result='passed' THEN 1 ELSE 0 END) AS passed
+            FROM media_links l
+            JOIN browse_projection p ON p.video_id=l.video_id AND p.visible=1
+            JOIN videos v ON v.id=l.video_id AND COALESCE(v.missing,0)=0
+            JOIN file_reviews r ON r.video_id=v.id AND r.size=v.size AND r.mtime=v.mtime
+            WHERE l.movie_key=? AND l.version_key IN ({placeholders}) AND COALESCE(r.auto_status,'')!='stale'
+            GROUP BY l.version_key
+        ''',(movie_key,*keys))}
+        for version in versions:
+            row=checks.get(version['version_key'])
+            version['checks']={'passed':row['passed'] if row else 0,'errors':row['errors'] if row else 0,
+                               'probe_errors':row['probe_errors'] if row else 0}
+        return versions
 
     def query(self,query):
         ident=self.number(query,'id',0,1)
@@ -59,6 +81,10 @@ class MovieDetails:
             active=self.header(c.execute('SELECT * FROM browse_version_rows WHERE movie_key=? AND version_key=?',(key,version)).fetchone())
             if voffset>=totals[0]:raise ValueError('版本页码超出范围')
             versions=[self.header(r) for r in c.execute('SELECT b.* FROM browse_version_rows b WHERE b.movie_key=? ORDER BY '+self.ORDER+' LIMIT ? OFFSET ?',(key,vlimit,voffset))]
+            if query.get('compare')=='1':
+                for pinned in (active,default_header):
+                    if not any(version['version_key']==pinned['version_key'] for version in versions):versions.append(pinned)
+                return {'versions':self.compare_versions(c,key,versions)}
             if 'part_offset' in query:poffset=self.number(query,'part_offset',0)
             else:
                 before=c.execute('SELECT COUNT(*) FROM media_links l JOIN browse_projection p ON p.video_id=l.video_id AND p.visible=1 WHERE l.movie_key=? AND l.version_key=? AND (l.part_no<? OR (l.part_no=? AND l.video_id<?))',(key,version,selected_raw['part_no'],selected_raw['part_no'],ident)).fetchone()[0]
@@ -75,7 +101,7 @@ class MovieDetails:
             next_row=c.execute('SELECT v.id,v.missing FROM media_links l JOIN videos v ON v.id=l.video_id JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 WHERE l.movie_key=? AND l.version_key=? AND (l.part_no>? OR (l.part_no=? AND v.id>?)) ORDER BY l.part_no,v.id LIMIT 1',(key,version,selected['part_index'],selected['part_index'],ident)).fetchone()
             # SQL selects a version without indexed missing parts; no media is probed.
             quality_context=[{'_versions':[{'height':active['height'],'_parts':files},{'height':totals[4] or 0,'_parts':[]}]}]
-            review=self.review.snapshot(files,quality_context)
+            review=self.review.snapshot(files,quality_context,connection=c)
             detail={'movie_key':key,'default_version_key':default_header['version_key'],'default_version':default_header,'selected':selected,'active_version':active,
                     'total_files':totals[1],'edit_file_count':edit_count,'favorite':bool(totals[2]),'mtime':totals[3],'revision':revision,
                     'versions':{'items':versions,'offset':voffset,'limit':vlimit,'total':totals[0]},

@@ -47,7 +47,7 @@ class CopyUndo:
 
     def prepare(self,original):
         with self.exclusive(original):
-            job=self.jobs.get(original)
+            job=self.jobs.effective_job(original)
             if any(e['operation']!='copy' for e in job['payload']['entries']):raise ValueError('此入口只撤销复制绑定')
             with self.jobs.db() as c:
                 previous=c.execute('SELECT * FROM organization_inverses WHERE original_job_id=?',(original,)).fetchone()

@@ -1,4 +1,4 @@
 interface:
-  display_name: "Velvet ¿ª·¢½ÓÁ¦"
-  short_description: "ÒÀ¾İĞèÇó¹æ»®¡¢ÑéÊÕÖ¤¾İºÍÊı¾İ°²È«±ß½ç¼ÌĞø½ÓÁ¦¿ª·¢ Velvet ÏîÄ¿"
+  display_name: "Velvet å¼€å‘æ¥åŠ›"
+  short_description: "æŒ‰ Velvet éœ€æ±‚ã€éªŒæ”¶è¯æ®åŠæ•°æ®å®‰å…¨è¾¹ç•Œæ¨è¿›å¼€å‘å’Œäº¤ä»˜"
   default_prompt: "Use $velvet-development to continue Velvet development from the current requirements and handoff."

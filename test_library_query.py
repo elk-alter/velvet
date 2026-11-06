@@ -34,6 +34,43 @@ class LibraryQueryTests(unittest.TestCase):
         for item in first['items']:
             for key in ('plot','locked_fields','amane_snapshot','_versions','_parts'):self.assertNotIn(key,item)
 
+    def test_snapshot_caches_only_requested_rows_and_resolves_uncached_selection(self):
+        for i in range(12):self.video(f'{i}.mp4',f'DEMO-{i}',title=f'Film {i:02}')
+        query=self.query_service()
+        first=query.query({'sort':'title','limit':2})
+        ident=first['snapshot']
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM browse_results WHERE query_id=?',(ident,)).fetchone()[0],2)
+        self.assertEqual(query.selection(ident,['movie:code:DEMO-11'])['items'][0]['code'],'DEMO-11')
+        later=query.query({'sort':'title','snapshot':ident,'offset':10,'limit':5})
+        self.assertEqual([item['code'] for item in later['items']],['DEMO-10','DEMO-11'])
+        with patch.object(query,'_matches',side_effect=AssertionError('cached page must be reused')):
+            self.assertEqual(query.query({'sort':'title','snapshot':ident,'offset':10,'limit':5}),later)
+
+    def test_snapshot_rejects_changed_facet_aliases_even_without_video_edits(self):
+        self.video('demo.mp4','DEMO-1',source_tags='Action')
+        aliases={'Action':'Adventure'}
+        query=LibraryQuery(self.app.db,self.app.CORE,self.app.LIBRARIES,self.app.DIRECTORY_POLICY,
+                           config=lambda:{'tag_aliases':aliases})
+        page=query.query({'facet_kind':'tags','facet_name':'Adventure'})
+        self.assertEqual(page['total'],1)
+        aliases['Action']='Different'
+        with self.assertRaises(LibraryQueryChanged):
+            query.selection(page['snapshot'],[page['items'][0]['key']])
+        self.assertEqual(query.query({'facet_kind':'tags','facet_name':'Adventure'})['total'],0)
+
+    def test_concurrent_metadata_change_cannot_cache_old_projection_as_new_revision(self):
+        ident=self.video('Sample.mp4','DEMO-1')
+        query=self.query_service()
+        original=query.refresh
+        def refresh_then_change():
+            original()
+            with self.app.db() as c:
+                c.execute("UPDATE videos SET title='Updated after projection' WHERE id=?",(ident,))
+        with patch.object(query,'refresh',side_effect=refresh_then_change):
+            with self.assertRaises(LibraryQueryChanged):query.query({})
+        self.assertEqual(query.query({})['items'][0]['title'],'Updated after projection')
+
     def test_parts_default_version_resume_and_matching_alternative(self):
         a=self.video('A/DEMO-1 part1.mp4','DEMO-1',height=2160,duration=500)
         b=self.video('A/DEMO-1 part2.mp4','DEMO-1',height=2160,duration=600,position=40)
@@ -256,8 +293,103 @@ class LibraryQueryHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/api/library/query?snapshot='+data['snapshot'])[0],409)
         self.assertEqual(self.request('/api/library/query?sort=invalid')[0],400)
         self.assertEqual(self.request('/api/library/movie?id=99999')[0],400)
+    def test_progress_is_readable_while_projection_runs_and_resets_on_failure(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        started=threading.Event()
+        release=threading.Event()
+
+        def interrupted_projection(*args):
+            started.set()
+            if not release.wait(5):
+                raise AssertionError('progress request did not finish')
+            raise ValueError('synthetic indexing failure')
+
+        progress='/api/library/query-progress'
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with patch.object(self.app.BROWSE,'project',side_effect=interrupted_projection):
+                request=executor.submit(self.request,'/api/library/query')
+                try:
+                    self.assertTrue(started.wait(5))
+                    self.assertEqual(self.request(progress),(200,{'stage':'indexing','processed':0,'total':1}))
+                finally:
+                    release.set()
+                self.assertEqual(request.result(timeout=5)[0],400)
+        self.assertEqual(self.request(progress),(200,{'stage':'idle'}))
+        self.assertEqual(self.request('/api/library/query')[1]['total'],1)
+        self.assertEqual(self.request(progress),(200,{'stage':'idle'}))
+
+    def test_manual_card_flags_are_independent_and_persist_in_browse(self):
+        edit='/api/edit'
+        page='/api/library/query'
+        def flags():
+            item=self.request(page)[1]['items'][0]
+            return item['domestic'],item['amateur']
+        self.assertEqual(flags(),(False,False))
+        self.assertEqual(self.request(edit,data={'id':self.ident,'domestic':1,'amateur':1})[0],200)
+        self.assertEqual(flags(),(True,True))
+        self.assertEqual(self.request(edit,data={'id':self.ident,'domestic':0})[0],200)
+        self.assertEqual(flags(),(False,True))
+        self.assertEqual(self.request(edit,data={'id':self.ident,'amateur':'false'})[0],400)
+        self.assertEqual(flags(),(False,True))
+
+    def test_identification_lists_candidates_without_replacing_manual_code(self):
+        ident=self.video('DIR-202/FILE-101.mp4','LOCK-303',locked_fields='["code"]')
+        source=self.root/'DIR-202/FILE-101.nfo'
+        source.write_text('<movie><num>NFO-404</num></movie>',encoding='utf-8')
+        status,data=self.request(f'/api/identification/{ident}')
+        self.assertEqual(status,200)
+        self.assertEqual(data['code'],'LOCK-303')
+        self.assertTrue(data['locked'])
+        self.assertEqual(data['candidates'],{'filename':'FILE-101','directory':'DIR-202','nfo':'NFO-404'})
+        source.write_text('<broken>',encoding='utf-8')
+        self.assertTrue(self.request(f'/api/identification/{ident}')[1]['warning'])
+
+    def test_scrape_jobs_report_image_failures_only_on_latest_completed_job(self):
+        with self.app.db() as c:
+            c.executemany("INSERT INTO scrape_jobs(code,status) VALUES('DEMO-1',?)",[('done',),('done',)])
+            c.executemany("INSERT INTO artwork_jobs(video_id,ordinal,status) VALUES(?,?,?)",
+                          [(self.ident,1,'failed'),(self.ident,2,'done')])
+        status,data=self.request('/api/amane-jobs')
+        self.assertEqual(status,200)
+        newest,older=data['jobs']
+        self.assertEqual(newest['artwork_failures'],[{'id':self.ident,'count':1}])
+        self.assertEqual(older['image_failures'],0)
+
+    def test_scrape_jobs_filter_before_pagination_and_check_latest_across_all_pages(self):
+        with self.app.db() as c:
+            c.execute("INSERT INTO scrape_jobs(code,status,engine,remote_id,retry_kind) VALUES('DEMO-1','failed','external',1,'retryable')")
+            c.executemany("INSERT INTO scrape_jobs(code,status,engine,remote_id,retry_kind) VALUES(?,'failed','external',?,'not_found')",
+                          ((f'OTHER-{n}',n+2) for n in range(125)))
+            c.execute("INSERT INTO scrape_jobs(code,status) VALUES('DEMO-1','done')")
+            c.execute("INSERT INTO artwork_jobs(video_id,ordinal,status) VALUES(?,1,'failed')",(self.ident,))
+        status,data=self.request('/api/amane-jobs?status=failed&reason=retryable&limit=10')
+        self.assertEqual(status,200)
+        self.assertEqual((data['total'],len(data['jobs'])),(1,1))
+        self.assertFalse(data['jobs'][0]['can_retry'])
+        status,data=self.request('/api/amane-jobs?status=failed&limit=10&offset=120')
+        self.assertEqual(status,200)
+        self.assertEqual((data['total'],data['offset'],len(data['jobs'])),(126,120,6))
+        self.assertEqual(data['jobs'][-1]['code'],'DEMO-1')
+        status,data=self.request('/api/amane-jobs?status=images&limit=1')
+        self.assertEqual(status,200)
+        self.assertEqual((data['total'],data['jobs'][0]['image_failures']),(1,1))
+
+    def test_metadata_edit_rejects_conflicting_field_without_overwriting_draft_scope(self):
+        with self.app.db() as c:
+            c.execute("UPDATE videos SET title='New title',plot='New plot' WHERE id=?",(self.ident,))
+        status,data=self.request('/api/edit',data={
+            'id':self.ident,'title':'Draft title','expected':{'title':'Old title'}})
+        self.assertEqual(status,409)
+        self.assertIn('草稿保留',data['error'])
+        self.assertEqual(self.request('/api/edit',data={
+            'id':self.ident,'rating':4,'expected':{'rating':'0'}})[0],200)
+        with self.app.db() as c:
+            row=c.execute('SELECT title,plot,rating FROM videos WHERE id=?',(self.ident,)).fetchone()
+        self.assertEqual(tuple(row),('New title','New plot',4))
+
     def test_browse_routes_do_not_bypass_host_or_nas_auth(self):
-        for path in ('/api/library/query','/api/library/movie?id='+str(self.ident)):
+        for path in ('/api/library/query','/api/library/query-progress','/api/library/movie?id='+str(self.ident)):
             self.assertEqual(self.request(path,host='untrusted.invalid')[0],403)
             with patch.object(self.app,'NAS',True):self.assertEqual(self.request(path)[0],401)
 

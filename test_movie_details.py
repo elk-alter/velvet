@@ -36,6 +36,23 @@ class MovieDetailTests(unittest.TestCase):
         self.assertIn(preferred,[p['id'] for p in data['parts']['items']])
         self.assertEqual(data['default_version_key'],'cut-13')
 
+    def test_version_comparison_is_bounded_and_ignores_stale_checks(self):
+        ids=self.seed(3,2)
+        with self.app.db() as c:
+            c.executemany(
+                "INSERT INTO file_reviews(video_id,size,mtime,status,result) VALUES(?,?,?,'done',?)",
+                [(ids[0],100,0,'passed'),(ids[1],100,0,'decode_error'),
+                 (ids[2],99,1,'passed'),(ids[4],100,2,'probe_error')])
+        first=self.app.MOVIE_DETAILS.query({'id':ids[0],'exact':'1'})['detail']
+        with patch.object(self.app.CORE,'present',side_effect=AssertionError('comparison must not hydrate files')):
+            result=self.app.MOVIE_DETAILS.query({'id':ids[0],'exact':'1','compare':'1','revision':first['revision']})
+        versions={item['version_key']:item for item in result['versions']}
+        self.assertEqual(versions['cut-0']['estimated_bitrate'],80)
+        self.assertEqual(versions['cut-0']['codec'],'h265')
+        self.assertEqual(versions['cut-0']['checks'],{'passed':1,'errors':1,'probe_errors':0})
+        self.assertEqual(versions['cut-1']['checks']['passed'],0)
+        self.assertEqual(versions['cut-2']['checks']['probe_errors'],1)
+
     def test_pages_use_same_revision_and_never_expand_selection(self):
         ids=self.seed(3,55);first=self.app.MOVIE_DETAILS.query({'id':ids[0],'exact':'1'})['detail']
         next_page=self.app.MOVIE_DETAILS.query({'id':ids[0],'exact':'1','part_offset':20,'revision':first['revision']})['detail']
@@ -114,7 +131,7 @@ class MovieDetailTests(unittest.TestCase):
             self.app.BROWSE.__init__(self.app.db,self.app.CORE,self.app.LIBRARIES,self.app.DIRECTORY_POLICY,self.app.config)
             self.app.BROWSE.refresh()
         with self.app.db() as c:
-            self.assertEqual(c.execute('SELECT projection_schema FROM browse_state').fetchone()[0],3)
+            self.assertEqual(c.execute('SELECT projection_schema FROM browse_state').fetchone()[0],5)
             self.assertEqual(c.execute("SELECT min_height FROM browse_version_rows WHERE version_key='cut-0'").fetchone()[0],1080)
 
     def test_version_ties_keep_legacy_latest_visible_member_order(self):

@@ -22,25 +22,86 @@ async function useAmaneSources(){try{
  await api('/api/amane-settings',{engine:'external',url:cfg.amane_url||'http://127.0.0.1:18000',proxy:cfg.scrape_proxy||'',aliases:cfg.tag_aliases||{}});
  toast('已切换本机 Amane 完整引擎，沿用现有来源路线');await showScrapingOptions();
 }catch(e){if(e.name==='AbortError')return;toast(e.message)}}
-let managerTaskFilter='all';
+let managerTaskFilter='all',managerRetryFilter='',managerRetryBusy=false,managerTaskOffset=0,managerTaskRequest=0;
+const managerTaskPageSize=30;
+const managerRetrySelection=new Set();
+const scrapeFailureNames={retryable:'网络或来源暂时失败',not_found:'无匹配',needs_review:'需要人工核对'};
+function changeManagerTaskFilter(value){managerTaskFilter=value;managerRetryFilter='';managerRetrySelection.clear();showTaskCenter()}
+function changeManagerRetryFilter(value){
+ managerRetrySelection.clear();
+ return goManage('tasks',{status:'failed',reason:value});
+}
+function goManagerTaskPage(page){
+ const number=Number(page);
+ if(!Number.isInteger(number)||number<1)return;
+ return goManage('tasks',{status:managerTaskFilter,reason:managerRetryFilter,offset:(number-1)*managerTaskPageSize});
+}
+function updateManagerRetryButton(){
+ const button=$('managerRetrySelected');
+ if(button){button.disabled=managerRetryBusy||!managerRetrySelection.size;button.textContent='重试已选 ('+managerRetrySelection.size+')'}
+}
+function selectManagerRetry(input){
+ const id=Number(input.value);
+ if(input.checked){
+  if(managerRetrySelection.size>=50){input.checked=false;toast('每批最多选择 50 条任务');return}
+  managerRetrySelection.add(id);
+ }else managerRetrySelection.delete(id);
+ updateManagerRetryButton();
+}
+async function submitManagerRetry(ids){
+ if(managerRetryBusy||!ids.length)return;
+ const ticket=managerRouteEpoch;
+ managerRetryBusy=true;updateManagerRetryButton();
+ try{
+  const result=await api('/api/amane-retry',{job_ids:ids});
+  if(ticket!==managerRouteEpoch)return;
+  for(const id of ids)managerRetrySelection.delete(id);
+  toast(`已提交 ${result.submitted} 条，跳过 ${result.skipped} 条，待核对 ${result.failures.length} 条`);
+  await renderManagerTasks();
+ }catch(error){if(ticket===managerRouteEpoch&&error.name!=='AbortError')toast(error.message)}
+ finally{managerRetryBusy=false;updateManagerRetryButton()}
+}
 async function showTaskCenter(){managerSection="tasks";
- openManager('任务',`<div class="row"><label style="margin:0;flex-direction:row;align-items:center"><input id="managerAuto" type="checkbox" style="width:auto" onchange="setManagerAuto(this.checked)"> 自动刮削</label><button onclick="syncManagerMetadata()">同步资料与图片</button><span id="managerTaskStatus" class="muted"></span></div><div class="taskFilters">${[['all','全部'],['queued','排队中'],['running','运行中'],['done','已完成'],['failed','失败']].map(([value,label])=>`<button class="${value===managerTaskFilter?'active':''}" onclick="managerTaskFilter='${value}';showTaskCenter()">${label}</button>`).join('')}</div><div id="managerTasks" aria-live="polite"></div>`);
+ openManager('任务',`<div class="row"><label style="margin:0;flex-direction:row;align-items:center"><input id="managerAuto" type="checkbox" style="width:auto" onchange="setManagerAuto(this.checked)"> 自动刮削</label><button onclick="syncManagerMetadata()">同步资料与图片</button><button onclick="goManage('ledger')">查看全部后台任务</button><span id="managerTaskStatus" class="muted"></span></div><div class="taskFilters">${[['all','全部'],['queued','排队中'],['running','运行中'],['done','已完成'],['failed','失败'],['images','图片失败']].map(([value,label])=>`<button class="${value===managerTaskFilter?'active':''}" onclick="changeManagerTaskFilter('${value}')">${label}</button>`).join('')}</div>${managerTaskFilter==='failed'?`<div class="row"><label>失败原因<select aria-label="失败原因" onchange="changeManagerRetryFilter(this.value)"><option value="">所有原因</option>${Object.entries(scrapeFailureNames).map(([value,label])=>`<option value="${value}" ${value===managerRetryFilter?'selected':''}>${label}</option>`).join('')}</select></label><button id="managerRetrySelected" type="button" onclick="submitManagerRetry([...managerRetrySelection])" disabled>重试已选 (0)</button></div>`:''}<div id="managerTasks" aria-live="polite"></div>`);
  await renderManagerTasks();
 }
 async function renderManagerTasks(){clearTimeout(managerTaskTimer);
  if($('managerView').hidden||!$('managerTasks'))return;
+ const ticket=managerRouteEpoch,request=++managerTaskRequest;
  try{
-  const r=await managerFetch('/api/amane-jobs');if(!r.ok)throw Error('任务读取失败');const d=await r.json();
-  if($('managerView').hidden||!$('managerTasks'))return;
+  const parameters=new URLSearchParams({status:managerTaskFilter,reason:managerRetryFilter,offset:managerTaskOffset,limit:managerTaskPageSize});
+  const d=await managerGet('/api/amane-jobs?'+parameters);
+  if(ticket!==managerRouteEpoch||request!==managerTaskRequest||$('managerView').hidden||!$('managerTasks'))return;
+  const pages=Math.max(1,Math.ceil(d.total/d.limit)),page=Math.floor(d.offset/d.limit)+1;
+  if(page>pages)return goManage('tasks',{status:managerTaskFilter,reason:managerRetryFilter,offset:(pages-1)*d.limit},{replace:true});
   $('managerAuto').checked=d.auto.enabled;$('managerTaskStatus').textContent=d.auto.message;
-  const jobs=d.jobs.filter(j=>managerTaskFilter==='all'||j.status===managerTaskFilter);
-  $('managerTasks').innerHTML=`<p class="muted">最近 ${d.jobs.length} 条任务中匹配 ${jobs.length} 条 · ${esc(d.status.message||'')}</p><div style="overflow:auto"><table class="sourceTable"><thead><tr><th>任务 / 编号</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${jobs.map(j=>`<tr><td><strong>${esc(j.code)}</strong><small>#${j.id} · 引擎任务 ${j.remote_id??'待确认'}</small>${j.error?'<small>'+esc(j.error)+'</small>':''}${j.details?'<details><summary>来源结果</summary><small>'+esc(readableReasons(j.details))+'</small></details>':''}</td><td><span class="taskPill ${esc(j.status)}">${statusNames[j.status]||esc(j.status)}</span></td><td>${j.updated?new Date(j.updated*1000).toLocaleString():'—'}</td><td>${['queued','running'].includes(j.status)?`<button onclick="cancelManagerTask(${j.id})">取消</button>`:['submitting','cancelling'].includes(j.status)?'<small>等待当前操作</small>':`<button data-code="${esc(j.code)}" onclick="retryManagerTask(this.dataset.code)">重新刮削</button>`}</td></tr>`).join('')}</tbody></table></div>`;
+  const jobs=d.jobs;
+  for(const job of jobs)if(!job.can_retry)managerRetrySelection.delete(job.id);
+  updateManagerRetryButton();
+  $('managerTasks').innerHTML=`<p class="muted">共 ${d.total} 条 · 当前 ${jobs.length} 条 · ${esc(d.status.message||'')}</p><div style="overflow:auto"><table class="sourceTable"><thead><tr><th>任务 / 编号</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${jobs.map(j=>`<tr><td>${managerTaskFilter==='failed'&&j.can_retry?`<input type="checkbox" aria-label="选择任务 ${j.id}" value="${j.id}" ${managerRetrySelection.has(j.id)?'checked':''} onchange="selectManagerRetry(this)"> `:''}<strong>${esc(j.code)}</strong><small>#${j.id} · 引擎任务 ${j.remote_id??'待确认'}</small>${j.error?'<small>'+esc(j.error)+'</small>':''}${j.status==='failed'?`<button data-code="${esc(j.code)}" onclick="openManagerScrapeFile(this.dataset.code)">核对编号</button>`:''}${j.details?'<details><summary>来源结果</summary><small>'+esc(readableReasons(j.details))+'</small></details>':''}</td><td><span class="taskPill ${esc(j.status)}">${statusNames[j.status]||esc(j.status)}</span>${j.status==='failed'?'<small>'+scrapeFailureNames[j.retry_kind||'needs_review']+'</small>':''}${j.image_failures?`<small>${j.image_failures} 张图片下载失败</small>${j.artwork_failures.map(item=>`<button onclick="retryManagerArtwork(${item.id},this)">仅重试图片 · #${item.id} (${item.count})</button>`).join('')}`:''}</td><td>${j.updated?new Date(j.updated*1000).toLocaleString():'—'}</td><td>${['queued','running'].includes(j.status)?`<button onclick="cancelManagerTask(${j.id})">取消</button>`:['submitting','cancelling'].includes(j.status)?'<small>等待当前操作</small>' :j.status==='failed'?(j.can_retry?`<button onclick="submitManagerRetry([${j.id}])">重试</button>`:'<small>请核对任务状态或来源</small>'):`<button data-code="${esc(j.code)}" onclick="retryManagerTask(this.dataset.code)">重新刮削</button>`}</td></tr>`).join('')}</tbody></table></div><div class="row pager"><button ${page<=1?'disabled':''} onclick="goManagerTaskPage(${page-1})">上一页</button><span>第 ${page} / ${pages} 页</span><button ${page>=pages?'disabled':''} onclick="goManagerTaskPage(${page+1})">下一页</button><form onsubmit="event.preventDefault();goManagerTaskPage(this.elements.destination.value)"><label>跳至 <input name="destination" type="number" min="1" max="${pages}" value="${page}" aria-label="跳转任务页码"></label><button>跳转</button></form></div>`;
   managerTaskTimer=setTimeout(renderManagerTasks,3000);
- }catch(e){if(e.name==='AbortError')return;if($('managerTasks'))$('managerTasks').textContent=e.message;}
+ }catch(e){if(e.name==='AbortError'||ticket!==managerRouteEpoch||request!==managerTaskRequest)return;if($('managerTasks'))$('managerTasks').textContent=e.message;}
 }
 async function setManagerAuto(enabled){try{await api('/api/auto-scrape',{enabled});toast(enabled?'自动刮削已开启':'自动刮削已暂停')}catch(e){if(e.name==='AbortError')return;toast(e.message)}}
 async function cancelManagerTask(id){try{await api('/api/task-cancel',{kind:'scrape',id});await renderManagerTasks()}catch(e){if(e.name==='AbortError')return;toast(e.message)}}
-async function retryManagerTask(code){try{await refresh();const video=library.videos.find(v=>(v.code||'').toUpperCase()===code.toUpperCase());if(!video)throw Error('未找到对应文件');await api('/api/amane-submit',{ids:[video.id]});await renderManagerTasks()}catch(e){if(e.name==='AbortError')return;toast(e.message)}}
+async function retryManagerArtwork(id,button){
+ if(button.disabled)return;
+ button.disabled=true;
+ const ticket=managerRouteEpoch;
+ try{
+  await api('/api/artwork-retry',{id,failed_only:true});
+  if(ticket===managerRouteEpoch){toast('已重新排队下载图片');await renderManagerTasks()}
+ }catch(error){if(ticket===managerRouteEpoch&&error.name!=='AbortError')toast(error.message)}
+ finally{button.disabled=false}
+}
+async function openManagerScrapeFile(code){
+ const ticket=managerRouteEpoch;
+ try{
+  const video=await managerGet('/api/library/lookup?code='+encodeURIComponent(code));
+  if(ticket===managerRouteEpoch&&await openVideo(video.id,true))$('filmEditor').open=true;
+ }catch(error){if(ticket===managerRouteEpoch&&error.name!=='AbortError')toast(error.message)}
+}
+async function retryManagerTask(code){try{const video=await managerGet('/api/library/lookup?code='+encodeURIComponent(code));await api('/api/amane-submit',{ids:[video.id]});await renderManagerTasks()}catch(e){if(e.name==='AbortError')return;toast(e.message)}}
 async function syncManagerMetadata(){try{toast('正在同步资料与图片');await api('/api/amane-sync',{});await refresh();if($('managerTasks'))await renderManagerTasks()}catch(e){if(e.name==='AbortError')return;toast(e.message)}}
 const networkReason={network:'连接失败，请检查代理和网络',timeout:'请求超时',dns:'域名解析失败',tls:'TLS 证书或握手失败',not_found:'检测入口不存在',rate_limited:'来源限流',http_error:'来源拒绝请求',server_error:'来源服务异常',cloudflare_challenge:'需要访问验证',cloudflare_blocked:'访问被拦截',ip_banned:'IP 被限制',geo_restricted:'地区限制',age_verification:'年龄确认页面',empty_response:'空响应',unexpected_response:'响应格式异常',unexpected:'检测异常',unknown_source:'未知来源',disabled:'来源已禁用',service_unavailable:'外部服务不可用，请检查地址和 Token'};
 async function showNetwork(){managerSection="network";

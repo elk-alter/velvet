@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 import test_media_locations as fixtures
 from organization_jobs import OrganizationJobs
 
@@ -33,6 +34,35 @@ class OrganizationJobTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.jobs.approve(draft['id'],draft['digest'])
         draft=self.draft();self.jobs.device_identity=lambda path:'changed-device'
         with self.assertRaises(ValueError):self.jobs.approve(draft['id'],draft['digest'])
+
+    def test_recovery_root_requires_the_original_directory_and_volume(self):
+        with patch('organization_jobs.volume_identity',return_value=('synthetic-volume',True)):
+            job=self.approved()
+            approval=self.jobs.get(job)
+            source_bytes=self.source.read_bytes()
+            original=str(self.scope)
+            moved=self.root/'same-directory-new-path'
+            self.scope.rename(moved)
+            self.scope.mkdir()
+            self.assertEqual(self.jobs.verify_recovery_roots(job,{original:str(moved)}),{original:str(moved)})
+            with self.assertRaisesRegex(ValueError,'目录身份'):
+                self.jobs.verify_recovery_roots(job,{original:original})
+            with self.assertRaisesRegex(ValueError,'缺少原目录证明'):
+                self.jobs.verify_recovery_roots(job,{str(self.target):str(moved)})
+            self.assertEqual(self.jobs.get(job),approval)
+            self.assertEqual((moved/'one.mp4').read_bytes(),source_bytes)
+        with patch('organization_jobs.volume_identity',return_value=('different-volume',True)):
+            with self.assertRaisesRegex(ValueError,'目录身份'):
+                self.jobs.verify_recovery_roots(job,{original:str(moved)})
+
+    def test_approval_rejects_replaced_target_directory_on_same_volume(self):
+        self.target.mkdir()
+        with patch('organization_jobs.volume_identity',return_value=('synthetic-volume',True)):
+            draft=self.draft()
+            self.target.rename(self.root/'original-target')
+            self.target.mkdir()
+            with self.assertRaisesRegex(ValueError,'目录身份'):
+                self.jobs.approve(draft['id'],draft['digest'])
 
     def test_leases_are_exclusive_and_released(self):
         first=self.approved();second=self.approved('second.mp4')

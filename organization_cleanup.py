@@ -79,7 +79,7 @@ class CopyCleanup:
         return stamp
 
     def preview(self,job_id):
-        job=self.jobs.get(job_id)
+        job=self.jobs.effective_job(job_id)
         if job['state'] in ('running','queued'):raise ValueError('Stop the task before previewing cleanup')
         rows=[]
         for entry,step in zip(job['payload']['entries'],job['steps']):
@@ -106,7 +106,7 @@ class CopyCleanup:
             plan=self.preview(job_id)
             payload={key:plan[key] for key in ('job_id','entries')}
             if digest(payload)!=expected_digest:raise ValueError('Cleanup preview changed; review again')
-            job=self.jobs.get(job_id)
+            job=self.jobs.effective_job(job_id)
             for row in plan['entries']:
                 if row['status']!='ready':continue
                 entry=job['payload']['entries'][row['ordinal']];record=row['record'];path=Path(record['path'])

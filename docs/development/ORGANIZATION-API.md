@@ -140,3 +140,13 @@ POST /api/storage/remap：id、path、identity（原登记身份）、digest、c
 POST /api/storage/register新增new_location布尔值，默认false；卷或目录已变化默认拒绝，true明确创建独立登记并保留旧记录。当前对象已有匹配登记则复用，避免重复创建。设备列表新增status（online/offline/identity_changed/directory_changed/permission_denied/linked/not_directory/unavailable）及directory_verified；online为可用状态，不等于完整内容已校验。
 
 storage_root_proofs是新增登记证据，不改变物理任务批准。已批准任务在挂载变化后的路径恢复仍未完成，不能拿此登记接口代替；详见[ADR0012](../adr/0012-recorded-directory-proof-and-reconnection.md)。
+
+
+## alpha.7 整理根目录校验
+
+新计划将可核验的现存整理根的卷身份与目录文件 ID 保存到批准内容。批准前复查该证明。客户端可以 POST `/api/organization/recovery-roots`，提供任务 `id` 和 `replacements` 对象，键为原批准根目录，值为拟重连的绝对目录。成功返回 `roots` 对象。沿用本机请求令牌和 NAS 鉴权。旧计划、不可验证卷或准备时尚未建立的根目录可能缺少证明，校验请求会明确失败。
+
+该接口仅核验整理根的身份。后续有效路径授权还须验证对应阶段的源、暂存、目标、绑定和撤销证据，再由相应执行器消费。原批准清单和检查点保持原样。
+
+
+`POST /api/organization/recovery-map-preview` 使用相同参数，要求任务已停止、没有活动租约、等待资源或维护操作。返回批准摘要、检查点摘要、已验证根映射及本次预览摘要。`POST /api/organization/recovery-map` 接受相同参数、预览 `digest` 和 `confirmed: true`，在事务中重新核对任务及根证明后保存独立授权。预览期间任务或检查点改变时必须重新审阅。登记动作本身不排队、不写媒体。复制任务更换源根，或更换已有目录证明且尚未绑定的目标根后，可使用原有继续入口。首次领取事务验证检查点摘要并激活授权，申请原路径和有效路径的资源锁。执行器按原相对路径复核源文件身份及哈希。目标重连时映射暂存及提交路径，复核目录、卷、文件 ID 和内容后继续。待对账的任务会保护原路径与有效路径。清理和复制解绑预览读取生效后的路径。同盘移动及其已批准的反向移动可重连后续跑。移动暂存随源目录映射，绑定保留原清单路径作为任务键。已绑定旧目标、同一任务再次更换已生效目标、归档、复制解绑及原位保留重连仍需核对。备份恢复对账支持当前库与备份持有相同的已生效映射，并能复核对应目录证明的情况。对账以有效路径回放，批准清单仍按原摘要校验。映射不一致或已验证位置不可用时，恢复需先核对，使用重连后的有效备份。

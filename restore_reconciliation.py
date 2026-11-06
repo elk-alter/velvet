@@ -27,7 +27,7 @@ def rows(c,table):
 
 def journal(c):
     tables={row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    result={name:rows(c,name) if name in tables else [] for name in ('organization_jobs','organization_steps','organization_inverses')}
+    result={name:rows(c,name) if name in tables else [] for name in ('organization_jobs','organization_steps','organization_inverses','organization_recovery_maps')}
     jobs={}
     for raw in result['organization_jobs']:
         if not {'id','payload','approval_digest','state','created'}<=set(raw):raise ValueError('整理日志结构不完整，不能自动对账')
@@ -45,7 +45,38 @@ def journal(c):
     for job in jobs.values():
         job['steps']=sorted(grouped[job['id']],key=lambda s:s['ordinal'])
         if [s['ordinal'] for s in job['steps']]!=list(range(len(job['payload']['entries']))):raise ValueError('整理步骤不完整')
-    return {'jobs':jobs,'inverses':result['organization_inverses']}
+    mappings={}
+    for record in result['organization_recovery_maps']:
+        if not record.get('activated'):continue
+        job=jobs.get(record['job_id'])
+        roots=json.loads(record['roots'])
+        if not job or record['approval_digest']!=job['approval_digest'] or not isinstance(roots,dict) or not roots:
+            raise ValueError('重连记录缺少原批准清单或目录映射')
+        mappings[job['id']]=roots
+    return {'jobs':jobs,'inverses':result['organization_inverses'],'recovery_maps':mappings}
+
+
+def apply_recovery_paths(model):
+    from organization_jobs import OrganizationJobs,verify_root_proofs
+    for ident,roots in model['recovery_maps'].items():
+        job=model['jobs'][ident]
+        payload=job['payload']
+        proofs=payload.get('root_proofs',{})
+        if any(root not in proofs for root in roots):
+            raise ValueError('重连记录缺少原整理根目录证明')
+        verified=verify_root_proofs({root:proofs[root] for root in roots},roots)
+        entries=[]
+        for entry,step in zip(payload['entries'],job['steps']):
+            entry=dict(entry)
+            for field,role in (('source','source'),('destination','target')):
+                root=entry.get(role+'_root',payload[role+'_root'])
+                if root not in verified:continue
+                entry[field]=OrganizationJobs._recovery_path(entry[field],root,verified[root])
+                if (entry['operation']=='copy' and role=='target') or (entry['operation']=='move' and role=='source'):
+                    step['details']=OrganizationJobs._recovery_copy_details(step['details'],root,verified[root])
+            entries.append(entry)
+        job['approved_payload']=payload
+        job['payload']=dict(payload,entries=entries)
 
 
 def metadata_only(c):
@@ -84,7 +115,7 @@ def semantic_signature(c):
 
 def object_key(device,identity):
     if not isinstance(device,str) or not isinstance(identity,list) or len(identity)!=2 or not all(isinstance(v,int) and v for v in identity):raise ValueError('缺少可靠文件身份，不能自动对账')
-    return hashed([device,identity])
+    return hashed([device,identity[1] if device.startswith('windows-volume:') else identity])
 
 
 class RestoreAudit:
@@ -92,6 +123,9 @@ class RestoreAudit:
 
     def inspect(self,artifact=None,settings=None):
         current=journal(self.current);incoming=journal(self.incoming);union={};objects={};problems=[]
+        if current['recovery_maps']!=incoming['recovery_maps']:
+            raise ValueError('备份与当前库的挂载重连记录不同，请选用重连后的备份')
+        for model in (current,incoming):apply_recovery_paths(model)
         def issue(code,job=None,path=None):problems.append({'code':code,'job':job,'path':path})
         for model in (current,incoming):
             for ident,job in model['jobs'].items():
@@ -112,9 +146,10 @@ class RestoreAudit:
                 candidates=[m['jobs'][job['id']]['steps'][ordinal] for m in (current,incoming) if job['id'] in m['jobs']]
                 published=[s for s in candidates if s['state'] in PUBLISHED]
                 if not published:continue
-                identities={tuple(s['details'].get('file_identity',[])) for s in published}
-                if len(identities)!=1:raise ValueError('复制目标身份日志不一致')
-                register(entry,entry['destination'],entry['target_device'],list(identities.pop()),created=job['id'],required=True)
+                identities=[s['details'].get('file_identity',[]) for s in published]
+                if len({object_key(entry['target_device'],identity) for identity in identities})!=1:
+                    raise ValueError('复制目标身份日志不一致')
+                register(entry,entry['destination'],entry['target_device'],identities[0],created=job['id'],required=True)
         for job in ordered:
             for entry in job['payload']['entries']:
                 op=entry.get('operation')
@@ -146,7 +181,7 @@ class RestoreAudit:
                     if state=='done':target=entry['destination']
                     elif job['id'] in reversed_jobs and state not in ('pending','cancelled'):
                         inverse=reversed_jobs[job['id']]
-                        matching=[e for e in inverse['payload']['entries'] if e.get('source_identity')==entry['source_identity'] and e.get('source_device')==entry['source_device']]
+                        matching=[e for e in inverse['payload']['entries'] if e.get('source_device')==entry['source_device'] and object_key(e['source_device'],e['source_identity'])==key]
                         if len(matching)!=1:issue(role+'_inverse_ambiguous',job['id']);continue
                         target=matching[0]['source']
                     elif state in ('pending','cancelled'):continue
@@ -164,8 +199,12 @@ class RestoreAudit:
                 p=Path(path)
                 if no_links(p)!=p:raise ValueError('path changed')
                 stat=p.stat()
-                if [stat.st_dev,stat.st_ino]!=obj['identity'] or volume_identity(p)[0]!=obj['device'] or fingerprint(p)!=obj['fingerprint']:raise ValueError('proof changed')
-                proof={'path':path,'device':obj['device'],'identity':obj['identity'],'fingerprint':obj['fingerprint']}
+                identity=[stat.st_dev,stat.st_ino]
+                device=volume_identity(p)[0]
+                if object_key(device,identity)!=key or fingerprint(p)!=obj['fingerprint']:raise ValueError('proof changed')
+                after=p.stat()
+                if [after.st_dev,after.st_ino]!=identity or after.st_mtime_ns!=stat.st_mtime_ns:raise ValueError('proof changed')
+                proof={'path':path,'device':obj['device'],'identity':identity,'fingerprint':obj['fingerprint']}
                 proofs.append(proof)
                 if key not in desired:retained.append(proof)
             except (OSError,ValueError):issue('file_unavailable_or_changed',path=path)

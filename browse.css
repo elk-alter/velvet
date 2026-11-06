@@ -208,7 +208,7 @@ body[data-video-layout=landscape] .movieCard .picture>img{object-fit:cover;backg
 .automaticSwitch{display:flex;align-items:center;gap:8px;font-size:12px}.automaticSwitch input{width:17px;height:17px;min-height:0;accent-color:var(--accent)}#automaticFindings{margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.automaticFinding{padding:16px;border:1px solid var(--line);border-radius:10px;margin:14px 0}.automaticFinding.dismissed{opacity:.65}.automaticFinding strong{font-size:13px}.automaticEvidence{display:flex;gap:10px;overflow:auto;margin:12px 0}.automaticEvidence button{background:none;border:0;padding:0;min-width:130px;max-width:180px}.automaticEvidence img{display:block;width:100%;aspect-ratio:16/9;object-fit:contain;background:#111;border-radius:6px}.automaticEvidence small{display:block;margin-top:5px;font-size:10px;color:var(--muted)}#automaticEvidenceDialog{max-width:90vw;width:1000px;padding:0;overflow:hidden}#automaticEvidenceDialog>img{display:block;max-width:100%;width:100%;max-height:75vh;object-fit:contain;background:#111}
 
 /* Hide pixels rather than blur; keep layout stable and restore without refetching. */
-html.privacyMode img,html.privacyMode video,html.privacyMode canvas{visibility:hidden!important}html.privacyMode .picture,html.privacyMode .actorPhoto,html.privacyMode .heroPortrait,html.privacyMode .categoryArt,html.privacyMode .filmPoster,html.privacyMode #filmPlayback{background:#303137!important}html.privacyMode .privacyToggle{background:var(--accent);color:#fff;border-color:transparent}.dialogChrome .privacyToggle,.lightboxToolbar .privacyToggle{font-size:11px;min-height:30px;padding:5px 10px;flex-shrink:0;margin-left:auto}.dialogChrome .close{order:5}
+html.privacyMode .picture,html.privacyMode .actorPhoto,html.privacyMode .heroPortrait,html.privacyMode .categoryArt,html.privacyMode .filmPoster,html.privacyMode #filmPlayback{background:#303137!important}html.privacyMode .privacyToggle{background:var(--accent);color:#fff;border-color:transparent}.dialogChrome .privacyToggle,.lightboxToolbar .privacyToggle{font-size:11px;min-height:30px;padding:5px 10px;flex-shrink:0;margin-left:auto}.dialogChrome .close{order:5}
 
 #topPagination{justify-content:space-between;scroll-margin-top:24px;margin:16px 0;gap:12px}.pageNumbers{display:flex;gap:5px;align-items:center;flex-wrap:wrap}.pageNumbers button{min-width:34px;padding:6px 10px;font-size:12px}.pager form,.pager label{display:flex;gap:8px;align-items:center;font-size:12px}.pager input{width:70px;min-height:32px;padding:6px}.pager select{min-height:32px;padding:6px;width:70px}#bottomPagination{flex-wrap:wrap}@media(max-width:750px){#topPagination .pageNumbers{order:3;flex-basis:100%;justify-content:center}.pageNumbers button{min-width:32px;padding:6px}}
 
@@ -217,7 +217,12 @@ html.privacyMode img,html.privacyMode video,html.privacyMode canvas{visibility:h
 .pagedSelection{padding:16px;border:1px solid var(--line);border-radius:12px;margin:16px 0;background:var(--panel)}.pagedSelection[hidden]{display:none}.pagedSelection strong{margin-right:12px}.pagedSelection details{margin-top:10px}.pagedSelection .row{justify-content:space-between;padding:8px 0}.collectionMosaic .cardSelection{z-index:4}#pagedCollectionHeader .facetHeader{flex-wrap:wrap}#pagedCollectionHeader h3{font-size:20px}
 
 /* Work detail keeps navigation separate from the metadata editor. */
-.movieDetailPager{display:flex;align-items:center;gap:8px;flex:1 1 100%;font-size:11px;color:var(--muted)}.movieDetailPager span{margin-right:auto}.movieDetailPager button{font-size:11px;padding:5px 9px;min-height:30px}.moviePartButtons{display:flex;gap:8px;flex-wrap:wrap;max-height:96px;overflow-y:auto;padding-top:8px}#detail .dialogTools #partPicker.pagedParts{display:block;max-height:none;overflow:visible}#movieDetailPageError{font-size:12px;padding:8px 0;overflow-wrap:anywhere}#versionPicker .movieDetailPager{padding-top:2px}@media(max-width:650px){#versionPicker>label{flex-basis:100%}.movieDetailPager{gap:5px}.moviePartButtons button{font-size:11px;min-height:32px}}
+.movieDetailPager{display:flex;align-items:center;gap:8px;flex:1 1 100%;font-size:11px;color:var(--muted)}.movieDetailPager span{margin-right:auto}.movieDetailPager button{font-size:11px;padding:5px 9px;min-height:30px}.moviePartButtons{display:flex;gap:8px;overflow-x:auto;padding:8px 2px 6px;scroll-snap-type:x proximity}
+.moviePartButtons .moviePartButton{display:flex;align-items:center;gap:8px;flex:none;min-width:122px;padding:5px 8px 5px 5px;text-align:left;scroll-snap-align:start}
+.moviePartButton strong,.moviePartButton small{display:block;white-space:nowrap}
+.moviePartButton.accent small{color:inherit}
+.moviePartThumbnail{position:relative;display:grid;place-items:center;width:54px;aspect-ratio:16/10;overflow:hidden;border-radius:5px;background:#313642;color:#eee}
+.moviePartThumbnail img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}#detail .dialogTools #partPicker.pagedParts{display:block;max-height:none;overflow:visible}#movieDetailPageError{font-size:12px;padding:8px 0;overflow-wrap:anywhere}#versionPicker .movieDetailPager{padding-top:2px}@media(max-width:650px){#versionPicker>label{flex-basis:100%}.movieDetailPager{gap:5px}.moviePartButtons button{font-size:11px;min-height:32px}}
 
 .movieDetailPager span:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
 
@@ -226,3 +231,29 @@ html.privacyMode img,html.privacyMode video,html.privacyMode canvas{visibility:h
 .exclusionDialog{width:min(560px,calc(100vw - 32px))}.exclusionDialog form{display:flex;flex-direction:column;max-height:calc(100vh - 64px)}.exclusionDialog .dialogBody{padding:20px;overflow:auto}.exclusionDialog .dialogBody p:first-child{margin-top:0}.exclusionPath{padding:12px;border:1px solid #8884;border-radius:10px;overflow-wrap:anywhere}.exclusionDialog .dialogChrome h2{font-size:18px}
 
 #player:fullscreen{width:100%;height:100%;max-height:none!important}
+
+.libraryLoadProgress { padding: 16px 0; }
+.libraryLoadProgress progress { display: block; width: min(100%, 24rem); margin-top: 8px; }
+
+.cardTopFlags .domesticMark{color:#ffd7d1;background:#542827e6}
+.cardTopFlags .amateurMark{color:#d1f5e9;background:#1c423be6}
+.manualCardFlags{border:1px solid var(--line);border-radius:8px;margin:0 0 12px;padding:6px 10px}
+.manualCardFlags label{margin-right:14px}
+.manualCardFlags input{width:auto;margin:0 4px 0 0;vertical-align:middle}
+
+.movieCard[aria-busy="true"] .picture::after{content:"正在打开…";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;white-space:nowrap;padding:7px 12px;border-radius:8px;background:#171821e6;color:white}
+
+.tagPanelTools,.tagOptions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.tagPanelTools input{flex:1;min-width:130px}
+.tagOptions{max-height:144px;overflow:auto;align-content:start}
+.tagOption{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;padding:6px 9px;cursor:pointer;max-width:100%;overflow-wrap:anywhere}
+.tagOption:has(input:checked){border-color:var(--accent);color:var(--text)}
+.tagOption input{margin:0;accent-color:var(--accent)}
+
+.versionComparison{flex-basis:100%;min-width:0}
+.versionComparisonTable{max-width:100%;overflow:auto;margin:8px 0}
+.versionComparison table{border-collapse:collapse;width:100%;text-align:left}
+.versionComparison th,.versionComparison td{padding:6px 8px;border-bottom:1px solid var(--line)}
+
+#grid[data-selecting="false"] .movieCard .cardSelection{display:none}
+#grid[data-selecting="true"] .movieCard .cardSelection{opacity:1;pointer-events:auto}

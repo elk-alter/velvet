@@ -52,6 +52,208 @@ class ServiceTests(unittest.TestCase):
         self.service.run_once(job)
         self.assertEqual(len(self.service.listing()['items']),1)
 
+    def test_verified_copy_survives_native_root_rename_and_undo_uses_reconnected_source(self):
+        from organization_jobs import root_proof
+
+        if not root_proof(self.source):
+            self.skipTest('Requires native stable volume and directory proof')
+        self.target.mkdir()
+        draft=self.prepare()
+        job=self.approve(draft)
+
+        def interrupt(phase,*args):
+            if phase=='verified':raise SystemExit('synthetic verified checkpoint')
+
+        self.service.copy.checkpoint=interrupt
+        with self.assertRaises(SystemExit):self.service.run_once(job)
+        self.service.jobs.recover()
+        original=self.service.jobs.get(job)
+        proof=original['steps'][0]['details']['file_identity']
+        before_reconnect=self.app.CORE.backup('before-reconnect')
+        source=self.root/'source-reconnected'
+        target=self.root/'target-reconnected'
+        self.source.rename(source)
+        self.target.rename(target)
+        wrong=self.root/'wrong-directory'
+        wrong.mkdir()
+        (wrong/self.clip.name).write_bytes((source/self.clip.name).read_bytes())
+        paths={str(self.source):str(source),str(self.target):str(target)}
+        with self.assertRaisesRegex(ValueError,'目录身份'):
+            self.service.jobs.recovery_map_preview(job,{**paths,str(self.source):str(wrong)})
+        preview=self.service.jobs.recovery_map_preview(job,paths)
+        self.service.jobs.confirm_recovery_map(job,paths,preview['digest'])
+        self.service.control(job,'resume')
+        self.service.copy.checkpoint=lambda *args:None
+        bind=self.service.copy.binder
+
+        def interrupt_after_binding(*args):
+            bind(*args)
+            raise SystemExit('synthetic interruption after DB binding')
+
+        self.service.copy.binder=interrupt_after_binding
+        with self.assertRaises(SystemExit):self.service.run_once(job)
+        self.service.jobs.recover()
+        self.service.control(job,'resume')
+        self.service.copy.binder=bind
+        result=self.service.run_once(job)
+        self.assertEqual(result['state'],'done')
+        self.assertEqual(result['payload'],original['payload'])
+        self.assertEqual(result['approval_digest'],original['approval_digest'])
+        actual=self.service.jobs.effective_job(job)['payload']['entries'][0]
+        copied=Path(actual['destination'])
+        self.assertEqual([copied.stat().st_dev,copied.stat().st_ino],proof)
+        self.assertEqual(copied.read_bytes(),(source/self.clip.name).read_bytes())
+        self.assertFalse(self.target.exists())
+        with self.app.db() as c:
+            locations=c.execute('SELECT path FROM media_locations ORDER BY path').fetchall()
+        self.assertCountEqual([row[0] for row in locations],
+                              [str(self.clip),str(source/self.clip.name),str(copied)])
+
+        with self.assertRaisesRegex(ValueError,'重连记录不同'):
+            self.app.CORE.preview_restore(before_reconnect)
+        saved=self.app.CORE.backup('reconnected-copy')
+        audit=self.app.CORE.preview_restore(saved)
+        self.assertTrue(audit['ready'],audit['problems'])
+        self.app.CORE.restore(saved,{key:audit[key] for key in ('id','digest')})
+        self.assertEqual([copied.stat().st_dev,copied.stat().st_ino],proof)
+        reverse=self.service.prepare_inverse(job)
+        undo=self.service.approve_inverse(job,reverse['digest'])
+        self.assertEqual(self.service.run_once(undo)['state'],'done')
+        with self.app.db() as c:
+            paths=[row[0] for row in c.execute('SELECT path FROM videos')]
+        self.assertEqual(paths,[str(source/self.clip.name)])
+        self.assertTrue(copied.is_file())
+
+    def test_completed_copy_target_reconnect_preserves_binding_and_undo(self):
+        from organization_jobs import root_proof
+
+        if not root_proof(self.source):
+            self.skipTest('Requires native stable volume and directory proof')
+        self.target.mkdir()
+        job=self.approve(self.prepare())
+        original=self.service.run_once(job)
+        self.assertEqual(original['state'],'done')
+        binding_id=original['steps'][0]['details']['binding_id']
+        old=Path(original['payload']['entries'][0]['destination'])
+        target=self.root/'renamed-completed-target'
+        self.target.rename(target)
+        new=target/old.relative_to(self.target)
+        replacements={str(self.target):str(target)}
+        preview=self.service.jobs.recovery_map_preview(job,replacements)
+        self.assertEqual(preview['binding_count'],1)
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT path FROM videos').fetchone()[0],str(old))
+        from resource_leases import ResourceBusy
+        asset=original['payload']['entries'][0]['asset_id']
+        owner=self.service.jobs.leases.try_acquire('synthetic-active-reader',resources=['asset:'+asset])
+        self.assertIsNotNone(owner)
+        try:
+            with self.assertRaises(ResourceBusy):
+                self.service.jobs.confirm_recovery_map(job,replacements,preview['digest'])
+        finally:
+            self.service.jobs.leases.release(owner)
+        self.service.jobs.confirm_recovery_map(job,replacements,preview['digest'])
+        updated=self.service.jobs.effective_job(job)
+        self.assertEqual(updated['payload']['entries'][0]['destination'],str(new))
+        self.assertEqual(updated['steps'][0]['details']['binding_id'],binding_id)
+        self.assertEqual(self.service.jobs.get(job)['payload'],original['payload'])
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT path FROM videos').fetchone()[0],str(new))
+        latest=self.root/'second-completed-target'
+        target.rename(latest)
+        replacements[str(self.target)]=str(latest)
+        preview=self.service.jobs.recovery_map_preview(job,replacements)
+        self.service.jobs.confirm_recovery_map(job,replacements,preview['digest'])
+        new=latest/new.relative_to(target)
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT path FROM videos').fetchone()[0],str(new))
+            self.assertEqual(c.execute('SELECT path FROM media_locations WHERE id=?',(binding_id,)).fetchone()[0],str(new))
+        audit=self.app.CORE.preview_restore(self.app.CORE.backup('completed-target-reconnect'))
+        self.assertTrue(audit['ready'],audit['problems'])
+        inverse=self.service.prepare_inverse(job)
+        undo=self.service.approve_inverse(job,inverse['digest'])
+        self.assertEqual(self.service.run_once(undo)['state'],'done')
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT path FROM videos').fetchone()[0],str(self.clip))
+        self.assertEqual(new.read_bytes(),self.clip.read_bytes())
+
+    def test_completed_move_target_reconnect_retains_native_file_identity(self):
+        from organization_jobs import root_proof
+
+        if not root_proof(self.source):
+            self.skipTest('Requires native stable volume and directory proof')
+        self.target.mkdir()
+        job=self.approve(self.prepare('move'))
+        original=self.service.run_once(job)
+        self.assertEqual(original['state'],'done')
+        old=Path(original['payload']['entries'][0]['destination'])
+        target=self.root/'relocated-completed-move'
+        self.target.rename(target)
+        new=target/old.relative_to(self.target)
+        identity=new.stat().st_ino
+        displaced=new.with_suffix('.held')
+        new.rename(displaced)
+        new.write_bytes(displaced.read_bytes())
+        replacements={str(self.target):str(target)}
+        with self.assertRaisesRegex(ValueError,'文件身份'):
+            self.service.jobs.recovery_map_preview(job,replacements)
+        new.unlink()
+        displaced.rename(new)
+        preview=self.service.jobs.recovery_map_preview(job,replacements)
+        self.service.jobs.confirm_recovery_map(job,replacements,preview['digest'])
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT path FROM videos').fetchone()[0],str(new))
+        inverse=self.service.prepare_inverse(job)
+        undo=self.service.approve_inverse(job,inverse['digest'])
+        self.assertEqual(self.service.run_once(undo)['state'],'done')
+        self.assertEqual(self.clip.stat().st_ino,identity)
+        self.assertFalse(new.exists())
+
+    def test_partial_copy_remaps_bound_file_and_reuses_verified_checkpoint(self):
+        from organization_jobs import root_proof
+
+        if not root_proof(self.source):
+            self.skipTest('Requires native stable volume and directory proof')
+        self.target.mkdir()
+        second=self.source/'part2.mp4'
+        second.write_bytes(b'second synthetic original')
+        self.inventory.scan(self.device,hashing=True)
+        plan=self.inventory.plan(self.device,str(self.target),layout='preserve')
+        job=self.approve(self.service.prepare(plan['id'],plan['digest'],[0,1],'copy'))
+
+        def interrupt(phase,ident,ordinal):
+            if phase=='verified' and ordinal==1:
+                raise SystemExit('synthetic interruption with mixed checkpoints')
+
+        self.service.copy.checkpoint=interrupt
+        with self.assertRaises(SystemExit):self.service.run_once(job)
+        self.service.jobs.recover()
+        original=self.service.jobs.get(job)
+        self.assertEqual([step['state'] for step in original['steps']],['done','verified'])
+        binding_id=original['steps'][0]['details']['binding_id']
+        fragment=original['steps'][1]['details']['file_identity']
+        target=self.root/'partial-copy-reconnected'
+        self.target.rename(target)
+        replacements={str(self.target):str(target)}
+        preview=self.service.jobs.recovery_map_preview(job,replacements)
+        self.assertEqual(preview['binding_count'],1)
+        self.service.jobs.confirm_recovery_map(job,replacements,preview['digest'])
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT path FROM media_locations WHERE id=?',(binding_id,)).fetchone()[0],
+                             str(target/self.clip.name))
+        self.assertFalse((target/second.name).exists())
+
+        self.service.copy.checkpoint=lambda *args:None
+        self.service.control(job,'resume')
+        done=self.service.run_once(job)
+        self.assertEqual(done['state'],'done')
+        self.assertEqual(done['payload'],original['payload'])
+        self.assertEqual(done['steps'][0]['details']['binding_id'],binding_id)
+        copied=(target/second.name).stat()
+        self.assertEqual([copied.st_dev,copied.st_ino],fragment)
+        for source in (self.clip,second):
+            self.assertEqual((target/source.name).read_bytes(),source.read_bytes())
+
     def test_raw_move_and_approved_inverse_keep_same_identity(self):
         draft=self.prepare('move');job=self.approve(draft)
         self.assertEqual(self.service.run_once(job)['state'],'done');self.assertFalse(self.clip.exists())

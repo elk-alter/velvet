@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from http.client import HTTPConnection
 from pathlib import Path
 import test_organization_service as fixtures
@@ -50,6 +51,84 @@ class OrganizationHTTPTests(unittest.TestCase):
             if job['state'] in ('done','failed','partial'):return job
             time.sleep(.03)
         self.fail('Synthetic organization job did not finish')
+
+    def test_completed_target_reconnect_updates_video_and_subtitle_via_http(self):
+        from organization_jobs import root_proof
+
+        if not root_proof(self.source):
+            self.skipTest('Requires native stable volume and directory proof')
+        self.target.mkdir()
+        draft=self.draft()
+        service=self.app.ORGANIZATION
+        job=service.approve(draft['id'],draft['digest'])
+        self.assertEqual(service.run_once(job)['state'],'done')
+        moved=self.target.with_name('http-reconnected-target')
+        self.target.rename(moved)
+        request={'id':job,'replacements':{str(self.target):str(moved)}}
+        status,preview=self.request('/api/organization/recovery-map-preview',request)
+        self.assertEqual((status,preview.get('binding_count')),(200,2),preview)
+        payload=dict(request,digest=preview['digest'])
+        self.assertEqual(self.request('/api/organization/recovery-map',payload)[0],400)
+        self.assertEqual(self.request('/api/organization/recovery-map',dict(payload,confirmed=True))[0],200)
+        status,detail=self.request('/api/organization/job?id='+job)
+        self.assertEqual(status,200)
+        self.assertEqual(detail['recovery']['mapping'],request['replacements'])
+        with self.app.db() as c:
+            video=c.execute('SELECT path FROM videos').fetchone()[0]
+            subtitle=c.execute('SELECT path FROM media_resources').fetchone()[0]
+        self.assertTrue(Path(video).is_relative_to(moved))
+        self.assertTrue(Path(subtitle).is_relative_to(moved))
+        self.assertEqual(Path(subtitle).read_bytes(),b'synthetic subtitle')
+
+    def test_recovery_roots_requires_token_and_preserves_approved_job(self):
+        route='/api/organization/recovery-roots'
+        def proof(root):
+            path=Path(root)
+            return {'volume':'synthetic-volume','directory':str(path.stat().st_ino)} if path.is_dir() else None
+        with patch('organization_jobs.root_proof',side_effect=proof):
+            draft=self.draft()
+            job=self.app.ORGANIZATION.approve(draft['id'],draft['digest'])
+            original=self.app.ORGANIZATION.jobs.get(job)
+            moved=self.source.with_name('reconnected')
+            self.source.rename(moved)
+            request={'id':job,'replacements':{str(self.source):str(moved)}}
+            self.assertEqual(self.request(route,request,token=False)[0],403)
+            self.assertEqual(self.request(route,request),(200,{'roots':request['replacements']}))
+            self.assertEqual(self.app.ORGANIZATION.jobs.get(job),original)
+            self.assertFalse(self.target.exists())
+
+    def test_recovery_map_requires_stopped_job_current_checkpoints_and_confirmation(self):
+        preview_route='/api/organization/recovery-map-preview'
+        confirm_route='/api/organization/recovery-map'
+        def proof(root):
+            path=Path(root)
+            return {'volume':'synthetic-volume','directory':str(path.stat().st_ino)} if path.is_dir() else None
+        with patch('organization_jobs.root_proof',side_effect=proof):
+            draft=self.draft()
+            job=self.app.ORGANIZATION.approve(draft['id'],draft['digest'])
+            moved=self.source.with_name('reconnected')
+            self.source.rename(moved)
+            request={'id':job,'replacements':{str(self.source):str(moved)}}
+            self.assertEqual(self.request(preview_route,request)[0],400)
+            self.app.ORGANIZATION.control(job,'pause')
+            original=self.app.ORGANIZATION.jobs.get(job)
+            status,preview=self.request(preview_route,request)
+            self.assertEqual(status,200)
+            self.assertEqual(self.request(confirm_route,dict(request,digest=preview['digest']))[0],400)
+            with self.app.db() as c:
+                c.execute("UPDATE organization_steps SET details=? WHERE job_id=? AND ordinal=0",(json.dumps({'error':'Synthetic change'}),job))
+            self.assertEqual(self.request(confirm_route,dict(request,digest=preview['digest'],confirmed=True))[0],400)
+            status,preview=self.request(preview_route,request)
+            self.assertEqual(status,200)
+            confirmed=dict(request,digest=preview['digest'],confirmed=True)
+            self.assertEqual(self.request(confirm_route,confirmed,token=False)[0],403)
+            self.assertEqual(self.request(confirm_route,confirmed)[0],200)
+            self.assertEqual(self.app.ORGANIZATION.jobs.get(job)['payload'],original['payload'])
+            with self.app.db() as c:
+                row=c.execute('SELECT * FROM organization_recovery_maps WHERE job_id=?',(job,)).fetchone()
+                self.assertEqual(json.loads(row['roots']),request['replacements'])
+                self.assertEqual(row['checkpoint_digest'],preview['checkpoint_digest'])
+            self.assertFalse(self.target.exists())
 
     def test_skip_group_requires_token_confirmation_and_current_digest(self):
         draft=self.draft();job=self.app.ORGANIZATION.approve(draft['id'],draft['digest'])

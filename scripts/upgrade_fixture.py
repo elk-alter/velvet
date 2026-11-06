@@ -68,9 +68,18 @@ def seed(app,source):
         c.execute("INSERT INTO source_cache VALUES('CACHE-001','synthetic','fixture',?,1)",(json.dumps({'title':'Cached source'}),))
 
 
-def snapshot(data):
+def protected_columns(data):
     with closing(sqlite3.connect(Path(data)/'library.db')) as c:
-        return {table:[list(row) for row in c.execute('SELECT * FROM '+table+' '+scope+' ORDER BY 1')] for table,scope in TABLES.items()}
+        return {table:[row[1] for row in c.execute('PRAGMA table_info('+table+')')] for table in TABLES}
+
+
+def snapshot(data,columns=None):
+    with closing(sqlite3.connect(Path(data)/'library.db')) as c:
+        result={}
+        for table,scope in TABLES.items():
+            selected=','.join('"'+name.replace('"','""')+'"' for name in columns[table]) if columns else '*'
+            result[table]=[list(row) for row in c.execute('SELECT '+selected+' FROM '+table+' '+scope+' ORDER BY 1')]
+        return result
 
 
 def files(data):
@@ -102,6 +111,17 @@ def start_without_workers(app):
         assert c.execute("SELECT state FROM task_journal WHERE external_key='scan:synthetic-crash'").fetchone()[0]=='interrupted'
 
 
+def assert_browse(app):
+    listing=app.BROWSE.query({'limit':24})
+    assert listing['total']==1 and listing['items'][0]['part_count']==2
+    detail=app.MOVIE_DETAILS.query({'id':1,'exact':'1'})['detail']
+    selected=detail['selected']
+    assert detail['movie_key']=='manual-movie' and detail['favorite']
+    assert detail['parts']['total']==2 and detail['default_version_key']=='manual-version'
+    assert selected['title']=='Manually locked title' and selected['rating']==4
+    assert selected['position']==42 and selected['watched']
+
+
 def drain_builtin_with_mock(app):
     """Only the two eligible cache jobs execute; completed/failed/cancelled stay put."""
     calls=[];engine=app.builtin_engine()
@@ -118,19 +138,18 @@ def drain_builtin_with_mock(app):
         assert json.loads(c.execute("SELECT data FROM metadata WHERE code='CACHE-001'").fetchone()[0])=={'title':'Completed cache'}
 
 
-def assert_protected(app,expected,image_hashes):
-    actual=snapshot(app.DATA)
+def assert_protected(app,expected,image_hashes,columns=None):
+    columns=columns or protected_columns(app.DATA)
+    actual=snapshot(app.DATA,columns)
     # Only physical playback location/proof fields may change during organization.
-    with app.db() as c:columns=[r[1] for r in c.execute('PRAGMA table_info(videos)')]
-    excluded={'path','size','mtime','missing','file_hash','hash_stamp'}
-    for label in ('videos','file_reviews'):
-        if label=='file_reviews':
-            with app.db() as c:cols=[r[1] for r in c.execute('PRAGMA table_info(file_reviews)')]
-            skip={'size','mtime'}
-        else:cols=columns;skip=excluded
-        indexes=[i for i,name in enumerate(cols) if name not in skip]
+    expected=dict(expected)
+    for label,skip in (
+        ('videos',{'path','size','mtime','missing','file_hash','hash_stamp'}),
+        ('file_reviews',{'size','mtime'}),
+    ):
+        indexes=[i for i,name in enumerate(columns[label]) if name not in skip]
         actual[label]=[[row[i] for i in indexes] for row in actual[label]]
-        expected=dict(expected);expected[label]=[[row[i] for i in indexes] for row in expected[label]]
+        expected[label]=[[row[i] for i in indexes] for row in expected[label]]
     assert actual==expected,'Protected metadata changed during organization'
     assert files(app.DATA)==image_hashes,'Cached image/evidence bytes changed'
     with app.db() as c:

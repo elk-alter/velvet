@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 from media_locations import fingerprint
-from organization_jobs import digest, no_links
+from organization_jobs import root_proof,digest, no_links
 
 
 class CopyCancelled(Exception):pass
@@ -51,23 +51,42 @@ class CopyExecutor:
         source=no_links(entry['source']);target=no_links(entry['destination'])
         if str(source)!=entry['source'] or str(target)!=entry['destination']:raise ValueError('Approved paths changed')
         if self.jobs.device_identity(source)!=entry['source_device'] or self.jobs.device_identity(target.parent)!=entry['target_device']:raise ValueError('Device identity changed')
+        if entry.get('reconnected_source_proof'):
+            self.jobs.check_reconnected_source(entry,source)
         return source,target
+
+    def check_target_identity(self,path,entry,identity):
+        actual=file_identity(path)
+        expected_matches=identity and (actual[1]==identity[1] if entry.get('reconnected_target_proof') else actual==identity)
+        if not expected_matches:raise ValueError('Target ownership requires review')
+        return actual
+
+    def temporary_path(self,entry,details,job_id):
+        path=Path(details['temporary'])
+        if (path.parent!=Path(entry['destination']).parent or no_links(path)!=path
+                or not path.name.startswith('.velvet-'+job_id+'-') or not path.name.endswith('.partial')):
+            raise ValueError('Temporary file is outside its approved destination')
+        return path
 
     def target_path(self,entry):
         target=no_links(entry['destination'])
         if str(target)!=entry['destination'] or self.jobs.device_identity(target.parent)!=entry['target_device']:raise ValueError('Approved target path or device changed')
+        if entry.get('reconnected_target_proof') and root_proof(entry['target_root'])!=entry['reconnected_target_proof']:
+            raise ValueError('重连后的目标目录身份已变化')
         return target
 
     def verify_target(self,entry,details):
         target=self.target_path(entry)
-        if not details.get('file_identity') or file_identity(target)!=details['file_identity']:raise ValueError('Target ownership requires review')
+        identity=self.check_target_identity(target,entry,details.get('file_identity'))
         stamp=fingerprint(target)
         if (stamp['size'],stamp['sha256'])!=(entry['fingerprint']['size'],entry['fingerprint']['sha256']):raise ValueError('Committed target changed')
+        if file_identity(self.target_path(entry))!=identity:raise ValueError('Committed target changed during verification')
+        return identity
 
     def copy(self,job_id,ordinal,entry,details,cancel):
         def check():
             if cancel():raise CopyCancelled()
-        source,target=self.check_paths(entry);check()
+        source,target=self.check_paths(entry);self.target_path(entry);check()
         validate_manifest([entry],self.jobs.device_identity)
         if fingerprint(source,check)!=entry['fingerprint']:raise ValueError('Source changed after approval')
         if target.exists():raise ValueError('Target appeared after approval')
@@ -80,7 +99,7 @@ class CopyExecutor:
         details={'temporary':str(temporary),'bytes':0,'partial_sha256':hashlib.sha256().hexdigest(),'previous_temporaries':previous}
         self.jobs.transition(job_id,ordinal,'pending','copying',details)
         target.parent.mkdir(parents=True,exist_ok=True)
-        self.check_paths(entry)
+        self.check_paths(entry);self.target_path(entry)
         digest_copy=hashlib.sha256()
         with temporary.open('xb') as output:
             info=os.fstat(output.fileno())
@@ -115,20 +134,21 @@ class CopyExecutor:
         if state=='pending':details=self.copy(job_id,ordinal,entry,details,cancel);state='verified'
         if state=='verified':
             source,_=self.check_paths(entry)
+            self.target_path(entry)
             if fingerprint(source)!=entry['fingerprint']:raise ValueError('Source changed before commit')
             if cancel():raise CopyCancelled()
-            temporary=Path(details['temporary'])
-            if file_identity(temporary)!=details['file_identity']:raise ValueError('Temporary ownership changed')
+            temporary=self.temporary_path(entry,details,job_id)
+            self.check_target_identity(temporary,entry,details['file_identity'])
             stamp=fingerprint(temporary)
             if (stamp['size'],stamp['sha256'])!=(entry['fingerprint']['size'],entry['fingerprint']['sha256']):raise ValueError('Verified temporary changed')
             self.jobs.transition(job_id,ordinal,'verified','committing',details);state='committing'
             self.checkpoint('committing',job_id,ordinal)
         if state=='committing':
-            target=self.target_path(entry);temporary=Path(details['temporary'])
+            target=self.target_path(entry);temporary=self.temporary_path(entry,details,job_id)
             if not target.exists():
                 self.check_paths(entry)
                 if fingerprint(entry['source'])!=entry['fingerprint']:raise ValueError('Source changed before commit')
-                if file_identity(temporary)!=details['file_identity']:raise ValueError('Temporary ownership changed')
+                self.check_target_identity(temporary,entry,details['file_identity'])
                 stamp=fingerprint(temporary)
                 if stamp['sha256']!=entry['fingerprint']['sha256'] or stamp['size']!=entry['fingerprint']['size']:raise ValueError('Temporary changed before commit')
                 issues=path_conflicts(target,set())
@@ -138,7 +158,7 @@ class CopyExecutor:
             self.jobs.transition(job_id,ordinal,'committing','committed',details);state='committed'
             self.checkpoint('committed',job_id,ordinal)
         if state in ('committed','needs_binding','binding'):
-            self.verify_target(entry,details)
+            details['file_identity']=self.verify_target(entry,details)
             if state!='binding':self.jobs.transition(job_id,ordinal,state,'binding',details)
             try:
                 if not self.binder:raise ValueError('Library binder not configured')
@@ -157,8 +177,7 @@ class CopyExecutor:
         job=self.jobs.get(job_id)
         if job['state']=='done':return job
         if digest(job['payload'])!=job['approval_digest']:raise ValueError('Approved manifest changed')
-        self.jobs.claim(job_id)
-        job=self.jobs.get(job_id)
+        job=self.jobs.claim(job_id)
         external_cancel=cancel
         def cancel():
             if external_cancel() or self.jobs.cancel_requested(job_id):return True

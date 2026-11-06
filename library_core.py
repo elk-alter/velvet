@@ -1,9 +1,10 @@
 """Persistent library relationships and reversible application-data maintenance."""
-import hashlib,json,re,sqlite3,time,zipfile,tempfile,threading
+import hashlib,json,sqlite3,time,zipfile,tempfile,threading
 from contextlib import closing
 from restore_safety import require_reconciled_files
 from video_ids import ensure_video_ids,high_watermark
 from pathlib import Path
+from media_presentation import PART_PATTERN
 class LibraryCore:
  def __init__(self,db,data,presentation,identity_traits=None):
   self.db,self.data,self.present=db,data,presentation
@@ -18,45 +19,82 @@ class LibraryCore:
    c.execute('CREATE TABLE IF NOT EXISTS relationship_undo(id INTEGER PRIMARY KEY,created REAL,payload TEXT)')
    c.execute('CREATE TABLE IF NOT EXISTS app_state(name TEXT PRIMARY KEY,value TEXT)')
    c.execute('CREATE TABLE IF NOT EXISTS media_relation_revision(id INTEGER PRIMARY KEY,generation INTEGER,reconciled INTEGER)')
-   c.execute('INSERT OR IGNORE INTO media_relation_revision VALUES(1,1,0)')
-   for action in ('INSERT','DELETE','UPDATE OF path,code,height,codec,censor_override,amane_snapshot'):
-    name=action.split()[0].lower()
-    c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_'+name+' AFTER '+action+' ON videos BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
-   c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_manual AFTER UPDATE OF manual ON media_links WHEN OLD.manual!=NEW.manual BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
+   c.execute('INSERT OR IGNORE INTO media_relation_revision(id,generation,reconciled) VALUES(1,1,0)')
+   fields={r[1] for r in c.execute('PRAGMA table_info(media_relation_revision)')}
+   if 'first_dirty' not in fields:
+    c.execute('ALTER TABLE media_relation_revision ADD COLUMN first_dirty INTEGER')
+    c.execute('UPDATE media_relation_revision SET first_dirty=NULL,generation=generation+1 WHERE id=1')
+    for name in ('insert','delete','update','manual','link_INSERT','link_DELETE','path'):
+     c.execute('DROP TRIGGER IF EXISTS media_relation_'+name)
+   for name,action,ident in (
+    ('insert','AFTER INSERT ON videos','NEW.id'),
+    ('delete','AFTER DELETE ON videos','OLD.id'),
+    ('update','AFTER UPDATE OF id,path,code,height,codec,censor_override,amane_snapshot ON videos','MIN(OLD.id,NEW.id)'),
+    ('manual','AFTER UPDATE OF manual,movie_key,version_key,part_no ON media_links WHEN OLD.manual!=NEW.manual OR NEW.manual=1','NEW.video_id'),
+    ('link_INSERT','AFTER INSERT ON media_links','NEW.video_id'),
+    ('link_DELETE','AFTER DELETE ON media_links','OLD.video_id'),
+    ('replace_path','BEFORE INSERT ON videos WHEN EXISTS(SELECT 1 FROM videos WHERE path=NEW.path AND id!=NEW.id)','(SELECT id FROM videos WHERE path=NEW.path)'),
+   ):
+    self._relation_trigger(c,name,action,ident)
    c.execute('CREATE INDEX IF NOT EXISTS media_link_movie ON media_links(movie_key,version_key,part_no,video_id)')
    c.execute('CREATE INDEX IF NOT EXISTS duplicate_preferred_id ON duplicate_choices(preferred_id)')
-   for action in ('INSERT','DELETE'):
-    c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_link_'+action+' AFTER '+action+' ON media_links BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
+ def _relation_trigger(self,c,name,event,ident):
+  c.execute(f'''CREATE TRIGGER IF NOT EXISTS media_relation_{name} {event} BEGIN
+   UPDATE media_relation_revision
+   SET first_dirty=CASE WHEN generation!=reconciled AND first_dirty IS NULL THEN NULL
+                        ELSE MIN(COALESCE(first_dirty,{ident}),{ident}) END,
+       generation=generation+1 WHERE id=1;
+  END''')
  def infer(self,row):
   p=Path(row['path']);r=self.identity_traits(row,p) if self.identity_traits else self.present(row);code=row.get('code','').strip().upper()
-  stem=re.sub(r'(?i)(?<![a-z0-9])(?:part|pt|cd|disc|disk)[ ._-]*\d{1,2}(?![a-z0-9])|第\s*\d{1,2}\s*(?:部分|段|集)','',p.stem)
-  movie='code:'+code if code else 'local:'+hashlib.sha256((str(p.parent)+stem).casefold().encode()).hexdigest()[:20]
-  version='v:'+hashlib.sha256((movie+'|'+str(p.parent).casefold()+'|'+stem.casefold()+'|'+str(row.get('height',0))+'|'+str(row.get('codec',''))+'|'+r['censorship']+'|'+str(r['vr'])).encode()).hexdigest()[:20]
+  stem=PART_PATTERN.sub('',p.stem);parent=str(p.parent)
+  movie='code:'+code if code else 'local:'+hashlib.sha256((parent+stem).casefold().encode()).hexdigest()[:20]
+  version='v:'+hashlib.sha256((movie+'|'+parent.casefold()+'|'+stem.casefold()+'|'+str(row.get('height',0))+'|'+str(row.get('codec',''))+'|'+r['censorship']+'|'+str(r['vr'])).encode()).hexdigest()[:20]
   return movie,version,r['part_index'] or 1
  def reconcile(self):
   with self.db() as c:
    occupied=set()
    relation_paths={}
    asset_table=c.execute("SELECT 1 FROM sqlite_master WHERE name='media_assets'").fetchone()
-   if asset_table and 'relation_path' in {r[1] for r in c.execute('PRAGMA table_info(media_assets)')}:
-    c.execute('CREATE TRIGGER IF NOT EXISTS media_relation_path AFTER UPDATE OF relation_path ON media_assets WHEN OLD.relation_path!=NEW.relation_path BEGIN UPDATE media_relation_revision SET generation=generation+1 WHERE id=1; END')
-   revision=c.execute('SELECT generation,reconciled FROM media_relation_revision WHERE id=1').fetchone()
+   has_paths=asset_table and 'relation_path' in {r[1] for r in c.execute('PRAGMA table_info(media_assets)')}
+   if has_paths:
+    for action,row in (('INSERT','NEW'),('DELETE','OLD')):
+     self._relation_trigger(c,'path_'+action,f"AFTER {action} ON media_assets WHEN {row}.video_id IS NOT NULL AND {row}.relation_path!=''",f'{row}.video_id')
+    self._relation_trigger(c,'path','AFTER UPDATE OF relation_path,video_id ON media_assets WHEN (OLD.relation_path IS NOT NEW.relation_path OR OLD.video_id IS NOT NEW.video_id) AND COALESCE(NEW.video_id,OLD.video_id) IS NOT NULL','MIN(COALESCE(OLD.video_id,NEW.video_id),COALESCE(NEW.video_id,OLD.video_id))')
+   revision=c.execute('SELECT generation,reconciled,first_dirty FROM media_relation_revision WHERE id=1').fetchone()
    if revision[0]==revision[1]:return
-   old_links={r['video_id']:r for r in c.execute('SELECT * FROM media_links')}
-   if c.execute("SELECT 1 FROM sqlite_master WHERE name='media_assets'").fetchone() and 'relation_path' in {r[1] for r in c.execute('PRAGMA table_info(media_assets)')}:
-    relation_paths={r['video_id']:r['relation_path'] for r in c.execute("SELECT video_id,relation_path FROM media_assets WHERE video_id IS NOT NULL AND relation_path!=''")}
-   cursor=c.execute('SELECT id,path,code,height,codec,censor_override,amane_snapshot FROM videos ORDER BY id')
+   c.execute('BEGIN IMMEDIATE')
+   first=c.execute('SELECT first_dirty FROM media_relation_revision WHERE id=1').fetchone()[0]
+   suffix=' WHERE id>=?' if first is not None else ''
+   bounds=(first,) if first is not None else ()
+   old_links={r['video_id']:r for r in c.execute('SELECT * FROM media_links'+(' WHERE video_id>=?' if bounds else ''),bounds)}
+   if has_paths:
+    relation_paths={r['video_id']:r['relation_path'] for r in c.execute("SELECT video_id,relation_path FROM media_assets WHERE video_id IS NOT NULL AND relation_path!=''"+(' AND video_id>=?' if bounds else ''),bounds)}
+   changes=[]
+   def write_links(rows):
+    placeholders=','.join(['(?,?,?,?,0)']*len(rows))
+    c.execute('INSERT INTO media_links VALUES '+placeholders+
+              ' ON CONFLICT(video_id) DO UPDATE SET movie_key=excluded.movie_key,version_key=excluded.version_key,part_no=excluded.part_no',
+              [value for row in rows for value in row])
+   cursor=c.execute('SELECT id,path,code,height,codec,censor_override,amane_snapshot FROM videos'+suffix+' ORDER BY id',bounds)
    for raw in cursor:
     row=dict(raw);old=old_links.get(row['id'])
     if old and old['manual']:
      occupied.add((old['movie_key'],old['version_key'],old['part_no']));continue
-    inference=dict(row,path=relation_paths.get(row['id'],row['path']))
-    movie,version,part=self.infer(inference)
-    if (movie,version,part) in occupied:version+=':copy:'+str(row['id'])
+    row['path']=relation_paths.get(row['id'],row['path'])
+    movie,version,part=self.infer(row)
+    earlier=first is not None and c.execute(
+     'SELECT 1 FROM media_links l JOIN videos v ON v.id=l.video_id WHERE l.movie_key=? AND l.version_key=? AND l.part_no=? AND l.video_id<? LIMIT 1',
+     (movie,version,part,first)).fetchone()
+    if (movie,version,part) in occupied or earlier:version+=':copy:'+str(row['id'])
     occupied.add((movie,version,part))
     if old and (old['movie_key'],old['version_key'],old['part_no'])==(movie,version,part):continue
-    c.execute('INSERT INTO media_links VALUES(?,?,?,?,0) ON CONFLICT(video_id) DO UPDATE SET movie_key=excluded.movie_key,version_key=excluded.version_key,part_no=excluded.part_no',(row['id'],movie,version,part))
-   c.execute('UPDATE media_relation_revision SET reconciled=generation WHERE id=1')
+    changes.append((row['id'],movie,version,part))
+    if len(changes)==225:
+     write_links(changes)
+     changes.clear()
+   if changes:write_links(changes)
+   c.execute('UPDATE media_relation_revision SET reconciled=generation,first_dirty=NULL WHERE id=1')
  def hierarchy(self,movie_key=None):
   self.reconcile()
   with self.db() as c:

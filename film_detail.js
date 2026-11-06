@@ -13,7 +13,31 @@ while(detailBody.firstChild)editor.querySelector('#filmEditorBody').append(detai
 detailBody.append(hero,playbackSection,gallerySection,editor);
 const saveButton=detail.querySelector('button[onclick="saveVideo()"]');saveButton.hidden=true;
 const forgetButton=detail.querySelector('button[onclick="forget()"]');editor.querySelector('#filmEditorBody').append(forgetButton);
-editor.addEventListener('toggle',()=>saveButton.hidden=!editor.open);
+const identification=document.createElement('p');
+identification.className='muted';
+identification.setAttribute('role','status');
+$('fields').before(identification);
+let identificationRequest;
+editor.addEventListener('toggle',()=>{
+ saveButton.hidden=!editor.open;
+ if(editor.open&&selected?.id)loadIdentification();
+ else identificationRequest?.abort();
+});
+detail.addEventListener('close',()=>identificationRequest?.abort());
+async function loadIdentification(){
+ identificationRequest?.abort();
+ const request=identificationRequest=new AbortController();
+ const id=selected.id,generation=detailGeneration;
+ identification.textContent='正在读取编号识别依据…';
+ try{
+  const response=await fetch('/api/identification/'+id,{signal:request.signal});
+  if(!response.ok)throw Error('读取失败');
+  const result=await response.json();
+  if(request.signal.aborted||generation!==detailGeneration||!editor.open)return;
+  const {filename,directory,nfo}=result.candidates;
+  identification.textContent=`当前编号：${result.code||'未识别'}${result.locked?'（已锁定）':''} · 文件名：${filename||'无'} · 父目录：${directory||'无'} · NFO：${nfo||'无'}${result.warning?' · '+result.warning:''}。修改编号并保存后会锁定。`;
+ }catch(error){if(!request.signal.aborted&&generation===detailGeneration)identification.textContent='暂时无法读取编号识别依据，仍可手动填写编号。'}
+}
 const imageDialog=document.createElement('dialog');imageDialog.id='artworkLightbox';imageDialog.innerHTML='<div class="lightboxToolbar"><span id="artworkLightboxTitle"></span><button onclick="closeArtworkLightbox()" aria-label="关闭图片预览">关闭 ×</button></div><img id="artworkLightboxImage" alt=""><div class="lightboxNav"><button onclick="moveArtwork(-1)" aria-label="上一张">← 上一张</button><button onclick="moveArtwork(1)" aria-label="下一张">下一张 →</button></div>';document.body.append(imageDialog);
 let lightboxIndex=0;
 function closeArtworkLightbox(){imageDialog.close()}
@@ -23,7 +47,7 @@ imageDialog.addEventListener('keydown',event=>{if(event.key==='ArrowLeft'){event
 const previousOpenVideo=openVideo;
 openVideo=async function(id,exact=false){if(window.serverBrowse)return serverBrowse.openMovie(id,exact,showMovieDetail);return showMovieDetail(id,exact)};
 function showMovieDetail(id,exact=false){
- previousOpenVideo(id,exact);clearTimeout(artworkPollTimer);artworkPollRounds=0;const generation=++detailGeneration;editor.open=false;saveButton.hidden=true;saveButton.disabled=false;playbackSection.hidden=true;artworkFilter='all';filmArtwork=[];
+ identificationRequest?.abort();identification.textContent='';previousOpenVideo(id,exact,false);clearTimeout(artworkPollTimer);artworkPollRounds=0;const generation=++detailGeneration;editor.open=false;saveButton.hidden=true;saveButton.disabled=false;playbackSection.hidden=true;artworkFilter='all';filmArtwork=[];
  const v=selected;
  $('coverPreview').style.display='block';$('coverPreview').dataset.fallback='0';$('coverPreview').src='/thumb/'+v.id+'-poster.jpg';$('coverPreview').onerror=function(){if(this.dataset.fallback==='0'){this.dataset.fallback='1';this.src='/thumb/'+v.id+'-cover.jpg'}else this.style.display='none'};
  renderSelectedFilmSummary();

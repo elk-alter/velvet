@@ -122,7 +122,7 @@ class SkipTests(unittest.TestCase):
         def claim(ident):
             preview=self.service.jobs.skip_preview(ident,ordinal)
             self.service.jobs.skip(ident,ordinal,preview['digest'])
-            original(ident)
+            return original(ident)
         with patch.object(self.service.jobs,'claim',side_effect=claim):
             self.assertEqual(self.service.copy.run(job)['state'],'cancelled')
         for entry in entries:self.assertEqual(Path(entry['destination']).exists(),Path(entry['source']).name=='other.mp4')

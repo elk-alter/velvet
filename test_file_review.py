@@ -40,6 +40,24 @@ class FileReviewTests(unittest.TestCase):
             videos = [dict(r) for r in c.execute('SELECT * FROM videos')]
         return self.review.snapshot(videos)
 
+    def test_each_automatic_finding_has_an_independent_decision(self):
+        self.review.mark([1],note='synthetic')
+        findings=[
+            {'code':'suspected_watermark','label':'Watermark','text':'A','samples':[{'at':2}]},
+            {'code':'suspected_watermark','label':'Watermark','text':'B','samples':[{'at':8}]},
+        ]
+        with self.db() as c:
+            c.execute("UPDATE file_reviews SET auto_findings=?,auto_generation='first' WHERE video_id=1",(json.dumps(findings),))
+        first,second=self.snapshot()['files'][1]['automatic_findings']
+        self.assertNotEqual(first['id'],second['id'])
+        self.review.review_automatic([1],first['code'],'dismissed',finding=first['id'],generation='first')
+        self.assertEqual([f['review'] for f in self.snapshot()['files'][1]['automatic_findings']],['dismissed','pending'])
+        with self.db() as c:
+            c.execute("UPDATE file_reviews SET auto_generation='second' WHERE video_id=1")
+        with self.assertRaises(ValueError):
+            self.review.review_automatic([1],second['code'],'confirmed',finding=second['id'],generation='first')
+        self.assertEqual([f['review'] for f in self.snapshot()['files'][1]['automatic_findings']],['dismissed','pending'])
+
     def wait(self):
         deadline = time.monotonic() + 3
         while self.review.lock.locked() and time.monotonic() < deadline:

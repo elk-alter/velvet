@@ -13,8 +13,8 @@ class DetailNavigationTests(unittest.TestCase):
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const handler=fs.readFileSync(SOURCE,'utf8').split(/\r?\n/).find(line=>line.startsWith('function applyView('));assert.ok(handler);
 const nodes={pageTitle:{textContent:'All videos'},actor:{disabled:false},q:{value:''}};let rendered=0,loaded=0,position=0;
-const context={window:{serverBrowse:{restoreCollection(){}},scrollTo(x,y){position=typeof x==='object'?x.top:y}},$:id=>nodes[id]||(nodes[id]={value:''}),viewIds:['q'],activeTags:new Set(),currentActor:'',actorsView:false,
- setMode(){context.currentActor='';nodes.pageTitle.textContent='All videos'},renderActorProfile(){rendered++},loadActors(){loaded++},render(){},showActors(){},requestAnimationFrame:fn=>fn()};
+const context={window:{serverBrowse:{restoreCollection(){},restoreScroll(top){position=top}},scrollTo(x,y){position=typeof x==='object'?x.top:y}},$:id=>nodes[id]||(nodes[id]={value:''}),viewIds:['q'],activeTags:new Set(),currentActor:'',actorsView:false,
+ setMode(){context.currentActor='';nodes.pageTitle.textContent='All videos'},renderActorProfile(){rendered++},loadActors(){loaded++},render(){assert.equal(position,700)},showActors(){},requestAnimationFrame:fn=>fn()};
 vm.createContext(context);vm.runInContext(handler,context);
 context.applyView({mode:'all',actor:'Synthetic Actor',filters:{q:'saved query'},tags:[],page:3,pageSize:48,scroll:700});
 assert.equal(nodes.pageTitle.textContent,'参演影片');assert.equal(context.currentActor,'Synthetic Actor');assert.equal(nodes.actor.disabled,true);assert.equal(nodes.q.value,'saved query');assert.equal(context.page,3);assert.equal(position,700);assert.equal(rendered,1);assert.equal(loaded,1);

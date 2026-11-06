@@ -1,6 +1,7 @@
 /* Bounded work navigation; paging never discards the editor or expands edit scope. */
 window.MovieDetailView=(()=>{
- let current=null,epoch=0,controller=null;
+ let current=null,epoch=0,controller=null,compareRequest;
+ function cancelComparison(){compareRequest?.abort();compareRequest=null}
  function movie(data){
   const headers=[...data.versions.items];for(const pinned of [data.active_version,data.default_version])if(pinned&&!headers.some(v=>v.version_key===pinned.version_key))headers.push(pinned);
   const files=[...data.parts.items];if(!files.some(p=>p.id===data.selected.id))files.push(data.selected);
@@ -8,16 +9,45 @@ window.MovieDetailView=(()=>{
    _versions:headers.map(v=>({...v,_parts:v.version_key===data.active_version.version_key?files:[]}))};
  }
  function busy(value){for(const id of ['versionPicker','partPicker']){const node=$(id);node.setAttribute('aria-busy',String(value));node.querySelectorAll('button,select').forEach(input=>input.disabled=value||input.dataset.boundary==='true')}}
- function cancelPending(){++epoch;controller?.abort();controller=null;busy(false)}
+ function cancelPending(){cancelComparison();++epoch;controller?.abort();controller=null;busy(false)}
  function count(page,label){return `${page.offset+1}–${Math.min(page.offset+page.limit,page.total)} / ${page.total} ${label}`}
  function pager(kind,page,label){return `<div class="movieDetailPager"><span tabindex="-1">${count(page,label)}</span><button data-boundary="${page.offset===0}" ${page.offset===0?'disabled':''} onclick="MovieDetailView.page('${kind}',${Math.max(0,page.offset-page.limit)})" aria-label="上一页${label}">上一页</button><button data-boundary="${page.offset+page.limit>=page.total}" ${page.offset+page.limit>=page.total?'disabled':''} onclick="MovieDetailView.page('${kind}',${page.offset+page.limit})" aria-label="下一页${label}">下一页</button></div>`}
+ function partButton(part,selected){
+  const active=part.id===selected.id;
+  return `<button class="moviePartButton ${active?'accent':''}" ${active?'aria-current="true"':''} onclick="openVideo(${part.id},true)">
+    <span class="moviePartThumbnail"><span aria-hidden="true">${part.part_index}</span><img loading="lazy" decoding="async" src="/thumb/${part.id}-cover.jpg" alt="" onerror="collectionImageFallback(this,${part.id})"></span>
+    <span><strong>第 ${part.part_index} 段</strong><small>${esc(part.resolution_label)}${part.vr?' · VR':''}${part.missing?' · 离线':''}</small></span>
+  </button>`;
+ }
  function render(){
   if(!current||!detail.open)return;
+  cancelComparison();
   const d=current,versions=[...d.versions.items];for(const pinned of [d.default_version,d.active_version])if(pinned&&!versions.some(v=>v.version_key===pinned.version_key))versions.unshift(pinned);
-  $('versionPicker').innerHTML=d.versions.total>1?`<label>播放版本 <select id="versionSelect" onchange="MovieDetailView.chooseVersion(this)">${versions.map(v=>`<option value="${v.resume_id}" ${v.version_key===d.active_version.version_key?'selected':''}>${esc(v.version_label)} · ${v.part_count} 段${v.version_key===d.default_version_key?' · 默认':''}</option>`).join('')}</select></label><button onclick="MovieDetailView.prefer()">设为默认版本</button>${d.versions.total>d.versions.limit?pager('versions',d.versions,'版本'):''}${versions.length>d.versions.items.length?'<small class="moviePinnedHint">当前 / 默认版本固定列出</small>':''}`:'';
+  $('versionPicker').innerHTML=d.versions.total>1?`<label>播放版本 <select id="versionSelect" onchange="MovieDetailView.chooseVersion(this)">${versions.map(v=>`<option value="${v.resume_id}" ${v.version_key===d.active_version.version_key?'selected':''}>${esc(v.version_label)} · ${v.part_count} 段${v.version_key===d.default_version_key?' · 默认':''}</option>`).join('')}</select></label><button onclick="MovieDetailView.prefer()">设为默认版本</button>${d.versions.total>d.versions.limit?pager('versions',d.versions,'版本'):''}${versions.length>d.versions.items.length?'<small class="moviePinnedHint">当前 / 默认版本固定列出</small>':''}<details class="versionComparison" ontoggle="MovieDetailView.compare(this)"><summary>对比版本</summary><div class="versionComparisonResults" aria-live="polite"></div></details>`:'';
   $('partPicker').classList.add('pagedParts');
-  $('partPicker').innerHTML=d.parts.total>1?`${pager('parts',d.parts,'分段')}<div class="moviePartButtons">${d.parts.items.map(part=>`<button class="${part.id===d.selected.id?'accent':''}" ${part.id===d.selected.id?'aria-current="true"':''} onclick="openVideo(${part.id},true)">Part ${part.part_index} · ${esc(part.resolution_label)}${part.vr?' · VR':''}${part.missing?' · 离线':''}</button>`).join('')}</div>`:'';
+  $('partPicker').innerHTML=d.parts.total>1?`${pager('parts',d.parts,'分段')}<div class="moviePartButtons">${d.parts.items.map(part=>partButton(part,d.selected)).join('')}</div>`:'';
   detail.querySelector('.dialogTools').hidden=d.versions.total<2&&d.parts.total<2;
+ }
+ async function compare(panel){
+  if(!panel.isConnected)return;
+  cancelComparison();
+  if(!panel.open||!current||!detail.open)return;
+  const d=current,request=compareRequest=new AbortController();
+  const target=panel.querySelector('.versionComparisonResults');
+  target.textContent='正在读取版本对比…';
+  const params=new URLSearchParams({id:d.selected.id,exact:'1',compare:'1',revision:d.revision,version_offset:d.versions.offset,version_limit:d.versions.limit});
+  try{
+   const response=await fetch('/api/library/detail?'+params,{signal:request.signal});
+   if(response.status===409)throw Error('版本资料已更新，请重新打开影片后对比。');
+   if(!response.ok)throw Error('无法加载版本对比，请关闭后重新展开。');
+   const result=await response.json();
+   if(request.signal.aborted||!panel.isConnected||!panel.open||current!==d)return;
+   target.innerHTML=`<div class="versionComparisonTable"><table><thead><tr><th>版本</th><th>分辨率</th><th>代表文件编码</th><th>估算平均码率</th><th>检查结果</th></tr></thead><tbody>${result.versions.map(v=>{
+    const bitrate=v.estimated_bitrate===null?'未知':(v.estimated_bitrate/1000000).toFixed(2)+' Mbps';
+    const checked=v.checks.passed+v.checks.errors+v.checks.probe_errors;
+    return `<tr><th scope="row"><button onclick="openVideo(${v.resume_id},true)">${esc(v.version_label)}</button></th><td>${esc(v.resolution_label)}</td><td>${esc(v.codec||'未知')}</td><td>${bitrate}</td><td>${v.missing?'离线 · ':''}${v.checks.probe_errors?'探测失败 '+v.checks.probe_errors+' 段 · ':''}${v.checks.errors?'解码异常 '+v.checks.errors+' 段 · ':''}${checked?'检查通过 '+v.checks.passed+' / '+v.part_count+' 段':'暂无有效检查'}</td></tr>`;
+   }).join('')}</tbody></table></div><small class="muted">码率按文件大小和时长估算，包含音轨等开销。检查结果按实际检查范围记录。</small>`;
+  }catch(error){if(!request.signal.aborted)target.textContent=error.message||'无法加载版本对比。'}
  }
  function show(data){cancelPending();current=data;render()}
  function parameters(id,{preservePartPage=false}={}){
@@ -44,5 +74,5 @@ window.MovieDetailView=(()=>{
   }finally{if(ticket===epoch)busy(false)}
  }
  detail.addEventListener('close',()=>{cancelPending();current=null});
- return {movie,show,page,prefer,chooseVersion,cancelPending,parameters,restore:render,get generation(){return epoch}};
+ return {compare,movie,show,page,prefer,chooseVersion,cancelPending,parameters,restore:render,get generation(){return epoch}};
 })();

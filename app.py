@@ -75,6 +75,21 @@ with db() as c:
  if 'engine' not in job_fields:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
  if 'video_id' not in job_fields:c.execute('ALTER TABLE scrape_jobs ADD COLUMN video_id INTEGER')
 
+def ensure_scrape_job_indexes():
+ with db() as c:
+  c.execute('CREATE INDEX IF NOT EXISTS scrape_jobs_code_id ON scrape_jobs(code,id DESC)')
+  c.execute('CREATE INDEX IF NOT EXISTS scrape_jobs_status_id ON scrape_jobs(status,id DESC)')
+  c.execute('CREATE INDEX IF NOT EXISTS videos_scrape_code ON videos(UPPER(TRIM(code)),id) WHERE missing=0')
+
+ensure_scrape_job_indexes()
+
+def ensure_manual_card_flags():
+ with db() as c:
+  columns={r[1] for r in c.execute('PRAGMA table_info(videos)')}
+  for flag in ('domestic','amateur'):
+   if flag not in columns:c.execute(f'ALTER TABLE videos ADD COLUMN {flag} INTEGER NOT NULL DEFAULT 0')
+
+ensure_manual_card_flags()
 from video_ids import ensure_video_ids
 ensure_video_ids(db,DATA)
 
@@ -144,19 +159,34 @@ INVENTORY_QUERY=InventoryQuery(INVENTORY)
 from storage_file_details import StorageFileDetails
 STORAGE_FILES=StorageFileDetails(INVENTORY,INVENTORY_QUERY,LEASES)
 from library_query import LibraryQuery,LibraryQueryChanged
-BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,config,project=projection_presentation)
+BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,config,project=projection_presentation,write_guard=DB_MUTEX)
 from movie_details import MovieDetails
 MOVIE_DETAILS=MovieDetails(BROWSE,REVIEW)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
+def read_nfo(nfo):
+ if not nfo.is_file():return None
+ if nfo.is_symlink() or getattr(nfo.lstat(),'st_file_attributes',0)&1024:raise ValueError('NFO链接需要人工核对')
+ if nfo.stat().st_size>2_000_000:raise ValueError('NFO 过大')
+ return ET.fromstring(nfo.read_bytes())
+
+def identification_evidence(row):
+ path=Path(row['path'])
+ candidates={'filename':identify(path.stem),'directory':identify(path.parent.name),'nfo':None}
+ warning=''
+ try:
+  tree=read_nfo(path.with_suffix('.nfo'))
+  if tree is not None:candidates['nfo']=tree.findtext('num') or tree.findtext('id')
+ except (OSError,ValueError,ET.ParseError):
+  warning='NFO 无法读取，请检查文件格式或权限'
+ return {'code':row['code'],'locked':'code' in json.loads(row['locked_fields'] or '[]'),
+         'source':row['source'],'candidates':candidates,'warning':warning}
+
 def read_metadata(p,nfo_path=None):
  result={'code':identify(p.stem) or identify(p.parent.name),'title':fallback_title(p),'source':'filename'}
- nfo=nfo_path or p.with_suffix('.nfo')
- if nfo.is_file():
-  if nfo.is_symlink() or getattr(nfo.lstat(),'st_file_attributes',0)&1024:raise ValueError('NFO链接需要人工核对')
-  if nfo.stat().st_size>2_000_000:raise ValueError('NFO 过大')
-  tree=ET.fromstring(nfo.read_bytes())
+ tree=read_nfo(nfo_path or p.with_suffix('.nfo'))
+ if tree is not None:
   for target,tag in [('title','title'),('studio','studio'),('date','premiered'),('plot','plot'),('code','id')]:
    value=tree.findtext(tag)
    if value:result[target]=value
@@ -221,7 +251,9 @@ def scan(force=False,folder_path=None,automatic=False):
  if RESTORING.is_set() or SHUTTING_DOWN.is_set():return
  policies=[policy for policy in LIBRARIES.policies() if (not folder_path or policy['path']==folder_path) and (not automatic or policy['automation']!='off')]
  lease=LEASES.try_acquire('scan',resources=[path_resource(policy['path'],tree=True) for policy in policies] or ['metadata'])
- if lease is None:return
+ if lease is None:
+  if not STATUS['running']:STATUS['message']='等待相关媒体任务释放扫描目录'
+  return
  try:
   if RESTORING.is_set() or SHUTTING_DOWN.is_set() or not LOCK.acquire(False):return
   try:task_key=JOURNAL.start('scan')
@@ -229,6 +261,7 @@ def scan(force=False,folder_path=None,automatic=False):
   SCAN_CANCEL.clear()
   STATUS.update(running=True,message='扫描目录…',processed=0,errors=0)
   try:
+   probe=binary('ffprobe');ff=binary('ffmpeg')
    for policy in policies:
     folder=policy['path']
     if folder_path and folder!=folder_path:continue
@@ -254,11 +287,14 @@ def scan(force=False,folder_path=None,automatic=False):
         continue
        with db() as c:
         old=c.execute('SELECT * FROM videos WHERE path=?',(str(p),)).fetchone()
-        c.execute('INSERT INTO videos(path,title,size,mtime) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,missing=0',(str(p),p.stem,stat.st_size,stat.st_mtime))
-        vid=c.execute('SELECT id FROM videos WHERE path=?',(str(p),)).fetchone()[0]
+        if old:
+         vid=old['id']
+         c.execute('UPDATE videos SET size=?,mtime=?,missing=0 WHERE id=? AND (size IS NOT ? OR mtime IS NOT ? OR missing IS NOT 0)',(stat.st_size,stat.st_mtime,vid,stat.st_size,stat.st_mtime))
+        else:
+         vid=c.execute('INSERT INTO videos(path,title,size,mtime) VALUES(?,?,?,?)',(str(p),p.stem,stat.st_size,stat.st_mtime)).lastrowid
        unchanged=old and old['mtime']==stat.st_mtime and old['size']==stat.st_size
        sidecar=p.with_suffix('.nfo');stamp=str(sidecar.stat().st_mtime_ns) if sidecar.exists() else ''
-       if unchanged and old['metadata_stamp']==stamp and not force and old['scraped'] and time.time()-old['scraped']<86400 and (not binary('ffmpeg') or (DATA/f'{vid}-5.jpg').exists()):continue
+       if unchanged and old['metadata_stamp']==stamp and not force and old['scraped'] and time.time()-old['scraped']<86400 and (not ff or (DATA/f'{vid}-5.jpg').exists()):continue
        STATUS['message']='正在整理：'+p.name
        err=[]
        try:meta=read_metadata(p)
@@ -267,7 +303,7 @@ def scan(force=False,folder_path=None,automatic=False):
        if meta['source']!='nfo':
         try:meta.update(remote_metadata(meta['code']))
         except Exception as e:err.append('联网匹配失败：'+str(e))
-       probe=binary('ffprobe');ff=binary('ffmpeg');duration=old['duration'] if old else 0
+       duration=old['duration'] if old else 0
        technical={}
        if probe and (force or not unchanged or not duration):
         r=run([probe,'-v','error','-show_format','-show_streams','-of','json',str(p)],45)
@@ -279,7 +315,7 @@ def scan(force=False,folder_path=None,automatic=False):
         for i in range(6):
          target=DATA/(f'{vid}.jpg' if i==0 else f'{vid}-{i}.jpg')
          if unchanged and not force and target.exists():continue
-         r=run([ff,'-y','-loglevel','error','-ss',str(duration*(i+1)/8),'-i',str(p),'-frames:v','1','-vf','scale=640:-2',str(target)])
+         r=run([ff,'-y','-loglevel','error','-filter_threads','1','-threads','2','-ss',str(duration*(i+1)/8),'-i',str(p),'-frames:v','1','-vf','scale=640:-2',str(target)])
          if r.returncode:err.append('截图失败');break
        else:err.append('缺少 FFmpeg：截图与媒体信息不可用')
        # 本地同名海报和 Kodi 风格海报优先。
@@ -298,11 +334,18 @@ def scan(force=False,folder_path=None,automatic=False):
       except Exception as e:
        STATUS['errors']+=1
        with db() as c:c.execute('UPDATE videos SET error=? WHERE path=?',(str(e)[:500],str(p)))
-    with db() as c:
-     for row in LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT id,path,size FROM videos').fetchall()]):
-      try:inside=Path(row['path']).is_relative_to(Path(folder))
-      except ValueError:inside=False
-      if inside and LIBRARIES.owner(row['path'],policies)==folder and row['path'] not in seen and not walk_errors and Path(folder).is_dir():c.execute('UPDATE videos SET missing=1 WHERE id=?',(row['id'],))
+    if not walk_errors and Path(folder).is_dir():
+     with db() as c:
+      candidates=[dict(r) for r in c.execute('SELECT id,path,size,mtime FROM videos WHERE COALESCE(missing,0)=0')]
+     missing=[]
+     for row in LIBRARIES.filter_rows(candidates):
+      if SCAN_CANCEL.is_set():STATUS['message']='扫描已取消（已完成项目保留）';return
+      path=row['path']
+      if path not in seen and Path(path).is_relative_to(folder) and LIBRARIES.owner(path,policies)==folder:
+       missing.append((row['id'],path,row['size'],row['mtime']))
+     if missing and Path(folder).is_dir():
+      with db() as c:
+       c.executemany('UPDATE videos SET missing=1 WHERE id=? AND path=? AND size IS ? AND mtime IS ? AND COALESCE(missing,0)=0',missing)
     LIBRARIES.finish(folder,'部分目录读取失败，未更新缺失标记' if walk_errors else '')
    STATUS['message']='扫描完成'
   finally:
@@ -459,7 +502,28 @@ def _submit_scrapes(ids,use_cache=False):
   rows=[c.execute('SELECT * FROM videos WHERE id=?',(int(vid),)).fetchone() for vid in dict.fromkeys(ids)]
  if any(not r or not r['code'].strip() for r in rows):raise ValueError('有视频缺少编号，请先在详情中填写并保存编号')
  rows=LIBRARIES.filter_rows([dict(r) for r in rows])
- codes=list(dict.fromkeys(r['code'].strip().upper() for r in rows));submitted=[];skipped=0;failures=[]
+ codes=list(dict.fromkeys(r['code'].strip().upper() for r in rows))
+ return submit_scrape_codes(codes,use_cache)
+
+def retry_scrape_jobs(job_ids):
+ if not isinstance(job_ids,list) or not 1<=len(job_ids)<=50 or any(type(ident) is not int or ident<1 for ident in job_ids):
+  raise ValueError('请选择 1–50 条失败任务')
+ if not SUBMIT_LOCK.acquire(False):raise ValueError('另一批提交进行中，请稍后重试')
+ try:
+  engine=config().get('scrape_engine','external')
+  requested=list(dict.fromkeys(job_ids))
+  with db() as c:
+   jobs=c.execute("SELECT j.code FROM scrape_jobs j WHERE j.id IN ("+','.join('?' for _ in requested)+") AND j.status='failed' AND j.remote_id>0 AND j.engine=? AND j.id=(SELECT MAX(later.id) FROM scrape_jobs later WHERE later.code=j.code)",(*requested,engine)).fetchall()
+   codes=[job['code'] for job in jobs]
+   candidates=[dict(row) for row in c.execute("SELECT id,path,size,UPPER(TRIM(code)) AS code FROM videos WHERE missing=0 AND UPPER(TRIM(code)) IN ("+','.join('?' for _ in codes)+")",codes)] if codes else []
+  available={row['code'] for row in LIBRARIES.filter_rows(candidates)}
+  result=submit_scrape_codes([code for code in codes if code in available])
+  result['skipped']+=len(requested)-sum(code in available for code in codes)
+  return result
+ finally:SUBMIT_LOCK.release()
+
+def submit_scrape_codes(codes,use_cache=False):
+ submitted=[];skipped=0;failures=[]
  for code in codes:
   with db() as c:active=c.execute("SELECT id FROM scrape_jobs WHERE code=? AND status IN ('queued','running','submitting','cancelling')",(code,)).fetchone()
   if active:skipped+=1;continue
@@ -508,7 +572,12 @@ def _poll_scrapes():
    elif out.get('outcome')=='success':details.append(str(out.get('site',''))+': '+('缓存命中' if out.get('cached') else '获取成功'))
    elif out.get('outcome')=='not_found':details.append(str(out.get('site',''))+': 未匹配')
   reasons=[x.get('reason') for x in result.get('outcomes',[]) if x.get('outcome')=='failed']
-  retry='retryable' if any(x in ('network','timeout','dns','rate_limited','server_error') for x in reasons) else 'needs_review' if remote['status']=='failed' else ''
+  outcomes=result.get('outcomes',[])
+  retry=''
+  if remote['status']=='failed':
+   if any(x in ('network','timeout','dns','rate_limited','server_error') for x in reasons):retry='retryable'
+   elif outcomes and all(x.get('outcome')=='not_found' for x in outcomes):retry='not_found'
+   else:retry='needs_review'
   with db() as c:c.execute('UPDATE scrape_jobs SET status=?,error=?,details=?,updated=?,retry_kind=? WHERE id=?',(remote['status'],remote.get('error') or '', '; '.join(details),time.time(),retry,job['id']))
 
 AUTO_STATUS={'enabled':True,'message':'等待自动刮削','submitted':0}
@@ -529,7 +598,7 @@ def auto_scrape_tick():
    if code in seen:continue
    seen.add(code)
    jobs=c.execute('SELECT status,created,retry_kind FROM scrape_jobs WHERE code=? ORDER BY id DESC',(code,)).fetchall()
-   if jobs and (jobs[0]['retry_kind']=='needs_review' or jobs[0]['status'] in ('queued','running','submitting','cancelling','done','cancelled','canceled') or time.time()-jobs[0]['created']<86400 or len(jobs)>=3):continue
+   if jobs and (jobs[0]['retry_kind'] in ('needs_review','not_found') or jobs[0]['status'] in ('queued','running','submitting','cancelling','done','cancelled','canceled') or time.time()-jobs[0]['created']<86400 or len(jobs)>=3):continue
    candidates.append(row['id'])
  if active>=3:AUTO_STATUS['message']='等待当前刮削任务完成';return
  batch=candidates[:min(2,3-active)]
@@ -693,6 +762,46 @@ finally { $dialog.Dispose(); $owner.Close(); $owner.Dispose() }
 def launch(path):
  if sys.platform=='win32':os.startfile(path)
  else:subprocess.Popen(['open' if sys.platform=='darwin' else 'xdg-open',path],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+def scrape_job_page(query):
+ status=query.get('status',['all'])[0];reason=query.get('reason',[''])[0]
+ if status not in ('all','queued','running','done','failed','images'):raise ValueError('任务状态筛选无效')
+ if reason and (status!='failed' or reason not in ('retryable','not_found','needs_review')):raise ValueError('失败原因筛选无效')
+ offset=max(0,int(query.get('offset',['0'])[0]));limit=min(100,max(1,int(query.get('limit',['100'])[0])))
+ latest='NOT EXISTS(SELECT 1 FROM scrape_jobs newer WHERE newer.code=j.code AND newer.id>j.id)'
+ conditions=[];parameters=[]
+ if status=='images':
+  conditions.extend(("j.status='done'",latest,
+   "EXISTS(SELECT 1 FROM videos v JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 "
+   "JOIN artwork_jobs a ON a.video_id=v.id WHERE a.active=1 AND a.status='failed' AND v.missing=0 AND UPPER(TRIM(v.code))=UPPER(j.code) AND instr('/'||LOWER(REPLACE(v.path,CHAR(92),'/'))||'/','/.velvet-archive/')=0)"))
+ elif status!='all':
+  conditions.append('j.status=?');parameters.append(status)
+ if reason:
+  conditions.append("COALESCE(NULLIF(j.retry_kind,''),'needs_review')=?");parameters.append(reason)
+ where=' WHERE '+' AND '.join(conditions) if conditions else ''
+ with DB_MUTEX:
+  if status=='images':BROWSE.refresh()
+  with db() as c:
+   total=c.execute('SELECT COUNT(*) FROM scrape_jobs j'+where,parameters).fetchone()[0]
+   jobs=[dict(row) for row in c.execute('SELECT j.*,'+latest+' AS latest FROM scrape_jobs j'+where+' ORDER BY j.id DESC LIMIT ? OFFSET ?',
+                                      (*parameters,limit,offset))]
+   engine=config().get('scrape_engine','external')
+   for job in jobs:
+    is_latest=job.pop('latest')
+    job['can_retry']=bool(job['status']=='failed' and job['remote_id'] and job['remote_id']>0 and job['engine']==engine and is_latest)
+    job['completeness']='';job['image_failures']=0
+    if job['status']!='done' or not is_latest:continue
+    code=job['code'].upper()
+    row=c.execute('SELECT amane_id,actors,studio,source_tags FROM videos WHERE missing=0 AND UPPER(TRIM(code))=? ORDER BY id LIMIT 1',(code,)).fetchone()
+    if not row:continue
+    job['completeness']='awaiting_sync' if not row['amane_id'] else 'partial' if not row['actors'] or not row['studio'] or not row['source_tags'] else ''
+    failures=[dict(item) for item in c.execute(
+     "SELECT v.id,v.path,v.size,COUNT(*) AS count FROM artwork_jobs a JOIN videos v ON v.id=a.video_id "
+     "WHERE a.active=1 AND a.status='failed' AND v.missing=0 AND UPPER(TRIM(v.code))=? GROUP BY v.id ORDER BY v.id",(code,))]
+    job['artwork_failures']=[{'id':item['id'],'count':item['count']} for item in (LIBRARIES.filter_rows(failures) if failures else [])]
+    job['image_failures']=sum(item['count'] for item in job['artwork_failures'])
+ return {'jobs':jobs,'total':total,'offset':offset,'limit':limit,'status':AMANE_STATUS,'auto':AUTO_STATUS,
+         'work':WORK_STATUS,'duplicates':DUP_STATUS,'file_review':{'running':REVIEW.lock.locked()}}
+
 def browser_context():
  cfg=config();cfg['has_key']=bool(cfg.get('api_key'));cfg['api_key']='';cfg['has_amane_token']=bool(cfg.get('amane_token'));cfg['amane_token']='';cfg.pop('scrape_site_config',None)
  with db() as c:folders=[row[0] for row in c.execute('SELECT path FROM folders ORDER BY path')]
@@ -751,6 +860,10 @@ class Handler(BaseHTTPRequestHandler):
     return self.send(LIBRARIES.files(query.get('path',[''])[0],query.get('status',['all'])[0],query.get('search',[''])[0],int(query.get('offset',['0'])[0]),int(query.get('limit',['30'])[0])))
    if path=='/api/hierarchy':return self.send({'movies':CORE.hierarchy()})
    if path=='/api/backups':return self.send({'backups':CORE.backups()})
+   if path.startswith('/api/identification/'):
+    row=self.video(path.rsplit('/',1)[-1])
+    if not LIBRARIES.filter_rows([row]):raise ValueError('作品不存在或已排除')
+    return self.send(identification_evidence(row))
    if path.startswith('/api/field-diff/'):
     row=self.video(path.rsplit('/',1)[-1]);snapshot=json.loads(row.get('amane_snapshot') or '{}');values={'title':snapshot.get('title'),'actors':', '.join(snapshot.get('actors') or []),'studio':snapshot.get('studio'),'date':snapshot.get('release'),'plot':snapshot.get('plot'),'code':snapshot.get('number')}
     return self.send({'fields':[{'field':k,'current':row.get(k),'incoming':v,'locked':k in json.loads(row['locked_fields'] or '[]'),'source':(snapshot.get('field_sources') or {}).get(k,'Amane')} for k,v in values.items()]})
@@ -765,13 +878,7 @@ class Handler(BaseHTTPRequestHandler):
     payload=image_path.read_bytes();kind='image/png' if payload.startswith(b'\x89PNG') else 'image/webp' if payload.startswith(b'RIFF') else 'image/jpeg'
     return self.send(payload,kind)
    if path=='/api/duplicates':return self.send({'groups':duplicate_groups(),'status':DUP_STATUS})
-   if path=='/api/amane-jobs':
-    with db() as c:
-     jobs=[dict(r) for r in c.execute('SELECT * FROM scrape_jobs ORDER BY id DESC LIMIT 100')]
-     for job in jobs:
-      row=c.execute('SELECT * FROM videos WHERE UPPER(code)=? LIMIT 1',(job['code'].upper(),)).fetchone()
-      job['completeness']='awaiting_sync' if job['status']=='done' and row and not row['amane_id'] else 'partial' if job['status']=='done' and row and (not row['actors'] or not row['studio'] or not row['source_tags']) else ''
-    return self.send({'jobs':jobs,'status':AMANE_STATUS,'auto':AUTO_STATUS,'work':WORK_STATUS,'duplicates':DUP_STATUS,'file_review':{'running':REVIEW.lock.locked()}})
+   if path=='/api/amane-jobs':return self.send(scrape_job_page(parse_qs(urlparse(self.path).query)))
    if path=='/api/tag-rules':
     try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
     except (OSError,ValueError):rules=[]
@@ -779,6 +886,7 @@ class Handler(BaseHTTPRequestHandler):
    if path=='/api/context':return self.send(browser_context())
    if path=='/api/library/lookup':return self.send(BROWSE.lookup(parse_qs(urlparse(self.path).query).get('code',[''])[0]))
    if path=='/api/library/relationship-options':return self.send(BROWSE.relationship_options(parse_qs(urlparse(self.path).query).get('q',[''])[0]))
+   if path=='/api/library/query-progress':return self.send(BROWSE.progress())
    if path=='/api/library/query-revision':return self.send(BROWSE.revision(parse_qs(urlparse(self.path).query).get('quality',[''])[0]))
    if path=='/api/library/facets':
     query=parse_qs(urlparse(self.path).query);return self.send(BROWSE.facets(query.get('kind',['tags'])[0],query.get('q',[''])[0]))
@@ -919,6 +1027,13 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/organization/control':
     job=ORGANIZATION.control(a.get('id'),a.get('action'));ORGANIZATION.start()
     return self.send({'ok':True,'state':job['state']})
+   elif path=='/api/organization/recovery-roots':
+    return self.send({'roots':ORGANIZATION.jobs.verify_recovery_roots(a.get('id'),a.get('replacements'))})
+   elif path=='/api/organization/recovery-map-preview':
+    return self.send(ORGANIZATION.jobs.recovery_map_preview(a.get('id'),a.get('replacements')))
+   elif path=='/api/organization/recovery-map':
+    if a.get('confirmed') is not True:raise ValueError('请先核对并确认新的整理根目录')
+    return self.send(ORGANIZATION.jobs.confirm_recovery_map(a.get('id'),a.get('replacements'),a.get('digest')))
    elif path=='/api/organization/skip-preview':return self.send(ORGANIZATION.jobs.skip_preview(a.get('id'),a.get('ordinal')))
    elif path=='/api/organization/skip':
     if a.get('confirmed') is not True:raise ValueError('请核对并确认本次跳过范围')
@@ -988,7 +1103,7 @@ class Handler(BaseHTTPRequestHandler):
    elif path=='/api/file-review/automatic':
     REVIEW.set_auto(a.get('enabled'));return self.send({'ok':True})
    elif path=='/api/file-review/automatic-mark':
-    REVIEW.review_automatic(a.get('ids'),a.get('code'),a.get('decision'));return self.send({'ok':True})
+    REVIEW.review_automatic(a.get('ids'),a.get('code'),a.get('decision'),finding=a.get('finding'),generation=a.get('generation'));return self.send({'ok':True})
    elif path=='/api/file-review/mark':
     REVIEW.mark(a.get('ids'),a.get('flag'),a.get('enabled',True),a.get('decision'),a.get('note'));return self.send({'ok':True})
    elif path=='/api/file-review/check':
@@ -1016,9 +1131,12 @@ class Handler(BaseHTTPRequestHandler):
     (DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8');return self.send({'ok':True})
    elif path=='/api/artwork-retry':
     row=self.video(a['id'])
-    try:snapshot=json.loads(row['amane_snapshot'] or '{}')
-    except ValueError:snapshot={}
-    ARTWORK.queue(row['id'],snapshot,snapshot.get('_velvet_engine',config().get('scrape_engine','external')));ARTWORK.retry(row['id'])
+    if not LIBRARIES.filter_rows([row]):raise ValueError('作品不存在或已排除')
+    if a.get('failed_only') is not True:
+     try:snapshot=json.loads(row['amane_snapshot'] or '{}')
+     except ValueError:snapshot={}
+     ARTWORK.queue(row['id'],snapshot,snapshot.get('_velvet_engine',config().get('scrape_engine','external')))
+    ARTWORK.retry(row['id'])
     if not AMANE_LOCK.locked():SYNC_CANCEL.clear()
     threading.Thread(target=ARTWORK.process,args=(SYNC_CANCEL,),kwargs={'video_id':row['id']},daemon=True).start();return self.send({'ok':True})
    elif path=='/api/actors-sync':
@@ -1125,7 +1243,7 @@ class Handler(BaseHTTPRequestHandler):
        result={key:report[key] for key in ('id','digest','ready','backup')}
        result.update(problems=report['problems'][:50],problem_count=len(report['problems']),verified_count=len(report['files']),retained_count=len(report['retained_files']),retained_files=[{'path':item['path']} for item in report['retained_files'][:50]])
       else:
-       rollback=CORE.restore(a['name'],a.get('reconciliation'));REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config,project=projection_presentation);MOVIE_DETAILS.__init__(BROWSE,REVIEW);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+       rollback=CORE.restore(a['name'],a.get('reconciliation'));ensure_manual_card_flags();ensure_scrape_job_indexes();REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config,project=projection_presentation,write_guard=DB_MUTEX);MOVIE_DETAILS.__init__(BROWSE,REVIEW);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
        with db() as c:
         if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:
@@ -1188,6 +1306,8 @@ class Handler(BaseHTTPRequestHandler):
         if link:c.execute('DELETE FROM movie_preferences WHERE movie_key=?',(link[0],))
    elif path=='/api/amane-submit':
     return self.send(submit_scrapes(a.get('ids')))
+   elif path=='/api/amane-retry':
+    return self.send(retry_scrape_jobs(a.get('job_ids')))
    elif path=='/api/amane-poll':
     poll_scrapes();return self.send({'ok':True})
    elif path=='/api/unlock':
@@ -1228,20 +1348,34 @@ class Handler(BaseHTTPRequestHandler):
     (DATA/'tag_rules.json').write_text(json.dumps(rules,ensure_ascii=False,indent=2),'utf-8')
     return self.send({'ok':True,'count':retag_all()})
    elif path=='/api/edit':
-    allowed={'title','tags','actors','studio','code','plot','date','favorite','watched','rating','censor_override'};updates={k:v for k,v in a.items() if k in allowed}
+    allowed={'title','tags','actors','studio','code','plot','date','favorite','watched','rating','censor_override','domestic','amateur'};updates={k:v for k,v in a.items() if k in allowed}
+    for flag in ('domestic','amateur'):
+     if flag in updates and (type(updates[flag]) is not int or updates[flag] not in (0,1)):raise ValueError('手动标记必须为 0 或 1')
     if 'censor_override' in updates and updates['censor_override'] not in ('auto','censored','uncensored','unknown'):raise ValueError('有码/无码标记无效')
-    with db() as c:old=c.execute('SELECT * FROM videos WHERE id=?',(int(a['id']),)).fetchone()
-    if not old:raise ValueError('视频不存在')
-    locked=set(json.loads(old['locked_fields'] or '[]'))
-    if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
-    locked.update(k for k,v in updates.items() if k in {'title','code','actors','studio','date','plot','tags'} and str(v)!=str(old[k]))
-    updates['locked_fields']=json.dumps(sorted(locked));updates['manual']=0
-    if 'code' in updates and updates['code']!=old['code']:
-     updates.update(amane_id=0,source_tags='',amane_snapshot='{}',source='filename',poster_origin='',cover_origin='')
-     (DATA/f"{old['id']}-poster.jpg").unlink(missing_ok=True)
-     (DATA/f"{old['id']}-cover.jpg").unlink(missing_ok=True)
-    tags,reasons=classify(dict(old)|updates);updates.update(auto_tags=tags,tag_reasons=reasons)
-    with db() as c:c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),int(a['id'])])
+    expected=a.get('expected')
+    if 'expected' in a and (not isinstance(expected,dict) or set(expected)!=set(updates) or any(not isinstance(value,str) for value in expected.values())):
+     raise ValueError('编辑基线无效，请重新打开详情')
+    with db() as c:
+     c.execute('BEGIN IMMEDIATE')
+     old=c.execute('SELECT * FROM videos WHERE id=?',(int(a['id']),)).fetchone()
+     if not old:raise ValueError('视频不存在')
+     if expected is not None:
+      defaults={'rating':0,'domestic':0,'amateur':0,'censor_override':'auto'}
+      for field,value in expected.items():
+       current=old[field] if old[field] is not None else defaults.get(field,'')
+       if field=='censor_override' and not current:current='auto'
+       if str(current)!=value:
+        raise LibraryQueryChanged('正在编辑的字段已在后台或其他页面更新，当前草稿保留。请核对最新资料后再保存。')
+     locked=set(json.loads(old['locked_fields'] or '[]'))
+     if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
+     locked.update(k for k,v in updates.items() if k in {'title','code','actors','studio','date','plot','tags'} and str(v)!=str(old[k]))
+     updates['locked_fields']=json.dumps(sorted(locked));updates['manual']=0
+     if 'code' in updates and updates['code']!=old['code']:
+      updates.update(amane_id=0,source_tags='',amane_snapshot='{}',source='filename',poster_origin='',cover_origin='')
+      (DATA/f"{old['id']}-poster.jpg").unlink(missing_ok=True)
+      (DATA/f"{old['id']}-cover.jpg").unlink(missing_ok=True)
+     tags,reasons=classify(dict(old)|updates);updates.update(auto_tags=tags,tag_reasons=reasons)
+     c.execute('UPDATE videos SET '+','.join(k+'=?' for k in updates)+' WHERE id=?',[*updates.values(),int(a['id'])])
    elif path=='/api/progress':
     with db() as c:c.execute('UPDATE videos SET position=?,watched=CASE WHEN ? THEN 1 ELSE watched END WHERE id=?',(max(0,float(a['position'])),bool(a.get('ended')),int(a['id'])))
    elif path=='/api/play':
@@ -1327,8 +1461,6 @@ if __name__=='__main__':
  try:server=LocalServer((BIND,RUNTIME.port),Handler)
  except OSError as error:raise SystemExit('服务端口不可用，请检查已有实例或使用 --port；系统错误码 '+str(error.errno)) from None
  ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
- print('正在检查片库查询索引，首次升级大库可能需要一些时间…',flush=True)
- BROWSE.refresh()
  if not any((DATA/'backups').glob('auto-'+time.strftime('%Y%m%d')+'*.zip')):
   with LEASES.hold('backup','write'):CORE.backup('auto-'+time.strftime('%Y%m%d'))
  JOURNAL.recover()

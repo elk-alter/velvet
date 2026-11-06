@@ -103,8 +103,68 @@ function diskArchiveActions(data){
 function diskTaskControls(data){if(data.superseded)return `<p class="muted">此撤销计划已重新审阅并作废，请返回原任务使用新计划。</p><button data-id="${esc(data.superseded.original_job)}" onclick="diskGo('organization-task',this.dataset.id)">返回原任务</button>`;const archiveActions=diskArchiveActions(data);const retryUndo=data.operation==='copy'&&(['failed','cancelled','interrupted'].includes(data.inverse?.state)||data.inverse?.state==='waiting'&&data.inverse?.paused);const active=['queued','running','waiting'].includes(data.state)&&!data.paused,stopped=!['queued','running'].includes(data.state),reversed=data.inverse?.state==='done';return `${archiveActions}${data.archive_of?`<button data-id="${esc(data.archive_of)}" onclick="diskGo('organization-task',this.dataset.id)">返回复制任务</button>`:''}${data.inverse_of?`<button data-id="${data.inverse_of}" onclick="diskGo('organization-task',this.dataset.id)">返回原任务</button>`:''}${active?'<button data-action="pause" onclick="diskControl(this)">暂停</button>':''}${stopped&&!['done','cancelled'].includes(data.state)&&(data.state!=='waiting'||data.paused)&&!data.inverse?.inverse_job_id?'<button data-action="resume" onclick="diskControl(this)">继续 / 重试</button>':''}${!['done','cancelled'].includes(data.state)?'<button data-action="cancel" onclick="diskControl(this)">取消任务</button>':''}${data.state==='cancelled'&&!diskTaskSettled(data)&&!data.inverse?.inverse_job_id?'<button data-action="resume" onclick="diskControl(this)">继续已取消任务</button>':''}${stopped&&!(data.progress?.skipped&&data.progress.skipped===data.progress.total)&&(data.state!=='waiting'||data.paused)&&['move','copy','archive'].includes(data.operation)&&!data.inverse_of&&(!data.inverse?.inverse_job_id||retryUndo)?'<button onclick="diskUndo(this)">预览撤销</button>':''}${stopped&&data.operation==='copy'?`<button data-id="${data.id}" onclick="diskGo('organization-cleanup',this.dataset.id)">检查复制残片</button>`:''}${reversed?'<span class="diskPill">撤销已完成</span>':''}${data.inverse?.inverse_job_id?`<button data-id="${data.inverse.inverse_job_id}" onclick="diskGo('organization-task',this.dataset.id)">查看撤销任务</button>`:''}`}
 function diskJobState(data){if(data.progress?.skipped&&diskTaskSettled(data))return '已结束 · 含跳过';return data.state==='waiting'?(data.paused?'已暂停':'等待其它任务释放资源'):diskState(data.state)}
 function diskProgressText(data){const p=data.progress;if(p.skipped)return `已完成 ${p.processed} / ${p.total} 项 · 已跳过 ${p.skipped} 项 · 复制 ${diskBytes(p.bytes_processed)} · 校验 ${diskBytes(p.bytes_verified)} · 提交 ${diskBytes(p.bytes_committed)}`;if(data.operation==='archive')return `已归档 ${p.processed} / ${p.total} 项 · 目标副本保留 · 可按日志恢复`;if(data.operation==='keep')return `完成 ${p.processed} / ${p.total} 项校验与关联 · 文件保持原位`;if(data.operation==='unbind_copy')return `已解除 ${p.processed} / ${p.total} 项绑定 · 全部物理文件保留`;return `完成 ${p.processed} / ${p.total} 个文件 · 复制 ${diskBytes(p.bytes_processed)} · 校验 ${diskBytes(p.bytes_verified)} · 提交 ${diskBytes(p.bytes_committed)}`}
-async function diskTask(params){const data=await managerGet('/api/organization/job?id='+encodeURIComponent(params.source)+'&offset='+(Number(params.offset)||0));diskJob=data;renderManagerShell('整理任务',`<div class="diskIntro"><span class="diskEyebrow">执行与恢复</span><h3 id="diskJobState">${esc(diskJobState(data))}</h3><p id="diskJobProgress">${esc(diskProgressText(data))}</p></div><p class="muted">${data.operation==='archive'?'源文件移入同盘可恢复归档，不参与默认扫描，目标副本保持。需要恢复原路径时选择预览撤销；遇到路径占用不会覆盖外部文件。':data.operation==='keep'?'原文件保持当前位置。暂停或取消不清除已完成的资料关联；重试从已记录步骤继续。':data.operation==='unbind_copy'?'本任务仅解除已确认绑定，全部物理文件保留。失败或暂停后可以从原任务重新审阅计划。':data.operation==='copy'?'复制会保留原文件。已提交目标与未完成绑定分别记录；跳过的文件不算成功，复制残片可另行审阅清理。':data.state==='done'?'同盘整理已完成，可以另行审阅并确认撤销。':'未完成移动可能保留任务暂存。扫描会等待对账完成；可继续本任务或先预览撤销。取消不会自动回退已提交文件。'}</p><div id="diskJobControls" class="row">${diskTaskControls(data)}</div><div id="diskJobRows" class="diskFileList">${diskTaskRows(data)}</div>`+diskPagination('organization-task',data.id,data));diskScheduleTask(data.id,data.offset,managerRouteEpoch)}
-function diskScheduleTask(id,offset,epoch){clearTimeout(diskTaskTimer);if(['done','cancelled','failed','partial','interrupted'].includes(diskJob.state))return;diskTaskTimer=setTimeout(async()=>{try{const data=await managerGet('/api/organization/job?id='+encodeURIComponent(id)+'&offset='+offset);if(epoch!==managerRouteEpoch)return;const previous=diskJob.state,wasPaused=diskJob.paused;diskJob=data;$('diskJobState').textContent=diskJobState(data);$('diskJobProgress').textContent=diskProgressText(data);$('diskJobRows').innerHTML=diskTaskRows(data);if(previous!==data.state||wasPaused!==data.paused)$('diskJobControls').innerHTML=diskTaskControls(data);diskScheduleTask(id,offset,epoch)}catch(error){if(error.name!=='AbortError')toast(error.message)}},2000)}
+let diskTaskRecoveryPreview=null;
+function diskTaskRecoveryForm(data){
+ const completed=data.state==='done';
+ const stopped=completed||['failed','interrupted','partial','cancelled'].includes(data.state)||data.state==='waiting'&&data.paused;
+ const recovery=data.recovery,existing=Object.entries(recovery?.mapping||{});
+ const saved=existing.length?`<p>${recovery.activated?'当前执行位置':'已保存的重连授权'}</p><ul>${existing.map(([old,path])=>`<li class="path">${esc(old)} → ${esc(path)}</li>`).join('')}</ul>`:'';
+ if(!stopped||(!completed&&diskTaskSettled(data))||data.superseded||data.inverse?.inverse_job_id||!['copy','move'].includes(data.operation))return saved;
+ if(!recovery?.roots.length)return '<p class="muted">此计划缺少可验证的整理根目录证明。</p>';
+ return `<details id="diskTaskRecovery"><summary>重连整理目录</summary>
+ <p class="muted">${completed?'填写目标目录的新绝对路径。确认后更新片库位置和撤销路径。':'填写原目录的新绝对路径。未变化的目录可留空。确认只保存授权，之后可在本任务点击继续。'}</p>
+ ${saved}
+ <div class="diskForm">${recovery.roots.map(root=>`<label>原目录 <span class="path">${esc(root)}</span><input data-root="${esc(root)}" value="${esc(recovery.mapping[root]||'')}" placeholder="输入新目录" oninput="diskInvalidateTaskRecovery()"></label>`).join('')}</div>
+ <button type="button" onclick="diskPreviewTaskRecovery(this)">核对重连范围</button><div id="diskTaskRecoveryResult" aria-live="polite"></div></details>`;
+}
+function diskInvalidateTaskRecovery(){
+ diskTaskRecoveryPreview=null;
+ $('diskTaskRecoveryResult').textContent='';
+ managerDirty=true;
+}
+function diskLockTaskRecovery(locked){
+ document.querySelectorAll('#diskTaskRecovery input,#diskTaskRecovery button').forEach(input=>input.disabled=locked);
+ const confirm=$('diskTaskRecoveryConfirm');
+ if(confirm)confirm.disabled=locked||!$('diskTaskRecoveryChecked').checked;
+}
+async function diskPreviewTaskRecovery(button){
+ if(button.disabled)return;
+ const epoch=managerRouteEpoch,job=diskJob,result=$('diskTaskRecoveryResult');
+ const replacements=Object.fromEntries([...document.querySelectorAll('#diskTaskRecovery [data-root]')]
+  .map(input=>[input.dataset.root,input.value.trim()]).filter(([,path])=>path));
+ diskTaskRecoveryPreview=null;
+ if(!Object.keys(replacements).length){result.textContent='请至少填写一个新目录。';return}
+ result.textContent='正在核对卷与目录身份…';
+ diskLockTaskRecovery(true);
+ try{
+  const preview=await api('/api/organization/recovery-map-preview',{id:job.id,replacements});
+  if(epoch!==managerRouteEpoch)return;
+  diskTaskRecoveryPreview=preview;
+  result.innerHTML=`<section class="diskScope"><h3>卷与目录身份匹配</h3><ul>${Object.entries(preview.roots).map(([old,path])=>`<li class="path">${esc(old)} → ${esc(path)}</li>`).join('')}</ul>
+  ${preview.binding_count?`<p>确认后将更新 ${preview.binding_count} 个文件的片库位置。</p>`:''}
+  <label class="diskCheck"><input id="diskTaskRecoveryChecked" type="checkbox" onchange="$('diskTaskRecoveryConfirm').disabled=!this.checked"><span>确认以上是原整理目录的新位置。</span></label>
+  <button id="diskTaskRecoveryConfirm" type="button" disabled onclick="diskConfirmTaskRecovery(this)">保存重连授权</button></section>`;
+ }catch(error){if(epoch===managerRouteEpoch)result.textContent=error.message}
+ finally{if(epoch===managerRouteEpoch)diskLockTaskRecovery(false)}
+}
+async function diskConfirmTaskRecovery(button){
+ if(button.disabled||!diskTaskRecoveryPreview)return;
+ const epoch=managerRouteEpoch,preview=diskTaskRecoveryPreview;
+ diskLockTaskRecovery(true);
+ try{
+  await api('/api/organization/recovery-map',{id:preview.id,replacements:preview.roots,digest:preview.digest,confirmed:$('diskTaskRecoveryChecked').checked});
+  if(epoch!==managerRouteEpoch)return;
+  managerDirty=false;
+  toast(preview.state==='done'?'目标位置已更新':preview.binding_count?'已更新绑定，可继续未完成步骤':'重连授权已保存，可点击继续 / 重试');
+  diskGo('organization-task',preview.id,diskJob.offset);
+ }catch(error){
+  if(epoch!==managerRouteEpoch)return;
+  diskTaskRecoveryPreview=null;
+  $('diskTaskRecoveryResult').textContent=error.message;
+ }finally{if(epoch===managerRouteEpoch)diskLockTaskRecovery(false)}
+}
+async function diskTask(params){const data=await managerGet('/api/organization/job?id='+encodeURIComponent(params.source)+'&offset='+(Number(params.offset)||0));diskJob=data;diskTaskRecoveryPreview=null;renderManagerShell('整理任务',`<div class="diskIntro"><span class="diskEyebrow">执行与恢复</span><h3 id="diskJobState">${esc(diskJobState(data))}</h3><p id="diskJobProgress">${esc(diskProgressText(data))}</p></div><p class="muted">${data.operation==='archive'?'源文件移入同盘可恢复归档，不参与默认扫描，目标副本保持。需要恢复原路径时选择预览撤销；遇到路径占用不会覆盖外部文件。':data.operation==='keep'?'原文件保持当前位置。暂停或取消不清除已完成的资料关联；重试从已记录步骤继续。':data.operation==='unbind_copy'?'本任务仅解除已确认绑定，全部物理文件保留。失败或暂停后可以从原任务重新审阅计划。':data.operation==='copy'?'复制会保留原文件。已提交目标与未完成绑定分别记录；跳过的文件不算成功，复制残片可另行审阅清理。':data.state==='done'?'同盘整理已完成，可以另行审阅并确认撤销。':'未完成移动可能保留任务暂存。扫描会等待对账完成；可继续本任务或先预览撤销。取消不会自动回退已提交文件。'}</p><div id="diskJobControls" class="row">${diskTaskControls(data)}</div><div id="diskJobRecovery">${diskTaskRecoveryForm(data)}</div><div id="diskJobRows" class="diskFileList">${diskTaskRows(data)}</div>`+diskPagination('organization-task',data.id,data));diskScheduleTask(data.id,data.offset,managerRouteEpoch)}
+function diskScheduleTask(id,offset,epoch){clearTimeout(diskTaskTimer);if(diskJob.paused||['done','cancelled','failed','partial','interrupted'].includes(diskJob.state))return;diskTaskTimer=setTimeout(async()=>{try{const data=await managerGet('/api/organization/job?id='+encodeURIComponent(id)+'&offset='+offset);if(epoch!==managerRouteEpoch)return;const previous=diskJob.state,wasPaused=diskJob.paused,wasActivated=diskJob.recovery?.activated;diskJob=data;$('diskJobState').textContent=diskJobState(data);$('diskJobProgress').textContent=diskProgressText(data);$('diskJobRows').innerHTML=diskTaskRows(data);if(previous!==data.state||wasPaused!==data.paused||wasActivated!==data.recovery?.activated){$('diskJobControls').innerHTML=diskTaskControls(data);$('diskJobRecovery').innerHTML=diskTaskRecoveryForm(data)}diskScheduleTask(id,offset,epoch)}catch(error){if(error.name!=='AbortError')toast(error.message)}},2000)}
 async function diskControl(button){const epoch=managerRouteEpoch;button.disabled=true;try{await api('/api/organization/control',{id:diskJob.id,action:button.dataset.action});if(epoch===managerRouteEpoch)diskGo('organization-task',diskJob.id,diskJob.offset)}catch(error){toast(error.message);button.disabled=false}}
 async function diskUndo(button){const epoch=managerRouteEpoch;button.disabled=true;try{const result=await api('/api/organization/undo-preview',{id:diskJob.id});if(epoch===managerRouteEpoch)diskGo('organization-draft',result.id)}catch(error){toast(error.message);button.disabled=false}}
 async function diskArchive(button){const epoch=managerRouteEpoch;button.disabled=true;try{const result=await api('/api/organization/archive-preview',{id:diskJob.id});if(epoch===managerRouteEpoch)diskGo('organization-draft',result.id)}catch(error){toast(error.message);button.disabled=false}}

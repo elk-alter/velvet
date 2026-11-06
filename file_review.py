@@ -1,4 +1,5 @@
 """Read-only media inspection and per-file replacement decisions."""
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -8,9 +9,17 @@ import sys
 import shutil
 import uuid
 import importlib.util
+from contextlib import nullcontext
 from pathlib import Path
 
 ISSUES = {'watermark': '明显水印', 'damaged': '损坏（人工确认）', 'replace': '需要更新'}
+
+
+def finding_id(item):
+    samples=item.get('samples') or []
+    timestamp=round(samples[0].get('at',0)) if samples else None
+    identity=json.dumps([item['code'],item.get('text',''),timestamp],ensure_ascii=False)
+    return hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]
 
 
 class FileReview:
@@ -81,7 +90,10 @@ class FileReview:
     def auto_settings(self):
         with self.db() as c:
             row = c.execute("SELECT value FROM review_settings WHERE key='auto_enabled'").fetchone()
-        return {'enabled': bool(row and row[0] == '1'), 'available': importlib.util.find_spec('rapidocr_onnxruntime') is not None and bool(self.binary('ffmpeg')) and bool(self.binary('ffprobe'))}
+        return self._auto_settings(row[0] if row else None)
+
+    def _auto_settings(self, enabled):
+        return {'enabled': enabled == '1', 'available': importlib.util.find_spec('rapidocr_onnxruntime') is not None and bool(self.binary('ffmpeg')) and bool(self.binary('ffprobe'))}
 
     def set_auto(self, enabled):
         if type(enabled) is not bool:
@@ -93,17 +105,20 @@ class FileReview:
         with self.db() as c:
             c.execute("INSERT OR REPLACE INTO review_settings VALUES('auto_enabled',?)", ('1' if enabled else '0',))
 
-    def review_automatic(self, ids, code, decision):
+    def review_automatic(self, ids, code, decision, *, finding=None, generation=None):
         if code not in ('suspected_watermark','suspected_black','suspected_freeze') or decision not in ('pending','confirmed','dismissed'):
             raise ValueError('无效的自动标记审阅')
         rows = self.rows(ids)
         with self.db() as c:
             for row in rows:
                 self.touch(c,row)
-                record = c.execute('SELECT auto_findings,auto_overrides FROM file_reviews WHERE video_id=?',(row['id'],)).fetchone()
-                if not any(i['code']==code for i in json.loads(record[0])):
+                record = c.execute('SELECT auto_findings,auto_overrides,auto_generation FROM file_reviews WHERE video_id=?',(row['id'],)).fetchone()
+                items=json.loads(record[0])
+                matches=[item for item in items if item['code']==code and (finding is None or finding_id(item)==finding)]
+                if not matches or finding is not None and (not isinstance(generation,str) or generation!=(record[2] or '')):
                     raise ValueError('自动结果已变化，请刷新')
-                overrides=json.loads(record[1]);overrides[code]=decision
+                overrides=json.loads(record[1])
+                for item in matches:overrides[finding_id(item)]=decision
                 c.execute("UPDATE file_reviews SET auto_overrides=?,decision=CASE WHEN ?='confirmed' THEN 'open' ELSE decision END WHERE video_id=?",(json.dumps(overrides),decision,row['id']))
 
     def auto_tick(self):
@@ -122,15 +137,15 @@ class FileReview:
                 self.enqueue([row['id']], 'auto')
                 break
 
-    def snapshot(self, videos, movies=None):
-        with self.db() as c:
+    def snapshot(self, videos, movies=None, *, connection=None):
+        with (self.db() if connection is None else nullcontext(connection)) as c:
             records={};ids=[v['id'] for v in videos]
             for offset in range(0,len(ids),500):
                 batch=ids[offset:offset+500];records.update({r['video_id']:dict(r) for r in c.execute('SELECT * FROM file_reviews WHERE video_id IN ('+','.join('?' for _ in batch)+')',batch)})
-            setting = c.execute("SELECT value FROM review_settings WHERE key='target'").fetchone()
+            settings = dict(c.execute("SELECT key,value FROM review_settings WHERE key IN ('target','auto_enabled')"))
         visible={video['id'] for video in videos}
         records={key:value for key,value in records.items() if key in visible}
-        target = int(setting[0]) if setting else 1080
+        target = int(settings.get("target",1080))
         higher = set()
         for movie in movies or []:
             versions = movie.get('_versions', [])
@@ -142,7 +157,7 @@ class FileReview:
             row = records.get(video['id'], {})
             result[video['id']] = self.describe(video,row,target,video['id'] in higher,bool(self.data and any((self.data / f"{video['id']}-{kind}.jpg").is_file() for kind in ('cover','poster'))))
         return {'files': result, 'target': target, 'running': self.lock.locked(),
-                'queued': sum(r['status'] == 'queued' for r in records.values()), 'automatic': self.auto_settings()}
+                'queued': sum(r['status'] == 'queued' for r in records.values()), 'automatic': self._auto_settings(settings.get('auto_enabled'))}
 
     @staticmethod
     def describe(video,row,target,higher=False,has_cover=False):
@@ -151,8 +166,9 @@ class FileReview:
         issues = [{'code': f, 'label': ISSUES[f], 'source': 'manual'} for f in flags]
         findings = [] if stale else json.loads(row.get('auto_findings') or '[]')
         overrides = {} if stale else json.loads(row.get('auto_overrides') or '{}')
-        findings = [dict(item, review=overrides.get(item['code'],'pending')) for item in findings]
         for item in findings:
+            ident=finding_id(item)
+            item.update(id=ident,review=overrides.get(ident,overrides.get(item['code'],'pending')))
             if item['review'] != 'dismissed':
                 issues.append(dict(item, source='automatic_confirmed' if item['review']=='confirmed' else 'automatic'))
         outcome = 'changed' if stale and row.get('result')=='changed' else '' if stale else row.get('result', '')
@@ -165,7 +181,7 @@ class FileReview:
         decision = 'open' if stale else row.get('decision', 'open')
         return dict(issues=issues, needs_update=bool(issues) and decision == 'open',
                                   has_cover=has_cover,
-                                  automatic_findings=findings,
+                                  automatic_findings=findings, auto_generation='' if stale else row.get('auto_generation',''),
                                   auto_status='' if stale else row.get('auto_status',''), auto_error='' if stale else row.get('auto_error',''), auto_updated=row.get('auto_updated',0),
                                   decision=decision, status='stale' if stale else row.get('status', 'unchecked'),
                                   mode=row.get('mode', ''), result=outcome, note=row.get('note', ''),
@@ -354,9 +370,15 @@ class FileReview:
                     with self.db() as c:
                         if item['mode'] == 'auto':
                             if analysis is not None:
-                                old = json.loads(c.execute('SELECT auto_findings FROM file_reviews WHERE video_id=?',(row['id'],)).fetchone()[0] or '[]')
-                                added = {i['code'] for i in analysis['findings']} - {i['code'] for i in old}
-                                c.execute("UPDATE file_reviews SET auto_findings=?,auto_generation=?,auto_status='done',auto_error='',auto_updated=?,auto_attempts=auto_attempts+1,decision=CASE WHEN ? THEN 'open' ELSE decision END WHERE video_id=?",(json.dumps(analysis['findings'],ensure_ascii=False),analysis['generation'],time.time(),bool(added),row['id']))
+                                previous = c.execute('SELECT auto_findings,auto_overrides FROM file_reviews WHERE video_id=?',(row['id'],)).fetchone()
+                                old = json.loads(previous['auto_findings'] or '[]')
+                                old_overrides=json.loads(previous['auto_overrides'] or '{}')
+                                overrides={ident:decision for ident,decision in old_overrides.items() if not ident.startswith('suspected_')}
+                                for finding in old:
+                                    if finding['code'] in old_overrides:
+                                        overrides.setdefault(finding_id(finding),old_overrides[finding['code']])
+                                added = {finding_id(i) for i in analysis['findings']} - {finding_id(i) for i in old}
+                                c.execute("UPDATE file_reviews SET auto_findings=?,auto_overrides=?,auto_generation=?,auto_status='done',auto_error='',auto_updated=?,auto_attempts=auto_attempts+1,decision=CASE WHEN ? THEN 'open' ELSE decision END WHERE video_id=?",(json.dumps(analysis['findings'],ensure_ascii=False),json.dumps(overrides),analysis['generation'],time.time(),bool(added),row['id']))
                                 detail += '；'+analysis['summary']
                             else:
                                 c.execute("UPDATE file_reviews SET auto_status=?,auto_error=?,auto_updated=?,auto_attempts=auto_attempts+1 WHERE video_id=?",('cancelled' if result=='cancelled' else 'stale' if result=='changed' or '文件已变化' in analysis_error else 'error',analysis_error or detail,time.time(),row['id']))

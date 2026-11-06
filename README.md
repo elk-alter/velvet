@@ -17,6 +17,14 @@ AI 辅助开发 · 本地优先 · 元数据自动整理 · 影片 / 版本 / �
 
 </div>
 
+## alpha.7 新增
+
+- 大型片库增量索引、首屏进度、按需图片加载和悬停剧照预览。
+- 多选标签、刮削全历史筛选及批量重试、自动质量发现审阅和版本对比。
+- 整理目录重连后继续原任务，并核对已经绑定的文件位置。详情可为当前文件设置国产、素人标记。
+
+验收范围、升级步骤及设备限制见 [alpha.7 版本说明](docs/RELEASE-0.1.0-alpha.7.md)。
+
 ## alpha.6 新增
 
 - 多盘盘点、离线快照、跨盘筛选和目录重连。
@@ -32,7 +40,7 @@ AI 辅助开发 · 本地优先 · 元数据自动整理 · 影片 / 版本 / �
 
 Velvet 想把这段体验整理好：**以影片为浏览入口，以版本为播放选择，以文件为实际载体**。先用封面、截图和清晰的属性挑选，再播放合适的那一份。日常浏览保留原文件，文件整理须审阅并确认具体计划。
 
-这是一个由 AI 辅助开发、由真实使用需求驱动的早期实验项目。**`0.1.0-alpha.6` 是公开预发布版。**
+这是一个由 AI 辅助开发、由真实使用需求驱动的早期实验项目。本源码版本为 **`0.1.0-alpha.7`**。
 
 ## 有什么特色
 
@@ -140,7 +148,7 @@ python -m unittest discover -s . -p "test_*.py"
 
 现有测试覆盖部分模型、关系撤销、偏好、备份恢复、队列与 HTTP 流程。浏览器交互也做过演示数据和本机服务检查；**这些不是全编码、全平台、长时间运行或大规模片库的完整验收**。仓库提供 [跨平台 CI 配置示例](docs/ci.example.yml)，计划在 Windows、macOS、Linux 上运行后端测试；当前尚未启用自动工作流，测试结果也不等于这些平台已实机可用。
 
-安装或升级请使用 [GitHub 预发布包](https://github.com/elk-alter/velvet/releases/tag/v0.1.0-alpha.6)。下一迭代范围见 [路线图](docs/ROADMAP.md)。
+安装或升级请使用 [GitHub 预发布包](https://github.com/elk-alter/velvet/releases)。下一迭代范围见 [路线图](docs/ROADMAP.md)。
 
 ## 反馈与贡献
 
@@ -153,7 +161,7 @@ python -m unittest discover -s . -p "test_*.py"
 - [文件质量与待处理](docs/FILE-QUALITY.md)
 - [完整功能清单](docs/FEATURES.md) · [需求与验收](docs/REQUIREMENTS.md) · [迭代路线图](docs/ROADMAP.md)
 - [使用与配置](docs/USAGE.md) · [管理区导航](docs/MANAGEMENT-NAVIGATION.md) · [部署与升级](docs/DEPLOYMENT.md)
-- [架构](docs/ARCHITECTURE.md) · [发布流程](docs/RELEASING.md) · [本版说明](docs/RELEASE-0.1.0-alpha.6.md)
+- [架构](docs/ARCHITECTURE.md) · [发布流程](docs/RELEASING.md) · [本版说明](docs/RELEASE-0.1.0-alpha.7.md)
 
 最新结构审计与改进清单见 [体验审计](docs/UX-AUDIT.md)，自动识别说明见 [自动标记](docs/AUTOMATIC-MARKS.md)。
 

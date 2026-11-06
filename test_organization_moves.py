@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import test_media_locations as fixtures
 from organization_jobs import OrganizationJobs
@@ -47,6 +48,67 @@ class MoveTests(unittest.TestCase):
         with self.assertRaises(SystemExit):MoveExecutor(self.jobs,self.repository.bind_moves,crash).run(job)
         self.jobs.recover()
         self.assertEqual(self.executor.run(job)['state'],'done');self.assertEqual(target.read_bytes(),b'synthetic media')
+
+    def test_reconnected_move_resumes_staged_and_committed_files_then_can_undo(self):
+        scope=self.root/'mounted'
+        scope.mkdir()
+        source=scope/self.source.name
+        self.source.rename(source)
+        with self.db() as c:
+            c.execute('UPDATE videos SET path=? WHERE id=1',(str(source),))
+            c.execute('UPDATE media_locations SET path=? WHERE asset_id=?',(str(source),self.repository.asset(1)['id']))
+        target=scope/'organized'/'renamed.mp4'
+        def proof(root):
+            path=Path(root)
+            return {'volume':'volume','directory':str(path.stat().st_ino)} if path.is_dir() else None
+        def crash_at(expected):
+            def crash(stage,*args):
+                if stage==expected:raise SystemExit('synthetic interruption')
+            return crash
+
+        with patch('organization_jobs.root_proof',side_effect=proof),patch('organization_moves.root_proof',side_effect=proof):
+            draft=self.jobs.prepare([{'video_id':1,'source':str(source),'destination':str(target),'operation':'move'}],scope,scope)
+            job=self.jobs.approve(draft['id'],draft['digest'])
+            with self.assertRaises(SystemExit):
+                MoveExecutor(self.jobs,self.repository.bind_moves,crash_at('staged')).run(job)
+            self.jobs.recover()
+            moved=self.root/'remounted'
+            scope.rename(moved)
+            paths={str(scope):str(moved)}
+            preview=self.jobs.recovery_map_preview(job,paths)
+            self.jobs.confirm_recovery_map(job,paths,preview['digest'])
+            self.jobs.resume(job)
+            with self.assertRaises(SystemExit):
+                MoveExecutor(self.jobs,self.repository.bind_moves,crash_at('committed')).run(job)
+            self.jobs.recover()
+            self.jobs.resume(job)
+            result=self.executor.run(job)
+            self.assertEqual(result['state'],'done')
+            self.assertEqual(result['payload'],draft['payload'])
+            new_target=moved/'organized'/'renamed.mp4'
+            self.assertEqual(new_target.read_bytes(),b'synthetic media')
+            self.assertFalse(scope.exists())
+            with self.db() as c:
+                self.assertEqual(tuple(c.execute('SELECT path,favorite,position FROM videos WHERE id=1').fetchone()),(str(new_target),1,42))
+            from restore_reconciliation import RestoreAudit
+            with self.db() as c,patch('restore_reconciliation.volume_identity',return_value=('volume',True)):
+                report=RestoreAudit(c,c).inspect()
+                self.assertTrue(report['ready'],report['problems'])
+                self.assertEqual([proof['path'] for proof in report['files']],[str(new_target)])
+            reverse=self.executor.prepare_undo(job)
+            undo=self.executor.approve_undo(job,reverse['digest'])
+            with self.assertRaises(SystemExit):
+                MoveExecutor(self.jobs,self.repository.bind_moves,crash_at('staged')).run(undo)
+            self.jobs.recover()
+            restored=self.root/'remounted-again'
+            moved.rename(restored)
+            reverse_paths={str(moved):str(restored)}
+            preview=self.jobs.recovery_map_preview(undo,reverse_paths)
+            self.jobs.confirm_recovery_map(undo,reverse_paths,preview['digest'])
+            self.jobs.resume(undo)
+            self.assertEqual(self.executor.run(undo)['state'],'done')
+            self.assertEqual((restored/source.name).read_bytes(),b'synthetic media')
+            self.assertFalse((restored/'organized'/'renamed.mp4').exists())
 
     def test_rollback_conflict_does_not_overwrite_external_file(self):
         target=self.root/'renamed.mp4';job=self.approve([(1,self.source,target)])

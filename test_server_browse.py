@@ -28,6 +28,33 @@ vm.createContext(context);vm.runInContext(fs.readFileSync(SOURCE,'utf8'),context
             result=subprocess.run(['node',str(target)],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
 
+    def test_open_retries_when_saved_detail_page_is_stale(self):
+        source=Path(__file__).with_name('server_browse.js')
+        script=r"""
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
+const nodes={},urls=[];
+function element(){const node={dataset:{},options:[{textContent:'Any'}],replaceWith(){},addEventListener(){},setAttribute(){},insertAdjacentHTML(){}};return node}
+const context={window:{MovieDetailView:{parameters:()=>({version_offset:20}),cancelPending(){}}},
+ library:{},detail:{open:false,addEventListener(){}},document:{createElement:element},$:id=>nodes[id]??=element(),
+ URL,URLSearchParams,AbortController,setTimeout,clearTimeout,console,
+ fetch:async url=>{urls.push(url);return urls.length===1?{ok:false,status:400,json:async()=>({error:'stale page'})}:
+  {ok:true,json:async()=>({movie:{id:7,movie_key:'synthetic',_versions:[{_parts:[{id:7}]}]},review:{files:{}}})}},
+ toast:message=>{throw Error(message)}};
+vm.createContext(context);vm.runInContext(fs.readFileSync(SOURCE,'utf8'),context);
+(async()=>{
+ let opened=0;
+ assert.equal(await context.window.serverBrowse.openMovie(7,true,id=>{opened=id}),true);
+ assert.equal(opened,7);assert.equal(urls.length,2);
+ assert.match(urls[0],/version_offset=20/);assert.doesNotMatch(urls[1],/version_offset/);
+ console.log('passed');
+})().catch(error=>{console.error(error);process.exitCode=1});
+""".replace('SOURCE',json.dumps(str(source)))
+        with tempfile.TemporaryDirectory() as root:
+            target=Path(root)/'stale-page.cjs';target.write_text(script,encoding='utf-8')
+            result=subprocess.run(['node',str(target)],capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('passed',result.stdout)
+
     def test_merge_and_split_do_not_leave_one_file_in_two_cached_movies(self):
         source=Path(__file__).with_name('server_browse.js')
         script=r'''

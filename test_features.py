@@ -51,4 +51,38 @@ class FeatureTests(unittest.TestCase):
   self.add('a.mp4',b'a','ABC-1')
   with self.app.db() as c:c.execute('INSERT INTO scrape_jobs(code,status,created) VALUES(?,?,?)',('ABC-1','failed',self.app.time.time()))
   self.app.submit_scrapes=lambda ids:self.fail('must not resubmit during cooldown');self.app.auto_scrape_tick()
+ def test_retry_selected_failures_uses_current_confirmed_jobs(self):
+  app=self.app
+  engine=app.config().get('scrape_engine','external')
+  calls=[]
+  def request(path,data=None):
+   calls.append(data['number'])
+   return {'id':100+len(calls),'status':'queued'}
+  app.amane_request=request
+  def add_job(code,status,remote=7,source=engine):
+   with app.db() as c:
+    return c.execute('INSERT INTO scrape_jobs(code,status,remote_id,engine,created) VALUES(?,?,?,?,?)',(code,status,remote,source,app.time.time())).lastrowid
+  for code in ('DEMO-1','DEMO-2','DEMO-3','DEMO-4','DEMO-5'):
+   self.add(code+'.mp4',b'synthetic',code)
+  eligible=add_job('DEMO-1','failed')
+  superseded=add_job('DEMO-2','failed')
+  add_job('DEMO-2','done')
+  uncertain=add_job('DEMO-3','failed',None)
+  other_engine=add_job('DEMO-4','failed',source='other')
+  active=add_job('DEMO-5','running')
+  result=app.retry_scrape_jobs([eligible,superseded,uncertain,other_engine,active])
+  self.assertEqual(result,{'submitted':1,'skipped':4,'failures':[]})
+  self.assertEqual(app.retry_scrape_jobs([eligible])['skipped'],1)
+  self.assertEqual(calls,['DEMO-1'])
+  with self.assertRaises(ValueError):app.retry_scrape_jobs([True])
+ def test_poll_records_unmatched_separately_from_network_failure(self):
+  app=self.app
+  engine=app.config().get('scrape_engine','external')
+  with app.db() as c:
+   c.executemany("INSERT INTO scrape_jobs(code,status,remote_id,engine) VALUES(?,'queued',?,?)",[('DEMO-1',1,engine),('DEMO-2',2,engine)])
+  outcomes={'tasks/1':[{'site':'test','outcome':'not_found'}],'tasks/2':[{'site':'test','outcome':'failed','reason':'network'}]}
+  app.amane_request=lambda path:{'status':'failed','result':{'outcomes':outcomes[path]}}
+  app.poll_scrapes()
+  with app.db() as c:
+   self.assertEqual([r[0] for r in c.execute('SELECT retry_kind FROM scrape_jobs ORDER BY id')],['not_found','retryable'])
 if __name__=='__main__':unittest.main()

@@ -4,12 +4,12 @@ const managerNavigationState={route:null,params:{},browseReturn:null};window.man
 const managerRenderers={libraries:showMediaLibraries,tasks:showTaskCenter,sources:showScrapingOptions,priorities:showNativeOptions,sites:showSiteSettings,network:showNetwork,connection:showScrapeConnection,files:showLibraryFiles,edit:editMediaLibrary};
 const managerRouteInfo={
  libraries:{group:'libraries',title:'媒体库'},'library-files':{group:'libraries',title:'媒体库文件',parent:'libraries'},'library-edit':{group:'libraries',title:'配置媒体库',parent:'libraries'},'library-new':{group:'libraries',title:'添加媒体库',parent:'libraries'},duplicates:{group:'libraries',title:'重复检查'},review:{group:'libraries',title:'待处理与文件质量'},storage:{group:'storage',title:'硬盘管理'},'storage-reconnect':{group:'storage',title:'重连盘点位置'},'storage-files':{group:'storage',title:'硬盘文件'},'storage-file':{group:'storage',title:'物理文件详情'},'storage-video':{group:'storage',title:'视频的物理位置'},'organization-plan':{group:'storage',title:'制定整理计划'},'organization-review':{group:'storage',title:'审阅整理预览'},'organization-draft':{group:'storage',title:'确认执行计划'},'organization-tasks':{group:'storage',title:'整理任务'},'organization-task':{group:'storage',title:'整理任务'},'organization-cleanup':{group:'storage',title:'复制暂存清理'},'organization-skip':{group:'storage',title:'跳过文件组'},
- tasks:{group:'scrape',title:'刮削任务'},ledger:{group:'scrape',title:'全部后台任务'},sources:{group:'scrape',title:'来源目录'},priorities:{group:'scrape',title:'来源顺序与字段择优',parent:'sources'},sites:{group:'scrape',title:'站点凭据'},connection:{group:'scrape',title:'执行与网络'},network:{group:'scrape',title:'网络检测'},
+ tasks:{group:'scrape',title:'刮削任务'},ledger:{group:'settings',title:'全部后台任务'},sources:{group:'scrape',title:'来源目录'},priorities:{group:'scrape',title:'来源顺序与字段择优',parent:'sources'},sites:{group:'scrape',title:'站点凭据'},connection:{group:'scrape',title:'执行与网络'},network:{group:'scrape',title:'网络检测'},
  general:{group:'settings',title:'常规设置'},rules:{group:'settings',title:'分类规则'},backups:{group:'settings',title:'备份与恢复'}
 };
 const managerGroupNames={storage:'硬盘管理',libraries:'媒体库',scrape:'刮削中心',settings:'设置'};
-const managerTabs={storage:[['storage','设备与目录'],['storage-files','文件快照'],['organization-tasks','整理任务']],libraries:[['libraries','媒体库'],['duplicates','重复检查'],['review','待处理与质量']],scrape:[['tasks','任务'],['ledger','全部后台任务'],['sources','来源与择优'],['sites','站点凭据'],['connection','执行与网络'],['network','网络检测']],settings:[['general','常规'],['rules','分类规则'],['backups','备份恢复']]};
-const managerQueryKeys={path:'m_lib',source:'m_source',status:'m_status',search:'m_q',offset:'m_offset',online:'m_online',quality:'m_quality',duplicate:'m_duplicate',sort:'m_sort',directory:'m_directory',snapshot:'m_snapshot',selection_device:'m_sel_device',file:'m_file',video:'m_video',resource_offset:'m_resource',location:'m_location'};
+const managerTabs={storage:[['storage','设备与目录'],['storage-files','文件快照'],['organization-tasks','整理任务']],libraries:[['libraries','媒体库'],['duplicates','重复检查'],['review','待处理与质量']],scrape:[['tasks','刮削任务'],['sources','来源与择优'],['sites','站点凭据'],['connection','执行与网络'],['network','网络检测']],settings:[['general','常规'],['rules','分类规则'],['backups','备份恢复'],['ledger','全部后台任务']]};
+const managerQueryKeys={path:'m_lib',source:'m_source',status:'m_status',reason:'m_reason',search:'m_q',offset:'m_offset',online:'m_online',quality:'m_quality',duplicate:'m_duplicate',sort:'m_sort',directory:'m_directory',snapshot:'m_snapshot',selection_device:'m_sel_device',file:'m_file',video:'m_video',resource_offset:'m_resource',location:'m_location'};
 function managementLocation(){const url=new URL(location.href),raw=url.searchParams.get('manage');if(!raw)return null;const route=Object.hasOwn(managerRouteInfo,raw)?raw:'tasks';return {route,params:Object.fromEntries(Object.entries(managerQueryKeys).map(([key,param])=>[key,url.searchParams.get(param)||'']))}}
 function writeManagementLocation(route,params,replace=false){const url=new URL(location.href);url.searchParams.delete('manage');for(const key of Object.values(managerQueryKeys))url.searchParams.delete(key);if(route){url.searchParams.set('manage',route);for(const [key,param]of Object.entries(managerQueryKeys))if(params[key]!==undefined&&params[key]!==''&&params[key]!==null)url.searchParams.set(param,String(params[key]));}history[replace?'replaceState':'pushState']({...(replace?history.state:{}),velvetManager:route,browseReturn:managerNavigationState.browseReturn,diskFileReturn:managerNavigationState.diskFileReturn||null},'',url)}
 function sameManagerPage(route,params){return managerNavigationState.route===route&&Object.keys(managerQueryKeys).every(key=>String(managerNavigationState.params[key]||'')===String(params[key]||''))}
@@ -26,6 +26,7 @@ function renderManagerShell(title,body,footer=''){
  const activeTab=route==='storage-reconnect'?'storage':route==='priorities'?'sources':route.startsWith('library-')?'libraries':['storage-file','storage-video'].includes(route)?'storage-files':route.startsWith('organization-')?(['organization-tasks','organization-task','organization-cleanup','organization-skip'].includes(route)?'organization-tasks':'storage-files'):route;
  const parent=info.parent;
  view.innerHTML=`<header class="managerHeader"><div><div class="managerBreadcrumb"><span>管理</span><span>/</span><button onclick="goManage('${managerTabs[info.group][0][0]}')">${managerGroupNames[info.group]}</button>${parent&&parent!==managerTabs[info.group][0][0]?`<span>/</span><button onclick="goManage('${parent}')">${esc(managerRouteInfo[parent].title)}</button>`:''}</div><h2 tabindex="-1">${esc(title)}</h2></div><div class="row">${parent?`<button onclick="goManage('${parent}')">返回${parent==='sources'?'来源目录':'媒体库'}</button>`:''}<button onclick="exitManager()">返回片库</button></div></header><nav class="managerNav" aria-label="${managerGroupNames[info.group]}分区">${managerTabs[info.group].map(([page,label])=>`<button class="${activeTab===page?'active':''}" ${activeTab===page?'aria-current="page"':''} onclick="goManage('${page}')">${label}</button>`).join('')}</nav><div class="managerBody" data-route="${route}">${body}</div>${footer?'<footer class="managerFooter">'+footer+'</footer>':''}`;
+ if(typeof privacyButton==='function')view.querySelector('.managerHeader > .row').prepend(privacyButton());
  for(const button of document.querySelectorAll('aside button')){button.toggleAttribute('data-manager-active',button.dataset.manage===info.group);if(button.dataset.manage===info.group)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current')}
 }
 async function goManage(route,params={},options={}){
@@ -36,7 +37,7 @@ async function goManage(route,params={},options={}){
  if(options.history)managerNavigationState.diskFileReturn=history.state?.diskFileReturn||null;
  const retainingDiskEdits=route==='organization-review'&&managerNavigationState.route===route&&params.source===managerNavigationState.params.source;
  if(!options.history&&managerDirty&&!retainingDiskEdits&&!await allowManagementLeave())return false;
- if(!managerNavigationState.route){const state=captureView();managerNavigationState.browseReturn=history.state?.browseReturn||(options.history?managerNavigationState.browseReturn:null)||{state,scroll:window.scrollY||0};saveViewState();history.replaceState({...history.state,browseReturn:managerNavigationState.browseReturn},'',location.href)}
+ if(!managerNavigationState.route){const state=captureView();managerNavigationState.browseReturn=(options.history?(history.state?.browseReturn||managerNavigationState.browseReturn):null)||{state,scroll:window.scrollY||0};saveViewState();history.replaceState({...history.state,browseReturn:managerNavigationState.browseReturn},'',location.href)}
  window.serverBrowse?.cancel();clearManagerTimers();const ticket=++managerRouteEpoch;managerController=new AbortController();managerDirty=false;managerNavigationState.route=route;managerNavigationState.params={...params};
  if(!options.history)writeManagementLocation(route,params,same||options.replace);
  renderManagerShell(managerRouteInfo[route].title,'<div class="managerLoading" role="status">正在加载…</div>');window.scrollTo({top:0});managerRendering=true;
@@ -54,7 +55,13 @@ async function goManage(route,params={},options={}){
   else if(route==='rules'){await renderClassificationSettings()}
   else if(route==='backups'){await renderBackupSettings()}
   else{
-   if(route==='tasks')managerTaskFilter=['all','queued','running','done','failed'].includes(params.status)?params.status:'all';
+   if(route==='tasks'){
+    const status=['all','queued','running','done','failed','images'].includes(params.status)?params.status:'all';
+    const reason=status==='failed'&&Object.hasOwn(scrapeFailureNames,params.reason)?params.reason:'';
+    if(managerTaskFilter!==status||managerRetryFilter!==reason)managerRetrySelection.clear();
+    managerTaskFilter=status;managerRetryFilter=reason;
+    managerTaskOffset=Math.max(0,Number(params.offset)||0);
+   }
    await managerRenderers[route](options.force||false);
    if(ticket!==managerRouteEpoch)return false;
    if(route==='sites'&&params.source){if(nativeSiteSettings.some(site=>site.id===params.source)){$('nativeSite').value=params.source;renderSiteSettings()}else renderManagerShell('来源不存在','<p>此来源未安装或已移除，请从站点凭据列表重新选择。</p>')}
@@ -71,7 +78,16 @@ let managerPositionFrame;
 window.addEventListener('scroll',()=>{if(managerPositionFrame||!managerNavigationState.route||managerRendering)return;managerPositionFrame=requestAnimationFrame(()=>{managerPositionFrame=null;saveManagerPosition()})},{passive:true});
 function retryManagerPage(){goManage(managerNavigationState.route,managerNavigationState.params,{replace:true})}
 function hideManagement(){clearManagerTimers();++managerRouteEpoch;managerNavigationState.route=null;managerNavigationState.params={};managerDirty=false;$('managerView').hidden=true;document.querySelector('main').hidden=false;document.body.classList.remove('manager-open');for(const button of document.querySelectorAll('aside [data-manage]')){button.removeAttribute('data-manager-active');button.removeAttribute('aria-current')}}
-async function exitManager(options={}){if(!managerNavigationState.route)return true;if(!options.history&&managerDirty&&!await allowManagementLeave())return false;const snapshot=managerNavigationState.browseReturn;hideManagement();if(!options.history)writeManagementLocation(null,{},false);if(!library._fullFetched)await refresh(true);if(options.restore!==false&&snapshot){applyView(snapshot.state);requestAnimationFrame(()=>window.scrollTo(0,snapshot.scroll||0))}return true}
+async function exitManager(options={}){
+ if(!managerNavigationState.route)return true;
+ if(!options.history&&managerDirty&&!await allowManagementLeave())return false;
+ const snapshot=managerNavigationState.browseReturn;
+ hideManagement();
+ if(!options.history)writeManagementLocation(null,{},false);
+ if(options.restore!==false&&snapshot)applyView({...snapshot.state,scroll:snapshot.scroll});
+ if(window.serverBrowse?!window.serverBrowse.ready:!library._fullFetched)await refresh();
+ return true;
+}
 function restoreManagerRoute(){const target=managementLocation();if(target){let state=captureView();try{state=JSON.parse(new URL(location.href).searchParams.get('view')||localStorage.getItem('velvet-view')||'null')||state}catch(error){}managerNavigationState.browseReturn=history.state?.browseReturn||{state,scroll:state.scroll||0};goManage(target.route,target.params,{history:true});}}
 async function handleManagerHistory(){if(managerNavigationState.route&&managerDirty&&!await allowManagementLeave()){writeManagementLocation(managerNavigationState.route,managerNavigationState.params,false);return true}const target=managementLocation();if(target){goManage(target.route,target.params,{history:true});return true}if(managerNavigationState.route){exitManager({history:true});return true}return false}
 document.querySelector('aside').addEventListener('click',event=>{const button=event.target.closest('button');if(!button||button.dataset.manage||!managerNavigationState.route)return;if(managerDirty){event.preventDefault();event.stopImmediatePropagation();allowManagementLeave().then(allowed=>{if(allowed){managerDirty=false;exitManager({restore:false});button.click()}})}else exitManager({restore:false})},true);

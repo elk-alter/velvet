@@ -70,6 +70,121 @@ class ExecutorTests(unittest.TestCase):
         result=CopyExecutor(self.jobs,self.bind).run(self.job)
         self.assertEqual(result['state'],'done');self.assertTrue(partial.exists());self.assert_source()
 
+    def test_reconnected_source_resumes_verified_copy_under_original_approval(self):
+        def proof(root):
+            path=Path(root)
+            return {'volume':'volume','directory':str(path.stat().st_ino)} if path.is_dir() else None
+
+        def interrupt(stage,*args):
+            if stage=='verified':raise SystemExit('synthetic interruption')
+
+        def register(entry,stamp,device):
+            return self.repository.register_verified(entry['source'],stamp,device,entry['video_id'])
+
+        def bind_committed(entry,job):
+            return self.repository.bind_committed_copy(entry['asset_id'],entry['destination'],entry['fingerprint'],
+                                                        entry['target_device'],job,expected_identity=entry['verified_identity'])[1]
+
+        with patch('organization_jobs.root_proof',side_effect=proof):
+            draft=self.jobs.prepare([{'video_id':1,'source':str(self.source),'destination':str(self.target),
+                                      'operation':'copy'}],self.scope,self.target_root,register=register)
+            job=self.jobs.approve(draft['id'],draft['digest'])
+            with self.assertRaises(SystemExit):
+                CopyExecutor(self.jobs,self.bind,interrupt).run(job)
+            self.jobs.recover()
+            original=self.jobs.get(job)
+            fragment=Path(original['steps'][0]['details']['temporary'])
+            identity=fragment.stat().st_ino
+            moved=self.root/'reconnected-source'
+            self.scope.rename(moved)
+            paths={str(self.scope):str(moved)}
+            preview=self.jobs.recovery_map_preview(job,paths)
+            self.jobs.confirm_recovery_map(job,paths,preview['digest'])
+            jobs=OrganizationJobs(self.db,lambda path:'volume')
+            jobs.resume(job)
+            def interrupt_committed(stage,*args):
+                if stage=='committed':raise SystemExit('synthetic interruption after commit')
+            with self.assertRaises(SystemExit):
+                CopyExecutor(jobs,bind_committed,interrupt_committed).run(job)
+            jobs=OrganizationJobs(self.db,lambda path:'volume')
+            self.assertEqual(jobs.recover(),[job])
+            jobs.resume(job)
+            result=CopyExecutor(jobs,bind_committed).run(job)
+            self.assertEqual(result['state'],'done')
+            self.assertEqual(result['approval_digest'],original['approval_digest'])
+            self.assertEqual(result['payload'],original['payload'])
+            self.assertEqual(self.target.read_bytes(),(moved/'one.mp4').read_bytes())
+            self.assertEqual(self.target.stat().st_ino,identity)
+            self.assertFalse(fragment.exists())
+
+    def test_target_reconnection_reuses_verified_fragment_and_binds_new_path(self):
+        from organization_copy_undo import CopyUndo
+        self.jobs.finish(self.job,'cancelled')
+        from organization_moves import MoveExecutor
+        from resource_leases import path_resource
+        self.target_root.mkdir()
+        def proof(root):
+            path=Path(root)
+            return {'volume':'volume','directory':str(path.stat().st_ino)} if path.is_dir() else None
+        def register(entry,stamp,device):
+            return self.repository.register_verified(entry['source'],stamp,device,entry['video_id'])
+        def binder(entry,job):
+            return self.repository.bind_committed_copy(entry['asset_id'],entry['destination'],entry['fingerprint'],
+                                                        entry['target_device'],job,expected_identity=entry['verified_identity'])[1]
+        def interrupt(stage,*args):
+            if stage=='verified':raise SystemExit('synthetic interruption')
+
+        with patch('organization_jobs.root_proof',side_effect=proof),patch('organization_executor.root_proof',side_effect=proof):
+            draft=self.jobs.prepare([{'video_id':1,'source':str(self.source),'destination':str(self.target),
+                                      'operation':'copy'}],self.scope,self.target_root,register=register)
+            job=self.jobs.approve(draft['id'],draft['digest'])
+            with self.assertRaises(SystemExit):CopyExecutor(self.jobs,binder,interrupt).run(job)
+            self.jobs.recover()
+            original=self.jobs.get(job)
+            fragment=Path(original['steps'][0]['details']['temporary'])
+            identity=fragment.stat().st_ino
+            moved=self.root/'reconnected-target'
+            self.target_root.rename(moved)
+            paths={str(self.target_root):str(moved)}
+            preview=self.jobs.recovery_map_preview(job,paths)
+            self.jobs.confirm_recovery_map(job,paths,preview['digest'])
+            self.jobs.resume(job)
+            def after_commit(stage,*args):
+                if stage=='committed':raise SystemExit('synthetic interruption')
+            with self.assertRaises(SystemExit):CopyExecutor(self.jobs,binder,after_commit).run(job)
+            self.jobs.recover()
+            target=moved/self.target.name
+            with self.db() as c:
+                scopes={r[0] for r in c.execute('SELECT resource FROM resource_scopes WHERE owner=?',('reconcile:'+job,))}
+            self.assertIn(path_resource(target),scopes)
+            self.jobs.resume(job)
+            result=CopyExecutor(self.jobs,binder).run(job)
+            self.assertEqual(result['state'],'done')
+            self.assertEqual(target.read_bytes(),self.source.read_bytes())
+            self.assertEqual(target.stat().st_ino,identity)
+            self.assertEqual(result['payload'],original['payload'])
+            self.assertFalse(self.target_root.exists())
+            MoveExecutor(self.jobs,None)
+            inverse=CopyUndo(self.jobs,self.repository).prepare(job)
+            self.assertEqual(inverse['payload']['entries'][0]['source'],str(target))
+            from restore_reconciliation import RestoreAudit,approve_report
+            from contextlib import closing
+            import sqlite3
+            with self.db() as c,patch('restore_reconciliation.volume_identity',return_value=('volume',True)):
+                report=RestoreAudit(c,c).inspect()
+                self.assertTrue(report['ready'],report['problems'])
+                self.assertEqual([file['path'] for file in report['files']],[str(target)])
+                approve_report(c,c,report).validate(c,'current')
+                with closing(sqlite3.connect(':memory:')) as previous:
+                    c.backup(previous)
+                    previous.execute('DELETE FROM organization_recovery_maps')
+                    with self.assertRaisesRegex(ValueError,'重连记录不同'):
+                        RestoreAudit(c,previous).inspect()
+            moved.rename(self.root/'old-location')
+            moved.mkdir()
+            with self.db() as c,self.assertRaisesRegex(ValueError,'目录身份'):
+                RestoreAudit(c,c).inspect()
+
     def test_source_changed_or_space_exhausted_never_commits(self):
         self.source.write_bytes(b'changed source')
         result=CopyExecutor(self.jobs,self.bind).run(self.job)

@@ -54,17 +54,23 @@ class MediaLocations:
     def migrate(self,video_ids=None):
         """Idempotent alpha.5 import; offline files stay unverified, with no disk reads."""
         with self.db() as c:
+            selection = """
+                SELECT v.id,v.path,v.size,a.id AS asset_id,a.relation_path,
+                       EXISTS(SELECT 1 FROM media_locations l
+                              WHERE l.asset_id=a.id AND l.path=v.path) AS known
+                FROM videos v LEFT JOIN media_assets a ON a.video_id=v.id
+            """
             if video_ids is not None:
                 if not isinstance(video_ids,list) or not video_ids or len(video_ids)>500 or any(type(value) is not int for value in video_ids):raise ValueError('Choose 1-500 video identities')
-                rows=[dict(r) for r in c.execute('SELECT id,path,size FROM videos WHERE id IN ('+','.join('?' for _ in video_ids)+')',video_ids)]
-            else:rows=[dict(r) for r in c.execute('SELECT id,path,size FROM videos')]
+                selection+=' WHERE v.id IN ('+','.join('?' for _ in video_ids)+')'
+            rows=c.execute(selection,video_ids or ()).fetchall()
             for row in rows:
-                asset=c.execute('SELECT id FROM media_assets WHERE video_id=?',(row['id'],)).fetchone()
-                if asset:
-                    known={r[0] for r in c.execute('SELECT path FROM media_locations WHERE asset_id=?',(asset['id'],))}
-                    if row['path'] in known:
-                        c.execute("UPDATE media_assets SET relation_path=? WHERE id=? AND relation_path=''",(row['path'],asset['id']));continue
-                    c.execute('UPDATE media_assets SET video_id=NULL WHERE id=?',(asset['id'],))
+                if row['known']:
+                    if row['relation_path']=='':
+                        c.execute("UPDATE media_assets SET relation_path=? WHERE id=? AND relation_path=''",(row['path'],row['asset_id']))
+                    continue
+                if row['asset_id'] is not None:
+                    c.execute('UPDATE media_assets SET video_id=NULL WHERE id=?',(row['asset_id'],))
                 asset_id=uuid.uuid4().hex
                 c.execute('INSERT INTO media_assets(id,video_id,sha256,created,relation_path) VALUES(?,?,?,?,?)',(asset_id,row['id'],'',time.time(),row['path']))
                 c.execute('INSERT INTO media_locations VALUES(?,?,?,?,?,?,0,1,?)',(uuid.uuid4().hex,asset_id,'legacy-unknown',row['path'],row['size'],None,'migration'))
@@ -143,7 +149,7 @@ class MediaLocations:
             video_id=existing['id']
         else:
             metadata=metadata if metadata is not None else json.loads(raw['metadata']);columns={r[1] for r in c.execute('PRAGMA table_info(videos)')}
-            allowed={'title','code','actors','studio','date','plot','width','height','duration','codec','source','locked_fields','tags','censor_override'}
+            allowed={'title','code','actors','studio','date','plot','width','height','duration','codec','source','locked_fields','tags','censor_override','domestic','amateur'}
             values={key:value for key,value in metadata.items() if key in allowed and key in columns and isinstance(value,(str,int,float))}
             values.update(path=location['path'],size=location['size'])
             if 'title' in columns:values.setdefault('title',Path(location['path']).stem)
@@ -154,7 +160,7 @@ class MediaLocations:
         return video_id
 
 
-    def bind_committed_copy(self,asset_id,target,approved,device_token,task_id,metadata=None,expected_identity=None):
+    def bind_committed_copy(self,asset_id,target,approved,device_token,task_id,metadata=None,expected_identity=None,*,reconnected_source=None):
         """Bind an executor-owned committed copy even when the original disk is now offline."""
         target=Path(target)
         if self.device_identity(target)!=device_token:raise ValueError('Target device changed')
@@ -165,16 +171,51 @@ class MediaLocations:
         if [after.st_dev,after.st_ino]!=expected_identity or after.st_mtime_ns!=stamp['mtime_ns']:raise ValueError('Committed target changed during binding')
         with self.db() as c:asset=c.execute('SELECT * FROM media_assets WHERE id=?',(asset_id,)).fetchone()
         if not asset or not asset['sha256'] or asset['sha256']!=approved['sha256'] or (stamp['size'],stamp['sha256'])!=(approved['size'],approved['sha256']):raise ValueError('Target does not match approved identity')
+        if reconnected_source:
+            from organization_jobs import OrganizationJobs,no_links
+            source=Path(reconnected_source['source'])
+            if no_links(source)!=source or self.device_identity(source)!=reconnected_source['source_device']:
+                raise ValueError('重连源路径或卷已变化')
+            OrganizationJobs.check_reconnected_source(reconnected_source,source)
+            if fingerprint(source)!=approved:raise ValueError('重连源文件与批准清单不一致')
         path=str(target.resolve())
         with self.db() as c:
             owner=c.execute('SELECT * FROM media_locations WHERE device_token=? AND path=?',(device_token,path)).fetchone()
             if owner and owner['asset_id']!=asset_id:raise ValueError('Target belongs to another identity')
+            if reconnected_source:
+                if no_links(source)!=source or self.device_identity(source)!=reconnected_source['source_device']:
+                    raise ValueError('重连源路径或卷在绑定时发生变化')
+                OrganizationJobs.check_reconnected_source(reconnected_source,source)
+                info=source.stat()
+                if (info.st_size,info.st_mtime_ns)!=(approved['size'],approved['mtime_ns']):
+                    raise ValueError('重连源文件在绑定时发生变化')
+                self._remember_reconnected_copy_source(c,asset_id,reconnected_source,approved,task_id)
             video_id=self._materialize(c,asset_id,metadata)
             location_id=owner['id'] if owner else uuid.uuid4().hex
             c.execute('INSERT INTO media_locations VALUES(?,?,?,?,?,?,?,0,?) ON CONFLICT(device_token,path) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,verified=excluded.verified',
                       (location_id,asset_id,device_token,path,stamp['size'],stamp['mtime_ns'],time.time(),task_id))
             if not owner:c.execute('INSERT INTO media_location_events(asset_id,location_id,kind,task_id,created) VALUES(?,?,?,?,?)',(asset_id,location_id,'bound',task_id,time.time()))
         return video_id,location_id
+
+    def _remember_reconnected_copy_source(self,c,asset_id,entry,stamp,task_id):
+        device=entry['source_device']
+        original=c.execute('SELECT asset_id FROM media_locations WHERE device_token=? AND path=?',
+                           (device,entry['approved_source'])).fetchone()
+        if not original or original['asset_id']!=asset_id:
+            raise ValueError('原批准的源位置不再属于当前作品')
+        location=c.execute('SELECT * FROM media_locations WHERE device_token=? AND path=?',
+                           (device,entry['source'])).fetchone()
+        if location and location['asset_id']!=asset_id:
+            raise ValueError('重连源位置已被其他作品绑定')
+        if location:
+            c.execute('UPDATE media_locations SET size=?,mtime_ns=?,verified=? WHERE id=?',
+                      (stamp['size'],stamp['mtime_ns'],time.time(),location['id']))
+        else:
+            location_id=uuid.uuid4().hex
+            c.execute('INSERT INTO media_locations VALUES(?,?,?,?,?,?,?,0,?)',
+                      (location_id,asset_id,device,entry['source'],stamp['size'],stamp['mtime_ns'],time.time(),'registration'))
+            c.execute("INSERT INTO media_location_events(asset_id,location_id,kind,task_id,created) VALUES(?,?,'reconnected',?,?)",
+                      (asset_id,location_id,task_id,time.time()))
 
     def bind_verified_copy(self,video_id,target,device_token,task_id):
         """Bind an existing verified copy; never copies, moves or deletes media."""
@@ -210,7 +251,8 @@ class MediaLocations:
             if not owner:c.execute('INSERT INTO media_location_events(asset_id,location_id,kind,task_id,created) VALUES(?,?,?,?,?)',(asset['id'],location_id,'bound',task_id,time.time()))
         return location_id
 
-    def update_video_location(self,c,video_id,path,stamp):
+    @staticmethod
+    def update_video_location(c,video_id,path,stamp):
         """Carry evidence only when it still describes the verified original bytes."""
         video=dict(c.execute('SELECT * FROM videos WHERE id=?',(video_id,)).fetchone())
         if 'mtime' in video and c.execute("SELECT 1 FROM sqlite_master WHERE name='file_reviews'").fetchone():
@@ -266,17 +308,18 @@ class MediaLocations:
             for entry,asset,stamp in checked:
                 entry=dict(entry,video_id=self._materialize(c,asset['id'],entry.get('metadata')))
                 row=c.execute('SELECT path FROM videos WHERE id=?',(entry['video_id'],)).fetchone()
-                previous=c.execute('SELECT location_id FROM media_move_bindings WHERE task_id=? AND source_path=?',(task_id,entry['source'])).fetchone()
+                source_path=entry.get('approved_source',entry['source'])
+                previous=c.execute('SELECT location_id FROM media_move_bindings WHERE task_id=? AND source_path=?',(task_id,source_path)).fetchone()
                 if previous:
                     location=c.execute('SELECT * FROM media_locations WHERE id=? AND asset_id=?',(previous['location_id'],asset['id'])).fetchone()
                     if not location or location['path']!=entry['destination']:raise ValueError('Moved location changed after binding')
                 else:
-                    location=c.execute('SELECT * FROM media_locations WHERE asset_id=? AND path=?',(asset['id'],entry['source'])).fetchone()
+                    location=c.execute('SELECT * FROM media_locations WHERE asset_id=? AND path=?',(asset['id'],source_path)).fetchone()
                     if not location and c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE inverse_job_id=?',(task_id,)).fetchone():
                         # An interrupted original move may never have rebound its DB location.
                         location=c.execute('SELECT * FROM media_locations WHERE asset_id=? AND path=?',(asset['id'],entry['destination'])).fetchone()
                 if not location or location['id'] in used:raise ValueError('Original location missing or repeated')
-                if location['preferred'] and (not row or row['path'] not in (entry['source'],entry['destination'])):raise ValueError('Preferred path changed; reconcile before binding')
+                if location['preferred'] and (not row or row['path'] not in (source_path,entry['destination'])):raise ValueError('Preferred path changed; reconcile before binding')
                 used.add(location['id']);updates.append((entry,asset,stamp,dict(location)))
             # Free location and preferred-video unique paths atomically, including cycles.
             for entry,asset,stamp,location in updates:
@@ -284,12 +327,13 @@ class MediaLocations:
                 if location['preferred']:c.execute('UPDATE videos SET path=? WHERE id=?',(temporary,entry['video_id']))
                 c.execute('UPDATE media_locations SET path=? WHERE id=?',(temporary,location['id']))
             for entry,asset,stamp,location in updates:
+                source_path=entry.get('approved_source',entry['source'])
                 if location['preferred']:self.update_video_location(c,entry['video_id'],entry['destination'],stamp)
                 c.execute('UPDATE media_assets SET sha256=? WHERE id=?',(stamp['sha256'],asset['id']))
                 c.execute('UPDATE media_locations SET path=?,device_token=?,size=?,mtime_ns=?,verified=?,origin_task=? WHERE id=?',
                           (entry['destination'],entry['target_device'],stamp['size'],stamp['mtime_ns'],time.time(),task_id,location['id']))
-                if not c.execute('SELECT 1 FROM media_move_bindings WHERE task_id=? AND source_path=?',(task_id,entry['source'])).fetchone():
-                    c.execute('INSERT INTO media_move_bindings VALUES(?,?,?)',(task_id,entry['source'],location['id']))
+                if not c.execute('SELECT 1 FROM media_move_bindings WHERE task_id=? AND source_path=?',(task_id,source_path)).fetchone():
+                    c.execute('INSERT INTO media_move_bindings VALUES(?,?,?)',(task_id,source_path,location['id']))
                     c.execute('INSERT INTO media_location_events(asset_id,location_id,kind,task_id,created) VALUES(?,?,?,?,?)',(asset['id'],location['id'],'moved',task_id,time.time()))
             if supplemental:supplemental(c)
         return {binding_key(original):update[3]['id'] for original,update in zip(entries,updates)}

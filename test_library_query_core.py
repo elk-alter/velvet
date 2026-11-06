@@ -61,6 +61,45 @@ class LibraryQueryCoreTests(unittest.TestCase):
         for criteria in ({},{'q':'no match'},{'mode':'missing'},{'height':'2160'}):verify(criteria)
         with self.app.db() as c:c.execute('UPDATE videos SET missing=1 WHERE id=?',(alternative,))
         verify({})
+    def test_incremental_versions_match_full_projection_after_relation_changes(self):
+        first=self.add('DEMO-1.mp4',b'one','DEMO-1')
+        second=self.add('DEMO-2.mp4',b'two','DEMO-2')
+        self.add('DEMO-3.mp4',b'three','DEMO-3')
+        browse=self.app.BROWSE
+
+        def verify():
+            browse.refresh()
+            order=' ORDER BY movie_key,version_key'
+            with self.app.db() as c:
+                cached=c.execute('SELECT * FROM browse_version_rows'+order).fetchall()
+                rebuilt=c.execute(browse.CTE+' SELECT * FROM versions'+order).fetchall()
+            self.assertEqual([tuple(row) for row in cached],[tuple(row) for row in rebuilt])
+
+        verify()
+        self.app.CORE.relation([{'id':first,'movie_key':'code:DEMO-2','version_key':'alternative','part_no':1}])
+        self.app.CORE.prefer(first)
+        verify()
+        with self.app.db() as c:
+            c.execute('UPDATE videos SET height=2160,favorite=1 WHERE id=?',(first,))
+            c.execute('DELETE FROM videos WHERE id=?',(second,))
+        verify()
+
+    def test_relation_suffix_preserves_duplicate_order_and_reassigns_after_delete(self):
+        core=self.app.CORE
+        first=self.add('DEMO-1 part1.mp4',b'first','DEMO-1')
+        core.reconcile()
+        second=self.add('DEMO-1 part 1.mp4',b'second','DEMO-1')
+        with patch.object(core,'infer',wraps=core.infer) as infer:
+            core.reconcile()
+        self.assertEqual([call.args[0]['id'] for call in infer.call_args_list],[second])
+        with self.app.db() as c:
+            version=c.execute('SELECT version_key FROM media_links WHERE video_id=?',(first,)).fetchone()[0]
+            self.assertEqual(c.execute('SELECT version_key FROM media_links WHERE video_id=?',(second,)).fetchone()[0],version+':copy:'+str(second))
+            c.execute('DELETE FROM videos WHERE id=?',(first,))
+        core.reconcile()
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT version_key FROM media_links WHERE video_id=?',(second,)).fetchone()[0],version)
+
     def test_unchanged_relationships_do_not_rescan_or_reinfer(self):
         ident=self.add('DEMO-1.mp4',b'synthetic','DEMO-1');self.app.CORE.reconcile()
         with patch.object(self.app.CORE,'infer',side_effect=AssertionError('unchanged graph must not reinfer')):

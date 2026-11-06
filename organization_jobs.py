@@ -1,11 +1,13 @@
 """Immutable organization approvals, persistent steps and exclusive resource leases."""
 import hashlib
 import json
+import os
 import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from media_locations import fingerprint
-from storage_inventory import volume_identity, destination_key
+from storage_inventory import volume_identity, destination_key, root_file_id
 from task_journal import TaskJournal
 from resource_leases import ResourceLeases,ResourceBusy,path_resource
 from organization_preflight import validate_manifest,no_links,valid_component,PreflightError
@@ -37,6 +39,26 @@ def digest(payload):
     return hashlib.sha256(json.dumps(payload,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
 
 
+def root_proof(root):
+    root=no_links(root)
+    if not root.is_dir():return None
+    volume,stable=volume_identity(root)
+    if not stable:return None
+    identity=root_file_id(root)
+    return {'volume':volume,'directory':identity} if identity else None
+
+
+def verify_root_proofs(proofs, replacements=None):
+    replacements=replacements or {}
+    verified={}
+    for original,expected in proofs.items():
+        candidate=no_links(replacements.get(original,original))
+        if root_proof(candidate)!=expected:
+            raise ValueError('整理根目录的卷或目录身份已变化，请核对原盘及原目录')
+        verified[original]=str(candidate)
+    return verified
+
+
 class OrganizationJobs:
     def __init__(self,db,device_identity=identify):
         self.db,self.device_identity=db,device_identity
@@ -49,6 +71,9 @@ class OrganizationJobs:
             c.execute('CREATE TABLE IF NOT EXISTS organization_step_events(sequence INTEGER PRIMARY KEY,job_id TEXT,ordinal INTEGER,state TEXT,created REAL)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_control(job_id TEXT PRIMARY KEY,cancel_requested INTEGER DEFAULT 0)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_leases(resource TEXT PRIMARY KEY,job_id TEXT)')
+            c.execute('CREATE TABLE IF NOT EXISTS organization_recovery_maps(job_id TEXT PRIMARY KEY,approval_digest TEXT,checkpoint_digest TEXT,roots TEXT,confirmed REAL)')
+            if 'activated' not in {r[1] for r in c.execute('PRAGMA table_info(organization_recovery_maps)')}:
+                c.execute('ALTER TABLE organization_recovery_maps ADD COLUMN activated INTEGER NOT NULL DEFAULT 0')
             c.execute('CREATE TABLE IF NOT EXISTS organization_maintenance(job_id TEXT PRIMARY KEY)')
             c.execute('CREATE TABLE IF NOT EXISTS organization_superseded(job_id TEXT PRIMARY KEY,replacement_draft TEXT,original_job TEXT)')
             if 'pause_requested' not in {r[1] for r in c.execute('PRAGMA table_info(organization_control)')}:
@@ -68,6 +93,10 @@ class OrganizationJobs:
         if not moving and not keeping and any(source.is_relative_to(target) or target.is_relative_to(source) for source in source_roots for target in target_roots):raise ValueError('Copy target must be independent of source scope')
         sources={destination_key(no_links(entry['source'])) for entry in entries}
         if len(sources)!=len(entries):raise ValueError('Duplicate source location')
+        proofs={}
+        for root in dict.fromkeys(source_roots+target_roots):
+            proof=root_proof(root)
+            if proof:proofs[str(root)]=proof
         preflight=validate_manifest(entries,self.device_identity)
         checked=[];destinations=set()
         for entry in entries:
@@ -95,6 +124,8 @@ class OrganizationJobs:
                 checked[-1]['archive_guard']=entry['archive_guard']
         payload={'entries':checked,'source_root':str(source_root),'target_root':str(target_root),'rules_version':rules_version,'retained':retained or [],'preflight':preflight}
         if multiple:payload.update(source_roots=[str(root) for root in source_roots],target_roots=[str(root) for root in target_roots])
+        verify_root_proofs(proofs)
+        if proofs:payload['root_proofs']=proofs
         stamp=digest(payload);draft_id=uuid.uuid4().hex
         with self.db() as c:
             c.execute('INSERT OR IGNORE INTO organization_drafts VALUES(?,?,?,?)',(draft_id,stamp,json.dumps(payload),time.time()))
@@ -109,6 +140,7 @@ class OrganizationJobs:
         if existing:return existing['id']
         payload=json.loads(draft['payload'])
         if digest(payload)!=expected_digest:raise ValueError('Stored approval content changed')
+        verify_root_proofs(payload.get('root_proofs',{}))
         if any(entry['operation'] not in ('copy','move','keep','archive') for entry in payload['entries']):raise ValueError('此计划需要使用对应撤销批准入口')
         validate_manifest(payload['entries'],self.device_identity)
         sources={destination_key(e['source']) for e in payload['entries']}
@@ -127,14 +159,257 @@ class OrganizationJobs:
         self.journal.observe('organize',job_id,'queued',{'total':len(payload['entries']),'cancellable':True})
         return job_id
 
-    def get(self,job_id):
-        with self.db() as c:
+    def get(self,job_id,connection=None):
+        with (self.db() if connection is None else nullcontext(connection)) as c:
             job=c.execute('SELECT * FROM organization_jobs WHERE id=?',(job_id,)).fetchone()
             if not job:raise ValueError('Unknown organization job')
             result=dict(job);result['steps']=[dict(r) for r in c.execute('SELECT * FROM organization_steps WHERE job_id=? ORDER BY ordinal',(job_id,))]
         result['payload']=json.loads(result['payload'])
         for step in result['steps']:step['details']=json.loads(step['details'])
         return result
+
+    def verify_recovery_roots(self, job_id, replacements):
+        return self._verified_recovery_roots(self.get(job_id),replacements)
+
+    @staticmethod
+    def _verified_recovery_roots(job,replacements):
+        payload=job['payload']
+        if digest(payload)!=job['approval_digest']:raise ValueError('Approved manifest changed')
+        if not isinstance(replacements,dict) or not replacements:
+            raise ValueError('请选择需要重连的整理根目录')
+        if any(not isinstance(key,str) or not isinstance(value,str) or not Path(value).is_absolute() for key,value in replacements.items()):
+            raise ValueError('请提供绝对目录路径')
+        proofs=payload.get('root_proofs',{})
+        if any(root not in proofs for root in replacements):
+            raise ValueError('批准清单缺少原目录证明，无法安全重连')
+        roots=verify_root_proofs({root:proofs[root] for root in replacements},replacements)
+        if len({destination_key(root) for root in roots.values()})!=len(roots):
+            raise ValueError('不同整理根不能映射到同一个目录')
+        return roots
+
+    def recovery_map_preview(self,job_id,replacements):
+        with self.db() as c:
+            return self._recovery_map_preview(c,job_id,replacements)
+
+    def _recovery_map_preview(self,c,job_id,replacements,bindings_out=None):
+        job=self.get(job_id,c)
+        if job['state'] not in ('interrupted','waiting','failed','partial','cancelled','done'):
+            raise ValueError('请先暂停或停止整理任务')
+        owner='organize:'+job_id
+        if (c.execute('SELECT 1 FROM organization_leases WHERE job_id=?',(job_id,)).fetchone()
+                or c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone()
+                or c.execute('SELECT 1 FROM resource_waiters WHERE owner=?',(owner,)).fetchone()
+                or c.execute('SELECT 1 FROM resource_claims WHERE owner=?',(owner,)).fetchone()):
+            raise ValueError('整理任务仍在运行、等待资源或维护中')
+        roots=self._verified_recovery_roots(job,replacements)
+        checkpoints=digest(job['steps'])
+        active=c.execute('SELECT roots,activated FROM organization_recovery_maps WHERE job_id=?',(job_id,)).fetchone()
+        previous=json.loads(active['roots']) if active and active['activated'] else {}
+        completed=job['state']=='done'
+        payload=job['payload']
+        targets=set(payload.get('target_roots',[payload['target_root']]))
+        if not completed and previous and previous!=roots:
+            if targets.intersection(previous) or any(entry['operation']=='move' for entry in payload['entries']):
+                raise ValueError('已生效的目标重连包含文件检查点，需要单独核对后才能再次更换')
+        # Inspect effective paths without activating the map. Existing bindings
+        # must pass the file and ownership checks below before confirmation.
+        mapping={'approval_digest':job['approval_digest'],'checkpoint_digest':checkpoints,
+                 'roots':json.dumps(roots),'activated':True}
+        effective,_=self._effective_execution_job(c,job,mapping,previous)
+        preview={'id':job_id,'approval_digest':job['approval_digest'],'checkpoint_digest':checkpoints,
+                 'roots':roots,'state':job['state'],'updated':job['updated']}
+        bindings=self._recovery_target_bindings(c,job,effective,roots,previous)
+        if completed or bindings:
+            preview.update(binding_count=len(bindings),binding_digest=digest(bindings))
+            if bindings_out is not None:bindings_out.extend(bindings)
+        return dict(preview,digest=digest(preview))
+
+    def _recovery_target_bindings(self,c,job,effective,roots,previous):
+        payload=job['payload']
+        targets=set(payload.get('target_roots',[payload['target_root']]))
+        changed={root for root in roots if roots[root]!=previous.get(root,root)}
+        if job['state']=='done' and (set(previous)-set(roots) or not changed<=targets):
+            raise ValueError('已完成任务只允许重连已绑定目标，保留其他映射')
+        bindings=[]
+        tables={row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for original,entry,step in zip(payload['entries'],effective['payload']['entries'],effective['steps']):
+            root=original.get('target_root',payload['target_root'])
+            if root not in changed:continue
+            old=str(Path(previous.get(root,root))/Path(original['destination']).relative_to(root))
+            new=entry['destination']
+            companion=entry.get('role')=='companion'
+            table='media_resources' if companion else 'media_locations'
+            if table not in tables:
+                if step['state']=='done':raise ValueError('目标没有已完成的绑定证明')
+                continue
+            binding_id=step['details'].get('binding_id')
+            if binding_id:
+                row=c.execute(f'SELECT * FROM {table} WHERE id=?',(binding_id,)).fetchone()
+            else:
+                row=c.execute(f'SELECT * FROM {table} WHERE device_token=? AND path=?',(entry['target_device'],old)).fetchone()
+            if not row and step['state']!='done' and not binding_id:continue
+            if c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=?',(job['id'],)).fetchone():
+                raise ValueError('已有撤销计划，需先核对撤销记录')
+            if step['state'] not in ('done','binding','needs_binding'):
+                raise ValueError('目标已有绑定，但整理检查点尚未确认')
+            if os.path.lexists(old):raise ValueError('原目标仍存在，请核对实际挂载位置')
+            asset=entry.get('parent_asset_id') if companion else entry['asset_id']
+            if not row or (row['asset_id'],row['device_token'],row['path'],row['origin_task'])!=(asset,entry['target_device'],old,job['id']):
+                raise ValueError('原目标绑定已变化，不能自动重连')
+            if c.execute(f'SELECT 1 FROM {table} WHERE path=?',(new,)).fetchone():
+                raise ValueError('新目标路径已有绑定')
+            video=None
+            if not companion:
+                video=c.execute('SELECT v.id,v.path FROM videos v JOIN media_assets a ON a.video_id=v.id WHERE a.id=?',(asset,)).fetchone()
+                if not video or bool(row['preferred'])!=(video['path']==old) or c.execute('SELECT 1 FROM videos WHERE path=?',(new,)).fetchone():
+                    raise ValueError('默认播放位置或新目标索引已变化')
+            path=no_links(new)
+            if str(path)!=new or self.device_identity(path)!=entry['target_device']:
+                raise ValueError('新目标路径或卷身份已变化')
+            expected=step['details'].get('file_identity') if entry['operation']=='copy' else entry['source_identity']
+            before=path.stat()
+            if not expected or before.st_ino!=expected[1]:raise ValueError('新目标文件身份与任务不符')
+            stamp=fingerprint(path)
+            after=path.stat()
+            approved=entry['fingerprint']
+            if (after.st_dev,after.st_ino,after.st_mtime_ns)!=(before.st_dev,before.st_ino,stamp['mtime_ns']) or any(stamp[key]!=approved[key] for key in ('size','sha256')):
+                raise ValueError('新目标文件与批准内容不符')
+            bindings.append({'table':table,'row':dict(row),'path':new,'stamp':stamp,'identity':[after.st_dev,after.st_ino],
+                             'ordinal':step['ordinal'],'video':dict(video) if video else None,'operation':entry['operation'],'details':step['details']})
+        return bindings
+
+    def _apply_recovery_target_bindings(self,c,job,bindings):
+        from media_locations import MediaLocations
+        for binding in bindings:
+            row=binding['row'];stamp=binding['stamp'];path=Path(binding['path'])
+            info=path.stat()
+            if no_links(path)!=path or [info.st_dev,info.st_ino]!=binding['identity'] or (info.st_size,info.st_mtime_ns)!=(stamp['size'],stamp['mtime_ns']):
+                raise ValueError('确认期间新目标文件发生变化')
+            table=binding['table']
+            c.execute(f'UPDATE {table} SET path=?,size=?,mtime_ns=? WHERE id=?',
+                      (str(path),stamp['size'],stamp['mtime_ns'],row['id']))
+            if table=='media_locations':
+                c.execute('UPDATE media_locations SET verified=? WHERE id=?',(time.time(),row['id']))
+                if row['preferred']:MediaLocations.update_video_location(c,binding['video']['id'],path,stamp)
+            if binding['operation']=='copy':
+                ordinal=binding['ordinal']
+                details=dict(binding['details'],file_identity=binding['identity'])
+                c.execute('UPDATE organization_steps SET details=? WHERE job_id=? AND ordinal=?',
+                          (json.dumps(details),job['id'],ordinal))
+
+    def confirm_recovery_map(self,job_id,replacements,expected_digest):
+        with self.db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            bindings=[]
+            preview=self._recovery_map_preview(c,job_id,replacements,bindings)
+            if preview['digest']!=expected_digest:
+                raise ValueError('任务检查点或重连范围已变化，请重新核对')
+            current=c.execute('SELECT roots,activated FROM organization_recovery_maps WHERE job_id=?',(job_id,)).fetchone()
+            if bindings:
+                job=self.get(job_id,c)
+                owner='reconnect-target:'+job_id
+                resources={path_resource(path) for binding in bindings for path in (binding['row']['path'],binding['path'])}
+                resources.update('asset:'+binding['row']['asset_id'] for binding in bindings)
+                resources.update('device:'+binding['row']['device_token'] for binding in bindings)
+                resources.update('video:'+str(binding['video']['id']) for binding in bindings if binding['video'])
+                if not self.leases.acquire_in(c,'organize-reconnect','write',owner,resources,
+                                              allowed_reconcile=('reconcile:'+job_id,)):raise ResourceBusy()
+                self._apply_recovery_target_bindings(c,job,bindings)
+                checkpoint=digest(self.get(job_id,c)['steps'])
+                c.execute('INSERT OR REPLACE INTO organization_recovery_maps VALUES(?,?,?,?,?,1)',
+                          (job_id,preview['approval_digest'],checkpoint,json.dumps(preview['roots']),time.time()))
+                c.execute('DELETE FROM resource_claims WHERE owner=?',(owner,))
+                self.refresh_reconciliation(c)
+                return preview
+            if preview['state']=='done':return preview
+            if current and current['activated'] and json.loads(current['roots'])==preview['roots']:
+                return preview
+            c.execute('INSERT OR REPLACE INTO organization_recovery_maps(job_id,approval_digest,checkpoint_digest,roots,confirmed) VALUES(?,?,?,?,?)',
+                      (job_id,preview['approval_digest'],preview['checkpoint_digest'],json.dumps(preview['roots']),time.time()))
+        return preview
+
+    def _effective_execution_job(self,c,job,mapping=None,previous_roots=None):
+        if mapping is None:mapping=c.execute('SELECT * FROM organization_recovery_maps WHERE job_id=?',(job['id'],)).fetchone()
+        if not mapping:return job,None
+        if mapping['approval_digest']!=job['approval_digest']:
+            raise ValueError('重连授权与原批准清单不一致')
+        if not mapping['activated'] and mapping['checkpoint_digest']!=digest(job['steps']):
+            raise ValueError('任务检查点已变化，请重新核对重连')
+        roots=self._verified_recovery_roots(job,json.loads(mapping['roots']))
+        payload=job['payload']
+        entries=[];steps=[]
+        used=set()
+        for entry,step in zip(payload['entries'],job['steps']):
+            operation=entry['operation']
+            if operation not in ('copy','move'):
+                raise ValueError('此任务的操作类型暂不支持挂载重连')
+            source_root=entry.get('source_root',payload['source_root'])
+            target_root=entry.get('target_root',payload['target_root'])
+            if source_root in roots:
+                source=self._recovery_path(entry['source'],source_root,roots[source_root])
+                entry=dict(entry,source=source,source_root=roots[source_root],approved_source=entry['source'],
+                           reconnected_source_proof=payload['root_proofs'][source_root])
+                used.add(source_root)
+            if target_root in roots:
+                destination=self._recovery_path(entry['destination'],target_root,roots[target_root])
+                if destination!=entry['destination'] and not mapping['activated']:
+                    if step['state']=='done' or self._target_already_bound(c,entry):
+                        raise ValueError('目标已有片库绑定，需要核对后才能更换挂载位置')
+                entry=dict(entry,destination=destination,target_root=roots[target_root],
+                           reconnected_target_proof=payload['root_proofs'][target_root])
+                if operation=='copy':
+                    step=dict(step,details=self._recovery_copy_details(step['details'],target_root,roots[target_root],(previous_roots or {}).get(target_root)))
+                used.add(target_root)
+            entries.append(entry);steps.append(step)
+        if used!=set(roots):raise ValueError('重连范围包含未使用的根目录')
+        return dict(job,payload=dict(payload,entries=entries),steps=steps),mapping
+
+    @staticmethod
+    def _target_already_bound(c,entry):
+        table='media_resources' if entry.get('role')=='companion' else 'media_locations'
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE name=?",(table,)).fetchone():return False
+        query=f'SELECT 1 FROM {table} WHERE path=? AND device_token=?'
+        parameters=(entry['destination'],entry['target_device'])
+        if entry['operation']=='move':
+            asset=entry.get('parent_asset_id') if entry.get('role')=='companion' else entry.get('asset_id')
+            if not asset:return False
+            query+=' AND asset_id=?'
+            parameters+=(asset,)
+        return bool(c.execute(query,parameters).fetchone())
+
+    @staticmethod
+    def _recovery_path(raw,old,new):
+        candidate=Path(new)/Path(raw).relative_to(old)
+        if no_links(candidate)!=candidate:
+            raise ValueError('重连文件路径发生变化')
+        return str(candidate)
+
+    @classmethod
+    def _recovery_copy_details(cls,details,old,new,previous=None):
+        def mapped(raw):
+            path=Path(raw)
+            if path.is_relative_to(new):return raw
+            source=previous if previous and path.is_relative_to(previous) else old
+            return cls._recovery_path(raw,source,new)
+        details=dict(details)
+        if details.get('temporary'):details['temporary']=mapped(details['temporary'])
+        if 'previous_temporaries' in details:
+            details['previous_temporaries']=[
+                dict(record,path=mapped(record['path'])) if isinstance(record,dict) and record.get('path')
+                else mapped(record) if isinstance(record,str) else record for record in details['previous_temporaries']]
+        return details
+
+    def effective_job(self,job_id):
+        with self.db() as c:
+            job=self.get(job_id,c)
+            mapping=c.execute('SELECT activated FROM organization_recovery_maps WHERE job_id=?',(job_id,)).fetchone()
+            return self._effective_execution_job(c,job)[0] if mapping and mapping['activated'] else job
+
+    @staticmethod
+    def check_reconnected_source(entry,path):
+        if (root_proof(entry['source_root'])!=entry['reconnected_source_proof']
+                or path.stat().st_ino!=entry['source_identity'][1]):
+            raise ValueError('重连后的目录或源文件身份与批准清单不一致')
 
     def resources(self,job,c=None):
         values=set()
@@ -148,10 +423,10 @@ class OrganizationJobs:
         return sorted(values)
 
     def claim(self,job_id):
-        job=self.get(job_id)
-        resources=sorted({e[key] for e in job['payload']['entries'] for key in ('source_device','target_device')})
         with self.db() as c:
             c.execute('BEGIN IMMEDIATE')
+            job=self.get(job_id,c)
+            resources=sorted({e[key] for e in job['payload']['entries'] for key in ('source_device','target_device')})
             if c.execute('SELECT 1 FROM organization_superseded WHERE job_id=?',(job_id,)).fetchone():raise ValueError('撤销计划已重新审阅，请使用新任务')
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? AND inverse_job_id IS NOT NULL',(job_id,)).fetchone():raise ValueError('Rollback approved; original execution cannot resume')
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
@@ -160,15 +435,21 @@ class OrganizationJobs:
             allowed={'reconcile:'+job_id}
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone():
                 allowed.update('reconcile:'+row[0] for row in c.execute('SELECT original_job_id FROM organization_inverses WHERE inverse_job_id=?',(job_id,)))
-            held=self.leases.acquire_in(c,'organize','write','organize:'+job_id,self.resources(job,c),queue=True,allowed_reconcile=allowed)
+            effective,mapping=self._effective_execution_job(c,job)
+            paths=self.resources(job,c)
+            if mapping:paths=sorted(set(paths)|set(self.resources(effective,c)))
+            held=self.leases.acquire_in(c,'organize','write','organize:'+job_id,paths,queue=True,allowed_reconcile=allowed)
             if held:
                 for resource in resources:
                     owner=c.execute('SELECT job_id FROM organization_leases WHERE resource=?',(resource,)).fetchone()
                     if owner and owner['job_id']!=job_id:raise ValueError('Device is leased by another job')
                     c.execute('INSERT OR REPLACE INTO organization_leases VALUES(?,?)',(resource,job_id))
                 c.execute("UPDATE organization_jobs SET state='running',updated=? WHERE id=?",(time.time(),job_id))
+                if mapping and not mapping['activated']:
+                    c.execute('UPDATE organization_recovery_maps SET activated=1 WHERE job_id=?',(job_id,))
         if not held:raise ResourceBusy()
         self.journal.observe('organize',job_id,'running',{'total':len(job['steps']),'cancellable':True})
+        return effective
 
     def transition(self,job_id,ordinal,expected,state,details=None):
         if state not in TRANSITIONS.get(expected,set()):raise ValueError('Invalid execution transition')
@@ -211,7 +492,15 @@ class OrganizationJobs:
                     uncertain=True;break
             if uncertain:
                 owner='reconcile:'+job['id'];c.execute('INSERT INTO resource_claims VALUES(?,?,?,?)',(owner,'organize-reconcile','write',time.time()))
-                c.executemany('INSERT INTO resource_scopes VALUES(?,?)',((owner,resource) for resource in self.resources({'payload':{'entries':entries}},c)))
+                scopes=set(self.resources({'payload':{'entries':entries}},c))
+                mapping=c.execute('SELECT roots FROM organization_recovery_maps WHERE job_id=? AND activated=1',(job['id'],)).fetchone()
+                if mapping:
+                    payload=json.loads(job['payload']);roots=json.loads(mapping['roots'])
+                    for entry in entries:
+                        for field,root_field in (('source','source_root'),('destination','target_root')):
+                            root=entry.get(root_field,payload[root_field])
+                            if root in roots:scopes.add(path_resource(Path(roots[root])/Path(entry[field]).relative_to(root)))
+                c.executemany('INSERT INTO resource_scopes VALUES(?,?)',((owner,resource) for resource in sorted(scopes)))
 
     def request_cancel(self,job_id):
         self.get(job_id)
@@ -304,6 +593,7 @@ class OrganizationJobs:
             if c.execute('SELECT 1 FROM organization_superseded WHERE job_id=?',(job_id,)).fetchone():raise ValueError('撤销计划已重新审阅，请使用新任务')
             if c.execute("SELECT 1 FROM sqlite_master WHERE name='organization_inverses'").fetchone() and c.execute('SELECT 1 FROM organization_inverses WHERE original_job_id=? AND inverse_job_id IS NOT NULL',(job_id,)).fetchone():raise ValueError('Rollback approved; original execution cannot resume')
             if c.execute('SELECT 1 FROM organization_maintenance WHERE job_id=?',(job_id,)).fetchone():raise ValueError('Job maintenance in progress')
+            self._effective_execution_job(c,self.get(job_id,c))
             changed=c.execute("UPDATE organization_jobs SET state='queued',updated=? WHERE id=? AND state IN ('cancelled','interrupted','partial','failed','waiting')",(time.time(),job_id)).rowcount
             if changed!=1:raise ValueError('Only stopped jobs can be resumed')
             c.execute('DELETE FROM organization_control WHERE job_id=?',(job_id,))

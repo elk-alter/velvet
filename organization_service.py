@@ -109,7 +109,10 @@ class OrganizationService:
 
     def bind_copy(self,entry,job_id):
         if entry.get('role')=='companion':return self.resources.bind_copy(entry,job_id)
-        video_id,location_id=self.locations.bind_committed_copy(entry['asset_id'],entry['destination'],entry['fingerprint'],entry['target_device'],job_id,entry.get('metadata'),entry.get('verified_identity'))
+        reconnected=entry if entry.get('reconnected_source_proof') and entry['source']!=entry.get('approved_source') else None
+        video_id,location_id=self.locations.bind_committed_copy(
+            entry['asset_id'],entry['destination'],entry['fingerprint'],entry['target_device'],
+            job_id,entry.get('metadata'),entry.get('verified_identity'),reconnected_source=reconnected)
         self.locations.prefer(video_id,location_id,entry.get('verified_identity'))
         return location_id
 
@@ -268,10 +271,14 @@ class OrganizationService:
             archive=c.execute('SELECT original_job_id FROM organization_archive_plans WHERE archive_job_id=?',(job_id,)).fetchone()
             archives=[dict(r) for r in c.execute('SELECT p.archive_job_id AS id,j.state,i.inverse_job_id,reverse.state AS reverse_state FROM organization_archive_plans p JOIN organization_jobs j ON j.id=p.archive_job_id LEFT JOIN organization_inverses i ON i.original_job_id=j.id LEFT JOIN organization_jobs reverse ON reverse.id=i.inverse_job_id WHERE p.original_job_id=? ORDER BY j.created DESC LIMIT 20',(job_id,))]
             if superseded:inverse_of=(superseded['original_job'],)
+            recovery_map=c.execute('SELECT roots,activated FROM organization_recovery_maps WHERE job_id=?',(job_id,)).fetchone()
+        recovery={'roots':sorted(job['payload'].get('root_proofs',{})),
+                  'mapping':json.loads(recovery_map['roots']) if recovery_map else {},
+                  'activated':bool(recovery_map and recovery_map['activated'])}
         capability=None
         if job['payload']['entries'][0]['operation']=='copy' and job['state']=='done':
             try:
                 for root in job['payload'].get('source_roots',[job['payload']['source_root']]):self.archive.capability(root)
                 capability={'supported':True}
             except (OSError,ValueError) as error:capability={'supported':False,'reason':str(error)}
-        return {'archive_capability':capability,'archive_of':archive[0] if archive else None,'source_archives':archives,'superseded':dict(superseded) if superseded else None,'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}
+        return {'recovery':recovery,'archive_capability':capability,'archive_of':archive[0] if archive else None,'source_archives':archives,'superseded':dict(superseded) if superseded else None,'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}

@@ -1,3 +1,5 @@
+当前迭代以 [alpha.7 需求与验收](ALPHA7-REQUIREMENTS.md) 为准，状态和证据见 [交付台账](DELIVERY-STATUS.md)。本页旧表用于追溯原始用户需求。
+
 alpha.6范围以[硬盘统一管理与大库查询需求](ALPHA6-REQUIREMENTS.md)为准；该文档区分基础发行范围与原始完整验收基线。
 
 alpha.5执行清单见 [A5-01–A5-32](ALPHA5-REQUIREMENTS.md)，其范围及验收替代旧表的版本排期。

@@ -13,6 +13,7 @@ class UpgradePreservationTests(unittest.TestCase):
         source=self.root/'synthetic';source.mkdir()
         (source/'Example.mp4').write_bytes(b'synthetic source')
         fixture.seed(self.app,source)
+        with self.app.db() as c:c.execute('UPDATE videos SET domestic=1,amateur=1 WHERE id=1')
         data=self.app.DATA;protected=fixture.snapshot(data)
         images=fixture.files(data);cache=fixture.cache_snapshot(data)
         configuration={name:(data/name).read_bytes() for name in ('settings.json','tag_rules.json')}
@@ -24,7 +25,7 @@ class UpgradePreservationTests(unittest.TestCase):
         for name in images:(data/name).write_bytes(b'synthetic changed image')
         (data/'settings.json').write_text('{}')
         with self.app.db() as c:
-            c.execute('UPDATE videos SET favorite=0,rating=0')
+            c.execute('UPDATE videos SET favorite=0,rating=0,domestic=0,amateur=0')
             c.execute("UPDATE file_reviews SET auto_overrides='{}',decision='open'")
         rollback=restore(data,archive)
         self.assertTrue(rollback['rollback'])

@@ -13,6 +13,11 @@ class LibraryTests(unittest.TestCase):
    video.with_suffix('.nfo').write_text('<movie><title>Fixture</title><actor><name>Actor</name></actor><tag>Test</tag></movie>')
    with app.db() as c:c.execute('INSERT INTO folders VALUES(?)',(str(media),))
    app.scan()
+   page=app.BROWSE.query({'limit':1})
+   app.scan()
+   repeated=app.BROWSE.query({'limit':1,'snapshot':page['snapshot']})
+   self.assertEqual(repeated['revision'],page['revision'])
+   self.assertEqual(repeated['snapshot'],page['snapshot'])
    with app.db() as c:
     row=c.execute('SELECT * FROM videos').fetchone();vid=row['id'];self.assertEqual(row['title'],'Fixture');self.assertEqual(row['actors'],'Actor');self.assertEqual(row['code'],'ABC-123')
     c.execute('UPDATE videos SET title=?,manual=1 WHERE id=?',('Manual',vid))
