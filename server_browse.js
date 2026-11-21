@@ -131,7 +131,7 @@ const serverBrowse=(()=>{
   stopPreviews();
   const focusedKey=document.activeElement?.closest('.movieCard')?.dataset.cardKey;
   for(const interval of hoverTimers.values())clearInterval(interval);hoverTimers.clear();
-  $('grid').setAttribute('aria-busy','false');$('grid').innerHTML=data.items.length?data.items.map(item=>item.kind==='collection'?collectionCard(item):videoCard(item,true)).join(''):`<div class="empty"><h2>没有符合条件的视频</h2><p>可以调整搜索或筛选条件，或导入新的媒体目录。</p><button onclick="resetFilters()">清除筛选</button><button onclick="folderDialog.showModal()">导入目录</button></div>`;
+  $('grid').setAttribute('aria-busy','false');$('grid').innerHTML=data.items.length?data.items.map(item=>item.kind==='collection'?collectionCard(item):videoCard(item,true)).join(''):`<div class="empty"><h2>没有符合条件的视频</h2><p class="emptyFilterDescription">${esc(emptyFilterSummary())}</p><button onclick="resetFilters()">清除筛选</button><button onclick="folderDialog.showModal()">导入目录</button></div>`;
   observeThumbnails();
   const summary=data.summary;$('stats').innerHTML=[[summary.movies,'部作品'],[summary.favorites,'个收藏'],(summary.bytes/1073741824).toFixed(1)+' GB',summary.unwatched].map((item,i)=>{const value=Array.isArray(item)?item[0]:item,label=Array.isArray(item)?item[1]:i===2?'总容量':'部尚未观看';return `<div class="stat"><b>${value}</b><small>${label}</small></div>`}).join('');
   $('clearFiltersButton').hidden=!activeTags.size&&[['q',''],['length','all'],['vrFilter',''],['censorFilter',''],['domesticFilter',''],['amateurFilter',''],['resolution','0'],['tag',''],['excludeTag',''],['actor',''],['studio',''],['scrapeState',''],['reviewFilter','']].every(([id,value])=>$(id).value===value);
@@ -140,7 +140,7 @@ const serverBrowse=(()=>{
   renderPagination();selectionBar();renderCollectionHeader();if(focusedKey)focusCard(focusedKey);
   if(!document.body.dataset.libraryReadyMs)requestAnimationFrame(()=>requestAnimationFrame(()=>document.body.dataset.libraryReadyMs=String(Math.round(performance.now()))));
  }
- function collectionCard(item){return `<article class="card movieCard" data-card-key="${esc(item.key)}" role="button" tabindex="0" data-id="${item.id}" onclick="serverBrowse.openCollection(this.dataset.id)" onkeydown="activateMovieCard(event,this)"><div class="picture collectionMosaic">${item.previews.map((id,i)=>`<div class="collectionTile"><span>${String(i+1).padStart(2,'0')}</span><img loading="lazy" decoding="async" data-library-src="/thumb/${id}-cover.jpg" alt="" onerror="collectionImageFallback(this,${id})"></div>`).join('')}<label class="cardSelection ${chosen.has(item.key)?'selected':''}" onclick="event.stopPropagation()"><input type="checkbox" aria-label="选择视频集 ${esc(item.title)}" ${chosen.has(item.key)?'checked':''} data-key="${esc(item.key)}" onchange="serverBrowse.toggleKey(this.dataset.key,this.checked);this.closest('label').classList.toggle('selected',this.checked)"></label><span class="collectionCount">${item.hit_count} / ${item.total_count} 集</span></div><div class="info"><div class="movieCode">视频集</div><b>${esc(item.title)}</b><small class="movieActors">命中 ${item.hit_count} 个条目 · 全集 ${item.total_count} 个</small></div></article>`}
+ function collectionCard(item){return `<article class="card movieCard" data-card-key="${esc(item.key)}" role="button" tabindex="0" data-id="${item.id}" onclick="serverBrowse.openCollection(this.dataset.id)" onkeydown="activateMovieCard(event,this)"><div class="picture collectionMosaic ${item.custom_cover?'customCollectionCover':''}">${(item.custom_cover?[item.custom_cover]:item.previews).map((id,i)=>`<div class="collectionTile"><span>${String(i+1).padStart(2,'0')}</span><img loading="lazy" decoding="async" data-library-src="/thumb/${id}-cover.jpg" alt="" onerror="collectionImageFallback(this,${id})"></div>`).join('')}<label class="cardSelection ${chosen.has(item.key)?'selected':''}" onclick="event.stopPropagation()"><input type="checkbox" aria-label="选择视频集 ${esc(item.title)}" ${chosen.has(item.key)?'checked':''} data-key="${esc(item.key)}" onchange="serverBrowse.toggleKey(this.dataset.key,this.checked);this.closest('label').classList.toggle('selected',this.checked)"></label><span class="collectionCount">${item.hit_count} / ${item.total_count} 集</span></div><div class="info"><div class="movieCode">视频集</div><b>${esc(item.title)}</b><small class="movieActors">命中 ${item.hit_count} 个条目 · 全集 ${item.total_count} 个</small></div></article>`}
  function toggleKey(key,value){if(!selectionMode||selectionBusy||pending||queryFailed)return;const item=data?.items.find(row=>row.key===key);if(!item)return;if(value){if(chosen.size>=500){toast('一次最多选择500张卡片');return}chosen.set(key,item);if(item.kind==='movie')chosenIds.add(item.id)}else{chosen.delete(key);chosenIds.delete(item.id)}selectionBar()}
  function toggle(id,value){const item=data?.items.find(row=>row.kind==='movie'&&row.id===id);if(item)toggleKey(item.key,value)}
  function selectPage(){if(!selectionMode||pending||queryFailed||!data?.items.length)return;const remove=data.items.every(item=>chosen.has(item.key));for(const item of data.items)toggleKey(item.key,!remove);draw()}
@@ -253,7 +253,37 @@ const serverBrowse=(()=>{
   if(previous){applyView(previous);persistViewState(previous)}
   else{page=1;saveViewState();render()}
  }
- function renderCollectionHeader(){let header=$('pagedCollectionHeader');if(!header){header=document.createElement('section');header.id='pagedCollectionHeader';$('topPagination').before(header)}const info=data.collection_info;header.hidden=!collectionId();if(!collectionId())return;header.innerHTML=`<div class="facetHeader"><button onclick="serverBrowse.leaveCollection()">← 返回片库</button><h3>${esc(info?.title||'视频集')}</h3><span>当前命中 ${data.movies} / 全集 ${info?.total_count||0} 个条目</span><button onclick="resetFilters()">查看全集 · 清除筛选</button></div>`}
+ function renderCollectionHeader(){let header=$('pagedCollectionHeader');if(!header){header=document.createElement('section');header.id='pagedCollectionHeader';$('topPagination').before(header)}const info=data.collection_info;header.hidden=!collectionId();if(!collectionId())return;header.innerHTML=`<div class="facetHeader"><button onclick="serverBrowse.leaveCollection()">← 返回片库</button><h3>${esc(info?.title||'视频集')}</h3><span>当前命中 ${data.movies} / 全集 ${info?.total_count||0} 个条目</span><button onclick="resetFilters()">查看全集 · 清除筛选</button></div>`+collectionCoverOptions(info)}
+ function collectionCoverOptions(info){
+  if(!info||(!data.items.length&&!info.custom_cover))return '';
+  const options=data.items.filter(item=>item.kind==='movie').map(item=>`<option value="${item.id}" ${item.id===info.custom_cover?'selected':''}>${esc(item.title)}</option>`).join('');
+  return `<details class="collectionCoverSettings"><summary>合集封面</summary><div class="row">
+   <label>选择本页作品<select id="collectionCoverChoice"><option value="">选择作品</option>${options}</select></label>
+   <button onclick="serverBrowse.saveCollectionCover(this)">保存封面</button>
+   ${info.custom_cover?'<button onclick="serverBrowse.saveCollectionCover(this,true)">恢复自动封面</button>':''}</div></details>`;
+ }
+ async function saveCollectionCover(button,reset=false){
+  const collection=collectionId(),choice=$('collectionCoverChoice').value;
+  if(button.disabled||(!reset&&!choice))return;
+  button.disabled=true;
+  try{
+   await api('/api/library/collection-cover',{collection,video_id:reset?null:Number(choice)});
+   if(collection===collectionId()){await refresh(true);toast('合集封面已更新')}
+  }catch(error){toast(error.message)}
+  finally{if(button.isConnected)button.disabled=false}
+ }
+ function emptyFilterSummary(){
+  const filters=criteria(),chosen=[...activeTags];
+  const labels=[filters.q&&'搜索“'+filters.q+'”',chosen.length&&'标签 '+chosen.join('、'),
+    filters.actor&&'演员 '+filters.actor,filters.studio&&'厂商 '+filters.studio,
+    filters.exclude_tag&&'排除 '+filters.exclude_tag,filters.facet_name&&'分类 '+filters.facet_name];
+  for(const id of ['length','censorFilter','domesticFilter','amateurFilter','vrFilter','resolution','scrapeState','reviewFilter']){
+   const input=$(id);
+   if(input?.selectedIndex>0)labels.push(input.selectedOptions[0].textContent.trim());
+  }
+  const summary=labels.filter(Boolean).join(' · ');
+  return summary?'当前条件 · '+summary:'当前范围内没有视频。可以清除筛选或导入目录。';
+ }
  function restoreCollection(state){const url=new URL(location.href);if(state?.collection)url.searchParams.set('collection',state.collection);else url.searchParams.delete('collection');history.replaceState(history.state,'',url);collectionReturn=state?.collectionReturn||null}
  let relationTimer,relationController;
  async function relationOptions(query=''){
@@ -314,5 +344,5 @@ const serverBrowse=(()=>{
  for(const [id,kind]of [['excludeTag','tags'],['actor','actors'],['studio','studio']]){
   const old=$(id),input=document.createElement('input');input.id=id;input.placeholder=old.options[0].textContent;input.setAttribute('list','suggest-'+id);input.onchange=old.onchange||(()=>{page=1;render()});input.onfocus=()=>suggest(id,kind);input.oninput=()=>{clearTimeout(suggestTimer);suggestTimer=setTimeout(()=>suggest(id,kind),180)};old.replaceWith(input);input.insertAdjacentHTML('afterend',`<datalist id="suggest-${id}"></datalist>`);
  }
- return {render,refresh,restoreScroll(top,focus){viewScroll={scope:JSON.stringify(criteria()),top:Number(top)||0,focus}},error:showError,relationOptions,bindRelationSuggestions,ensureRelationOptions,retryCode,resetCollection(){const url=new URL(location.href);url.searchParams.delete('collection');history.replaceState(history.state,'',url);collectionReturn=null},loadMovie,openMovie,toggle,toggleKey,toggleSelectionMode,selectPage,clearSelection,scrape,random,relations,openCollection,leaveCollection,restoreCollection,collectionCard,get collectionId(){return collectionId()},get collectionReturn(){return collectionReturn},get total(){return total},get ready(){return !!data},cancel(){viewScroll=null;stopPreviews();clearTimeout(timer);controller?.abort();busy(false);++epoch;cancelMovieOpen()},redraw:()=>data&&draw(),remove(key){const item=chosen.get(key);chosen.delete(key);if(item)chosenIds.delete(item.id);draw()}};
+ return {render,refresh,restoreScroll(top,focus){viewScroll={scope:JSON.stringify(criteria()),top:Number(top)||0,focus}},error:showError,relationOptions,bindRelationSuggestions,ensureRelationOptions,retryCode,resetCollection(){const url=new URL(location.href);url.searchParams.delete('collection');history.replaceState(history.state,'',url);collectionReturn=null},loadMovie,openMovie,toggle,toggleKey,toggleSelectionMode,selectPage,clearSelection,scrape,random,relations,openCollection,leaveCollection,restoreCollection,collectionCard,saveCollectionCover,get collectionId(){return collectionId()},get collectionReturn(){return collectionReturn},get total(){return total},get ready(){return !!data},cancel(){viewScroll=null;stopPreviews();clearTimeout(timer);controller?.abort();busy(false);++epoch;cancelMovieOpen()},redraw:()=>data&&draw(),remove(key){const item=chosen.get(key);chosen.delete(key);if(item)chosenIds.delete(item.id);draw()}};
 })();window.serverBrowse=serverBrowse;

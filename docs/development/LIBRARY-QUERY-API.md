@@ -66,3 +66,10 @@ next是当前版本中紧邻的下一可见分段{id,missing}或null，不依赖
 
 
 第三十一批内部优化不改HTTP契约：卡片聚合在当前连接TEMP browse_cards复用，统计/有序结果由同一完整匹配范围生成；单作品卡片只有一个已选版本成员，因此其cover_id同时是resume_id。合集的MIN电影/版本键仅内部携带，输出仍是合集字段；不将这些值当合集播放身份。全局summary排序不受当前筛选影响。最新数值及浏览器样本见ALPHA6-PERFORMANCE，不再使用早期6.304/5.788秒作为当前结果。
+
+## alpha.10 目录治理
+
+- `GET /api/tag-rules` 返回 `aliases`、`rules`、`can_undo`。向 `/api/catalog-tags/preview` 提交别名映射和规则数组，返回归一化规则、影响文件数、样例及 `digest`。保存到 `/api/catalog-tags/apply` 并带回原候选与摘要。撤销通过 `undo-preview` 获取摘要后提交至 `undo`。摘要与当前规则和影响数据不匹配时返回 400。
+- `GET /api/actor-governance` 返回别名和撤销状态。向 `/api/actor-governance/preview` 提交 `mode`（`merge` 或 `split`）、`source`、`target`，拆分另提交所选文件 `ids`（最多 100）。预览可分页，每页 25 个文件。向 `apply` 附摘要、0–5 的整数 `rating` 与布尔 `favorite`，撤销提交至 `undo`。目标偏好在变更后被编辑时返回 400。别名指向单一主身份，已有别名的主身份保留现有关系，避免链式合并。
+- `POST /api/library/collection-cover` 接受合集 `collection` 及当前可见成员的 `video_id`，传 `null` 恢复自动封面。查询中的合集卡片与 `collection_info` 带 `custom_cover`。详情文件带 `catalog_actors`、`catalog_tags`，原值继续供编辑、对账使用。
+- POST 沿用现有认证和变更令牌。持久状态与撤销保存于 `app_state`，应用变更后失效查询投影。浏览器预设和隐私选项使用同一来源的本地存储。

@@ -85,7 +85,7 @@ function editFilmCategories(){
 
 function renderSelectedFilmSummary(){
  const v=selected,source=v.source_summary||{};
- const categories=[...new Set(String(v.category_tags||'').split(/[,，]/).map(tag=>tag.trim()).filter(Boolean))];
+ const categories=v.catalog_tags||[...new Set(String(v.category_tags||'').split(/[,，]/).map(tag=>tag.trim()).filter(Boolean))];
  const score=source.score
   ?`<span class="filmScore">★ ${esc(source.score)}${source.score_max?` / ${esc(source.score_max)}`:''} <small>${esc(source.score_source?.toLowerCase()==='javdb'?'JavDB 评分':source.score_source?source.score_source+' 评分':'来源评分')}</small></span>`
   :v.rating?`<span>★ ${esc(v.rating)} <small>个人评分</small></span>`:'';

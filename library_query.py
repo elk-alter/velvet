@@ -13,7 +13,10 @@ import uuid
 from pathlib import Path
 from file_review import FileReview
 from media_libraries import canonical
-from media_presentation import projection_presentation, category_tags, recognition
+from media_presentation import projection_presentation, recognition
+
+
+from library_governance import actor_state,actor_names,display_tags,record,save_record
 
 
 class LibraryQueryChanged(ValueError):pass
@@ -48,11 +51,12 @@ class LibraryQuery:
             if 'projected_revision' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projected_revision INTEGER DEFAULT -1')
             if 'projection_schema' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projection_schema INTEGER DEFAULT 0')
             scope_enforced, _ = self.libraries.membership(c)
+            catalog_aliases=bool(self.config().get('tag_aliases'))
             c.execute("""UPDATE browse_state SET rebuild=CASE
                 WHEN projection_schema BETWEEN 1 AND 11 AND (?=0 OR projection_schema>=6)
-                AND NOT EXISTS(SELECT 1 FROM browse_projection WHERE marks IS NULL OR marks='{}')
-                THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=11,revision=revision+1
-                WHERE projection_schema!=11""",(scope_enforced,))
+                AND ?=0 AND NOT EXISTS(SELECT 1 FROM browse_projection WHERE marks IS NULL OR marks='{}')
+                THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=12,revision=revision+1
+                WHERE projection_schema!=12""",(scope_enforced,catalog_aliases))
             c.execute('DROP TABLE IF EXISTS browse_query_members')
             c.execute('CREATE TABLE IF NOT EXISTS browse_queries(id TEXT PRIMARY KEY,created REAL,revision INTEGER,criteria TEXT,totals TEXT)')
             c.execute('CREATE INDEX IF NOT EXISTS browse_query_reuse ON browse_queries(revision,criteria,created DESC)')
@@ -150,6 +154,8 @@ class LibraryQuery:
             if not rebuild:
                 c.execute('INSERT OR IGNORE INTO browse_dirty_movies SELECT l.movie_key FROM browse_dirty q JOIN media_links l ON l.video_id=q.video_id')
             setting=c.execute("SELECT value FROM review_settings WHERE key='target'").fetchone();target=int(setting[0]) if setting else 1080
+            people=actor_state(c)
+            tag_aliases=self.config().get('tag_aliases',{})
             unreviewed={}
             empty_marks={'domestic':False,'amateur':False,'conflict':False}
             empty_marks_json='{"domestic":false,"amateur":false,"conflict":false}'
@@ -185,9 +191,10 @@ class LibraryQuery:
                         # With no review record, only the target-height rule varies.
                         # Keep this cache local to the current target/transaction.
                         if record is None:unreviewed[below_target]=review_json
-                    tag_json=(json.dumps(list(dict.fromkeys(tokens(category_tags(row))+tokens(row['auto_tags']))))
+                    tag_json=(json.dumps(list(dict.fromkeys(
+                              display_tags(row,tag_aliases)+tokens(row['tags'])+tokens(row['auto_tags']))))
                               if row['tags'] or row['source_tags'] or row['auto_tags'] else '[]')
-                    actor_json=json.dumps(tokens(row['actors'])) if row['actors'] else '[]'
+                    actor_json=json.dumps(actor_names(people,row['id'],row['actors'])) if row['actors'] else '[]'
                     compact=present.get('marks')
                     if compact is None:
                         decisions=present.get('recognition') or recognition(row,raw_path)
@@ -317,7 +324,9 @@ class LibraryQuery:
             if criteria['mode']==key:where.append(column)
         if criteria['q']:
             metadata="instr(fold(COALESCE(pf.title,'')||' '||COALESCE(vf.code,'')||' '||COALESCE(vf.actors,'')||' '||COALESCE(vf.studio,'')||' '||COALESCE(vf.tags,'')||' '||COALESCE(vf.auto_tags,'')),?)>0"
-            where.append('('+member(metadata)+" OR EXISTS(SELECT 1 FROM files p WHERE p.movie_key=v.movie_key AND instr(fold(p.path),?)>0))");args.extend([fold(criteria['q'])]*2)
+            metadata+=" OR EXISTS(SELECT 1 FROM json_each(pf.actors) WHERE instr(fold(value),?)>0)"
+            metadata+=" OR EXISTS(SELECT 1 FROM json_each(pf.tags) WHERE instr(fold(value),?)>0)"
+            where.append('('+member(metadata)+" OR EXISTS(SELECT 1 FROM files p WHERE p.movie_key=v.movie_key AND instr(fold(p.path),?)>0))");args.extend([fold(criteria['q'])]*4)
         if criteria['length']!='all':where.append('v.total_duration>0 AND v.total_duration'+('<1200' if criteria['length']=='short' else '>=1200'))
         if criteria['censorship']:where.append('v.censorship=?');args.append(criteria['censorship'])
         where.append('v.min_height>=?');args.append(int(criteria['height']))
@@ -377,6 +386,9 @@ class LibraryQuery:
 
     def query(self,query):
         criteria=self.parameters(query);offset=max(0,int(query.get('offset',0)));limit=min(96,max(1,int(query.get('limit',48))))
+        if criteria['actor']:
+            with self.db() as c:aliases=actor_state(c)['aliases']
+            criteria['actor']=aliases.get(criteria['actor'],criteria['actor'])
         ident=str(query.get('snapshot',''))
         aliases=self._facet_aliases(criteria)
         if criteria['facet_kind']=='tags':criteria['_aliases']=self._alias_signature(aliases)
@@ -396,7 +408,7 @@ class LibraryQuery:
     def _query_functions(self,c,aliases):
         c.create_function('fold',1,fold,deterministic=True)
         c.create_function('token_list',1,lambda value:json.dumps(tokens(value)),deterministic=True)
-        c.create_function('facet_tags',3,lambda source,tags,locks:json.dumps([aliases.get(t,t) for t in tokens(category_tags({'source_tags':source,'tags':tags,'locked_fields':locks}))]),deterministic=True)
+        c.create_function('facet_tags',3,lambda source,tags,locks:json.dumps(display_tags({'source_tags':source,'tags':tags,'locked_fields':locks},aliases)),deterministic=True)
         c.create_function('collection_id',1,lambda root:hashlib.sha256(fold(root).encode()).hexdigest()[:24] if root else '',deterministic=True)
         c.create_function('basename',1,lambda path:path_text(path).split('/')[-1],deterministic=True)
 
@@ -502,7 +514,9 @@ class LibraryQuery:
             else:
                 items=[json.loads(row[0]) for row in cached]
             for item in items:
-                if item['kind']=='collection':continue
+                if item['kind']=='collection':
+                    item['custom_cover']=self.collection_cover(c,item['id'])
+                    continue
                 row=c.execute('SELECT * FROM browse_version_rows WHERE movie_key=? AND version_key=?',(item['movie_key'],item['version_key'])).fetchone()
                 if not row:raise LibraryQueryChanged('作品版本已变化，请重新查询')
                 fields={'title':'display_title','height':'min_height','duration':'total_duration','size':'total_size','position':'max_position','watched':'all_watched','missing':'all_missing','favorite':'movie_favorite','mtime':'movie_mtime'}
@@ -519,9 +533,41 @@ class LibraryQuery:
                     item[flag+'_reason']='、'.join(dict.fromkeys(file[flag+'_reason'] for file in resolved if file[flag])) or '未标记'
                 item['recognition_conflict']=any(file['conflict'] for file in resolved)
                 item.update({key:row[key] for key in ('code','actors','studio','date','rating','vr','censorship','resolution_label','part_count','version_count','needs_update','higher_local')})
+            if totals.get('collection_info'):
+                totals['collection_info']['custom_cover']=self.collection_cover(c,criteria['collection'])
         for item in items:
             if item['kind']=='movie':item['censorship_label']={'censored':'有码','uncensored':'无码','unknown':'未知'}.get(item['censorship'],'标记不一致')
         return dict(totals,items=items,offset=offset,limit=limit,snapshot=ident,criteria=criteria,revision=revision)
+
+    def collection_cover(self,connection,collection):
+        ident=record(connection,'collection_covers',{}).get(collection)
+        if ident and self.collection_member(connection,collection,ident):return ident
+        return None
+
+    @staticmethod
+    def collection_member(connection,collection,ident=None):
+        return connection.execute("""
+            SELECT 1 FROM browse_version_rows b JOIN media_links l ON l.movie_key=b.movie_key AND l.version_key=b.version_key
+            JOIN browse_projection p ON p.video_id=l.video_id AND p.visible=1
+            WHERE b.collection_count>1 AND collection_id(b.collection_root)=?
+            AND (? IS NULL OR p.video_id=?) LIMIT 1""",(collection,ident,ident)).fetchone()
+
+    def set_collection_cover(self,collection,ident):
+        if not isinstance(collection,str) or not re.fullmatch(r'[0-9a-f]{24}',collection):
+            raise ValueError('合集标识无效')
+        if ident is not None and (type(ident) is not int or ident<1):raise ValueError('封面文件无效')
+        with self._refresh_lock:
+            self.refresh()
+            with self.db() as c:
+                c.execute('BEGIN IMMEDIATE')
+                self._query_functions(c,{})
+                if not self.collection_member(c,collection,ident):raise ValueError('请选择当前合集中的文件')
+                covers=record(c,'collection_covers',{})
+                if ident is None:covers.pop(collection,None)
+                else:covers[collection]=ident
+                save_record(c,'collection_covers',covers)
+                c.execute('UPDATE browse_state SET revision=revision+1,projected_revision=revision+1 WHERE id=1')
+        return {'collection':collection,'custom_cover':ident}
 
     def movie(self,video_id):
         self.refresh()

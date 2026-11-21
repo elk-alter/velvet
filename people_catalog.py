@@ -1,5 +1,5 @@
 """Local actor portraits and library facets; never writes to a media directory."""
-from media_presentation import category_tags
+from library_governance import display_tags
 import hashlib
 import json
 import os
@@ -130,7 +130,7 @@ class FacetCatalog:
         for row in rows:
             try:snapshot=json.loads(row.get('amane_snapshot') or '{}')
             except ValueError:snapshot={}
-            values={'tags':[aliases.get(tag,tag) for tag in split(category_tags(row))], 'user_tags':split(row.get('tags')), 'technical':[tag for tag in split(row.get('auto_tags')) if not tag.startswith('题材/')], 'studio':[row['studio']] if row['studio'] else [], 'series':[snapshot['series']] if isinstance(snapshot.get('series'),str) and snapshot['series'] else [], 'director':snapshot.get('directors') or []}
+            values={'tags':display_tags(row,aliases), 'user_tags':split(row.get('tags')), 'technical':[tag for tag in split(row.get('auto_tags')) if not tag.startswith('题材/')], 'studio':[row['studio']] if row['studio'] else [], 'series':[snapshot['series']] if isinstance(snapshot.get('series'),str) and snapshot['series'] else [], 'director':snapshot.get('directors') or []}
             for kind,names in values.items():
                 if not isinstance(names,list):names=[]
                 for name in set(n for n in names if isinstance(n,str) and n):

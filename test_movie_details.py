@@ -138,7 +138,7 @@ class MovieDetailTests(unittest.TestCase):
             self.app.BROWSE.__init__(self.app.db,self.app.CORE,self.app.LIBRARIES,self.app.DIRECTORY_POLICY,self.app.config)
             self.app.BROWSE.refresh()
         with self.app.db() as c:
-            self.assertEqual(c.execute('SELECT projection_schema FROM browse_state').fetchone()[0],11)
+            self.assertEqual(c.execute('SELECT projection_schema FROM browse_state').fetchone()[0],12)
             self.assertEqual(c.execute("SELECT min_height FROM browse_version_rows WHERE version_key='cut-0'").fetchone()[0],1080)
 
     def test_version_ties_keep_legacy_latest_visible_member_order(self):

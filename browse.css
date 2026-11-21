@@ -264,3 +264,18 @@ html.privacyMode .picture,html.privacyMode .actorPhoto,html.privacyMode .heroPor
 
 #grid[data-selecting="false"] .movieCard .cardSelection{display:none}
 #grid[data-selecting="true"] .movieCard .cardSelection{opacity:1;pointer-events:auto}
+.savedFilterPanel{margin:0 0 18px}
+.savedFilterPanel .row,.collectionCoverSettings .row{margin-top:8px}
+.catalogEditorRow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:8px;align-items:end;margin-bottom:8px}
+.catalogEditorRow input{min-width:0;width:100%}
+.catalogActorSamples{max-height:300px;overflow:auto}
+.catalogPortrait{width:42px;height:42px;object-fit:cover;border-radius:50%;vertical-align:middle;margin-right:8px}
+.privacyMode .catalogPortrait{visibility:hidden}
+.customCollectionCover .collectionTile{grid-column:1/-1;grid-row:1/-1}
+.customCollectionCover .collectionTile span{display:none}
+.privacyMode.privacyText :is(.path,.movieCard .info>b,.movieCode>span:first-child,.collectionTitle,#heading,
+ #filmSummary h2,.filmEyebrow,.actorHero h2,.categoryCard strong,.diskFile strong,
+ #pagedCollectionHeader h3,#collectionCoverChoice,.moviePartButton strong,.catalogActorSamples,
+ #catalogTagPreview li strong,.emptyFilterDescription){visibility:hidden}
+.privacyMode.privacyText :is(#q,#diskRoot,#diskTarget,input[data-index]){color:transparent;caret-color:var(--text)}
+@media(max-width:600px){.catalogEditorRow{grid-template-columns:minmax(0,1fr)}}

@@ -13,6 +13,7 @@ ROOT=Path(__file__).resolve().parent
 APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip()
 UI_ASSETS={
  '/':('index.html','text/html'),
+ '/catalog_tools.js':('catalog_tools.js','text/javascript'),
  '/management.js':('management.js','text/javascript'),
  '/disk_manager.js':('disk_manager.js','text/javascript'),
  '/disk_selection.js':('disk_selection.js','text/javascript'),
@@ -59,6 +60,10 @@ def db():
 def config():
  try:return DEFAULT|json.loads((DATA/'settings.json').read_text('utf-8'))
  except (OSError,ValueError):return DEFAULT.copy()
+def library_config():
+ cfg=config()
+ cfg['tag_aliases']=GOVERNANCE.tag_config()['aliases']
+ return cfg
 with db() as c:
  c.execute('PRAGMA journal_mode=WAL')
  c.execute('CREATE TABLE IF NOT EXISTS videos(id INTEGER PRIMARY KEY AUTOINCREMENT,path TEXT UNIQUE,title TEXT,size INTEGER,mtime REAL,duration REAL DEFAULT 0,favorite INTEGER DEFAULT 0,tags TEXT DEFAULT "",error TEXT DEFAULT "")')
@@ -97,6 +102,7 @@ from media_libraries import MediaLibraries,canonical
 from network_checks import NetworkChecks
 from source_catalog import SourceCatalog,NATIVE_SOURCES
 from people_catalog import PeopleCache,FacetCatalog,actor_key
+from library_governance import CatalogGovernance,actor_state,actor_names,display_tags,record as catalog_record,save_record
 from artwork_store import ArtworkStore
 LIBRARIES=MediaLibraries(db)
 from directory_policy import DirectoryPolicy
@@ -104,7 +110,7 @@ DIRECTORY_POLICY=DirectoryPolicy(db,LIBRARIES)
 SOURCES=SourceCatalog(lambda path:external_amane_request(path),config)
 NETWORK=NetworkChecks(config,lambda:external_amane_request('metadata?limit=1'),external_probe=lambda ids:external_amane_request('network/check',{'source_ids':ids} if ids else {}),external_sources=lambda:list(dict.fromkeys(s for route in SOURCES.snapshot()['upstream']['routes'].values() for s in route)))
 PEOPLE=PeopleCache(db,DATA,config,lambda path:external_amane_request(path),lambda url:actor_image_bytes(url))
-CATEGORIES=FacetCatalog(db,config)
+CATEGORIES=FacetCatalog(db,library_config)
 CATEGORIES.filter_rows=LIBRARIES.filter_rows
 ARTWORK=ArtworkStore(db,DATA,lambda url,target,engine,referer:download_still(url,target,engine,referer))
 ARTWORK.allowed=lambda vid:video_included(vid)
@@ -168,9 +174,6 @@ INVENTORY_QUERY=InventoryQuery(INVENTORY)
 from storage_file_details import StorageFileDetails
 STORAGE_FILES=StorageFileDetails(INVENTORY,INVENTORY_QUERY,LEASES)
 from library_query import LibraryQuery,LibraryQueryChanged
-BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,config,project=projection_presentation,write_guard=DB_MUTEX)
-from movie_details import MovieDetails
-MOVIE_DETAILS=MovieDetails(BROWSE,REVIEW)
 with db() as c:c.execute("UPDATE videos SET locked_fields=?,manual=0 WHERE manual=1 AND locked_fields='[]'",(json.dumps(['title','code','actors','studio','date','plot']),))
 WORK_STATUS={'sync':{'running':False,'phase':'idle'},'images':{'running':False,'failed':0},'scan':STATUS}
 
@@ -221,13 +224,19 @@ def remote_metadata(code):
   if k in result:clean[k]=', '.join(map(str,result[k])) if isinstance(result[k],list) else str(result[k])
  clean['source']='online';return clean
 
-def classify(row):
- reasons={};aliases=config().get('tag_aliases',{})
+def legacy_tag_configuration():
+ try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
+ except (OSError,ValueError):rules=[]
+ return {'aliases':config().get('tag_aliases',{}),'rules':rules}
+
+def classify(row,configuration=None):
+ configuration=GOVERNANCE.tag_config() if configuration is None else configuration
+ reasons={};aliases=configuration['aliases']
  def add(tag,why):
   tag=str(tag).strip()[:80]
   if tag:reasons.setdefault(tag,why)
- for tag in re.split(r'[,，]',category_tags(row)):
-  if tag.strip():add('题材/'+aliases.get(tag.strip(),tag.strip()),'影片类别标签')
+ for tag in display_tags(row,aliases):
+  add('题材/'+tag,'影片类别标签')
  status,why=censorship(row)
  add('制式/'+{'censored':'有码','uncensored':'无码','unknown':'未知'}[status],why)
  p=Path(row['path']);height=int(row.get('height') or 0);duration=float(row.get('duration') or 0)
@@ -242,18 +251,26 @@ def classify(row):
  for label in re.findall(r'\[([^\[\]]{1,40})\]|【([^【】]{1,40})】',p.stem):
   value=label[0] or label[1]
   if not re.search(r'(?i)\d{3,4}[xp]|fps|\d{3,4}p',value):add('文件标签/'+value,'文件名括号标签')
- try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
- except (OSError,ValueError):rules=[]
  text=' '.join(str(row.get(k,'') or '') for k in ['title','path','tags','actors','studio']).casefold()
- for rule in rules:
+ for rule in configuration['rules']:
   if isinstance(rule,dict) and rule.get('tag') and any(str(word).casefold() in text for word in rule.get('keywords',[]) if str(word).strip()):add(rule['tag'],'自定义关键词规则')
  return ', '.join(reasons),json.dumps(reasons,ensure_ascii=False)
 
+def cached_portrait(name):
+ key=actor_key(name)
+ return '/actor-image/'+key if (DATA/'actors'/(key+'.jpg')).is_file() else ''
+
+GOVERNANCE=CatalogGovernance(db,legacy_tag_configuration,LIBRARIES.filter_rows,classify,cached_portrait)
+BROWSE=LibraryQuery(db,CORE,LIBRARIES,DIRECTORY_POLICY,library_config,project=projection_presentation,write_guard=DB_MUTEX)
+from movie_details import MovieDetails
+MOVIE_DETAILS=MovieDetails(BROWSE,REVIEW)
+
 def retag_all():
  with db() as c:
+  configuration=GOVERNANCE.tag_config(c)
   rows=LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT * FROM videos').fetchall()])
   for row in rows:
-   tags,reasons=classify(dict(row));c.execute('UPDATE videos SET auto_tags=?,tag_reasons=? WHERE id=?',(tags,reasons,row['id']))
+   tags,reasons=classify(dict(row),configuration);c.execute('UPDATE videos SET auto_tags=?,tag_reasons=? WHERE id=?',(tags,reasons,row['id']))
  return len(rows)
 
 def scan(force=False,folder_path=None,automatic=False):
@@ -661,15 +678,16 @@ def actor_library():
  with db() as c:
   videos=[dict(r) for r in c.execute('SELECT * FROM videos WHERE missing=0')]
   prefs={r['name']:dict(r) for r in c.execute('SELECT * FROM actor_preferences')}
+  identities=actor_state(c)
  videos=LIBRARIES.filter_rows(videos)
  people={}
  for video in videos:
-  for name in set(n.strip() for n in re.split(r'[,，;；\n]',video.get('actors') or '') if n.strip()):
+  for name in actor_names(identities,video['id'],video.get('actors')):
    person=people.setdefault(name,{'name':name,'rating':prefs.get(name,{}).get('rating',0),'favorite':prefs.get(name,{}).get('favorite',0),'movie_keys':set(),'file_count':0})
    person['file_count']+=1
    movie=video['code'].strip().upper() or presentation(video)['part_key'] or video['path'];person['movie_keys'].add(movie)
  for name,pref in prefs.items():
-  if name not in people and (pref['favorite'] or pref['rating']):people[name]=dict(pref,movie_keys=set(),file_count=0)
+  if name not in identities['aliases'] and name not in people and (pref['favorite'] or pref['rating']):people[name]=dict(pref,movie_keys=set(),file_count=0)
  result=[];profiles=PEOPLE.profiles()
  for person in people.values():
   profile=profiles.get(person['name'],{})
@@ -677,6 +695,9 @@ def actor_library():
   except ValueError:pass
   key=actor_key(person['name']);portrait=DATA/'actors'/(key+'.jpg')
   person['portrait']='/actor-image/'+key+'?v='+str(int(profile.get('updated',0))) if portrait.is_file() else ''
+  person['identity_aliases']=[name for name,target in identities['aliases'].items() if target==person['name']]
+  if not person['portrait']:
+   person['portrait']=next((portrait for name in person['identity_aliases'] if (portrait:=cached_portrait(name))), '')
   person['portrait_source']=profile.get('origin','');person['portrait_error']=profile.get('error','')
   person['movie_count']=len(person.pop('movie_keys'));result.append(person)
  return sorted(result,key=lambda p:(-p['favorite'],-p['rating'],-p['movie_count'],p['name']))
@@ -834,7 +855,7 @@ def scrape_job_page(query):
          'work':WORK_STATUS,'duplicates':DUP_STATUS,'file_review':{'running':REVIEW.lock.locked()}}
 
 def browser_context():
- cfg=config();cfg['has_key']=bool(cfg.get('api_key'));cfg['api_key']='';cfg['has_amane_token']=bool(cfg.get('amane_token'));cfg['amane_token']='';cfg.pop('scrape_site_config',None)
+ cfg=library_config();cfg['has_key']=bool(cfg.get('api_key'));cfg['api_key']='';cfg['has_amane_token']=bool(cfg.get('amane_token'));cfg['amane_token']='';cfg.pop('scrape_site_config',None)
  with db() as c:folders=[row[0] for row in c.execute('SELECT path FROM folders ORDER BY path')]
  return {'settings':cfg,'folders':folders,'collection_rules':DIRECTORY_POLICY.rules(),'excluded_directories':LIBRARIES.exclusions(),
          'status':dict(STATUS),'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'platform':sys.platform,'server_mode':NAS,'amane':dict(AMANE_STATUS),'token':TOKEN,'transport':'context-v1'}
@@ -898,7 +919,9 @@ class Handler(BaseHTTPRequestHandler):
    if path.startswith('/api/field-diff/'):
     row=self.video(path.rsplit('/',1)[-1]);snapshot=json.loads(row.get('amane_snapshot') or '{}');values={'title':snapshot.get('title'),'actors':', '.join(snapshot.get('actors') or []),'studio':snapshot.get('studio'),'date':snapshot.get('release'),'plot':snapshot.get('plot'),'code':snapshot.get('number')}
     return self.send({'fields':[{'field':k,'current':row.get(k),'incoming':v,'locked':k in json.loads(row['locked_fields'] or '[]'),'source':(snapshot.get('field_sources') or {}).get(k,'Amane')} for k,v in values.items()]})
-   if path=='/api/actors':return self.send({'actors':actor_library()})
+   if path=='/api/actors':
+    with db() as c:aliases=actor_state(c)['aliases']
+    return self.send({'actors':actor_library(),'aliases':aliases})
    if path=='/api/actor-sync-status':return self.send(dict(PEOPLE.state))
    if path=='/api/categories':return self.send({'items':CATEGORIES.list()})
    if path.startswith('/actor-image/'):
@@ -911,9 +934,9 @@ class Handler(BaseHTTPRequestHandler):
    if path=='/api/duplicates':return self.send({'groups':duplicate_groups(),'status':DUP_STATUS})
    if path=='/api/amane-jobs':return self.send(scrape_job_page(parse_qs(urlparse(self.path).query)))
    if path=='/api/tag-rules':
-    try:rules=json.loads((DATA/'tag_rules.json').read_text('utf-8'))
-    except (OSError,ValueError):rules=[]
-    return self.send({'rules':rules})
+    with db() as c:return self.send(GOVERNANCE.tag_config(c)|{'can_undo':bool(catalog_record(c,'tag_governance_undo',None))})
+   if path=='/api/actor-governance':
+    with db() as c:return self.send({'aliases':actor_state(c)['aliases'],'can_undo':bool(catalog_record(c,'actor_identity_undo',None))})
    if path=='/api/context':return self.send(browser_context())
    if path=='/api/library/lookup':return self.send(BROWSE.lookup(parse_qs(urlparse(self.path).query).get('code',[''])[0]))
    if path=='/api/library/relationship-options':return self.send(BROWSE.relationship_options(parse_qs(urlparse(self.path).query).get('q',[''])[0]))
@@ -1047,6 +1070,16 @@ class Handler(BaseHTTPRequestHandler):
     self.send({'ok':True,'waiting':False});threading.Thread(target=self.server.shutdown,daemon=True).start();return
    if SHUTTING_DOWN.is_set() and path!='/api/task-cancel':raise ValueError('服务正在安全停止，请稍后操作')
    if path.startswith('/api/storage/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
+   if path.startswith('/api/catalog-tags/'):
+    action=path.rsplit('/',1)[-1]
+    if action not in ('preview','apply','undo-preview','undo'):raise ValueError('未知标签操作')
+    return self.send(GOVERNANCE.tags(a,action))
+   if path.startswith('/api/actor-governance/'):
+    action=path.rsplit('/',1)[-1]
+    if action not in ('preview','apply','undo'):raise ValueError('未知演员操作')
+    return self.send(GOVERNANCE.actors(a,action))
+   if path=='/api/library/collection-cover':
+    return self.send(BROWSE.set_collection_cover(a.get('collection'),a.get('video_id')))
    if path=='/api/organization/selection-review':
     return self.send(ORGANIZATION.selection_review(a.get('id'),a.get('digest'),a.get('selected')))
    if path=='/api/organization/prepare':
@@ -1277,7 +1310,7 @@ class Handler(BaseHTTPRequestHandler):
        result={key:report[key] for key in ('id','digest','ready','backup')}
        result.update(problems=report['problems'][:50],problem_count=len(report['problems']),verified_count=len(report['files']),retained_count=len(report['retained_files']),retained_files=[{'path':item['path']} for item in report['retained_files'][:50]])
       else:
-       rollback=CORE.restore(a['name'],a.get('reconciliation'));ensure_manual_card_flags();ensure_scrape_job_indexes();REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,config,project=projection_presentation,write_guard=DB_MUTEX);MOVIE_DETAILS.__init__(BROWSE,REVIEW);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
+       rollback=CORE.restore(a['name'],a.get('reconciliation'));ensure_manual_card_flags();ensure_scrape_job_indexes();REVIEW.ensure(recover=True);ARTWORK.ensure(recover=True);DIRECTORY_POLICY.ensure();JOURNAL.ensure();JOURNAL.recover();INVENTORY.ensure();LEASES.ensure();LEASES.recover();ORGANIZATION.__init__(db,INVENTORY);INVENTORY_QUERY.__init__(INVENTORY);BROWSE.__init__(db,CORE,LIBRARIES,DIRECTORY_POLICY,library_config,project=projection_presentation,write_guard=DB_MUTEX);MOVIE_DETAILS.__init__(BROWSE,REVIEW);ORGANIZATION.locations.migrate();ORGANIZATION.jobs.recover()
        with db() as c:
         if 'engine' not in {r[1] for r in c.execute('PRAGMA table_info(scrape_jobs)')}:c.execute("ALTER TABLE scrape_jobs ADD COLUMN engine TEXT DEFAULT ''")
     finally:
@@ -1301,6 +1334,7 @@ class Handler(BaseHTTPRequestHandler):
     name=str(a.get('name','')).strip()
     if not name or len(name)>200:raise ValueError('演员名称无效')
     with db() as c:
+     name=actor_state(c)['aliases'].get(name,name)
      old=c.execute('SELECT * FROM actor_preferences WHERE name=?',(name,)).fetchone()
      rating=a.get('rating',old['rating'] if old else 0);favorite=a.get('favorite',old['favorite'] if old else 0)
      if type(rating) is not int or not 0<=rating<=5:raise ValueError('评分范围为 0–5 星')
@@ -1365,9 +1399,14 @@ class Handler(BaseHTTPRequestHandler):
     if parsed.scheme not in ('http','https') or not parsed.hostname or parsed.username:raise ValueError('服务地址无效')
     if parsed.scheme=='http' and parsed.hostname not in ('127.0.0.1','localhost','::1'):raise ValueError('远程连接需要 HTTPS')
     if a.get('token'):cfg['amane_token']=str(a['token'])
-    aliases=a.get('aliases',{})
+    aliases=a.get('aliases',GOVERNANCE.tag_config()['aliases'])
     if not isinstance(aliases,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in aliases.items()):raise ValueError('别名应为 JSON 对象')
     cfg['tag_aliases']=aliases
+    with db() as c:
+     saved=catalog_record(c,'tag_governance',None)
+     if saved is not None and saved['aliases']!=aliases:
+      save_record(c,'tag_governance',saved|{'aliases':aliases})
+      save_record(c,'tag_governance_undo',None)
     (DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8');retag_all()
    elif path=='/api/amane-sync':
     if AMANE_LOCK.locked():return self.send({'ok':True,'busy':True,'count':AMANE_STATUS['synced']})
@@ -1380,6 +1419,11 @@ class Handler(BaseHTTPRequestHandler):
     for rule in rules:
      if not isinstance(rule,dict) or not isinstance(rule.get('tag'),str) or not isinstance(rule.get('keywords'),list) or not all(isinstance(k,str) for k in rule['keywords']):raise ValueError('规则格式应为 tag 与 keywords 数组')
     (DATA/'tag_rules.json').write_text(json.dumps(rules,ensure_ascii=False,indent=2),'utf-8')
+    with db() as c:
+     saved=catalog_record(c,'tag_governance',None)
+     if saved is not None and saved['rules']!=rules:
+      save_record(c,'tag_governance',saved|{'rules':rules})
+      save_record(c,'tag_governance_undo',None)
     return self.send({'ok':True,'count':retag_all()})
    elif path=='/api/edit':
     allowed={'title','tags','category_tags','actors','studio','code','plot','date','favorite','watched','rating','censor_override','domestic','amateur'};updates={k:v for k,v in a.items() if k in allowed}

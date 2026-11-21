@@ -121,7 +121,7 @@ function paintPrivacyButton(button,enabled){
  button.setAttribute('aria-pressed',String(enabled));
 }
 function setPrivacyMode(enabled,persist=true){document.documentElement.classList.toggle('privacyMode',enabled);if(persist)try{localStorage.setItem('velvet-privacy',enabled?'on':'off')}catch(error){}if(enabled){document.querySelectorAll('.movieCard .picture').forEach(stopCardPreview);document.querySelectorAll('video').forEach(video=>video.pause())}document.querySelectorAll('.privacyToggle').forEach(button=>paintPrivacyButton(button,enabled))}
-function privacyButton(){const button=document.createElement('button');button.type='button';button.className='privacyToggle';button.title='一键隐藏或恢复所有封面、头像、截图和视频画面；文字仍显示';button.onclick=()=>setPrivacyMode(!document.documentElement.classList.contains('privacyMode'));paintPrivacyButton(button,document.documentElement.classList.contains('privacyMode'));return button}
+function privacyButton(){const button=document.createElement('button');button.type='button';button.className='privacyToggle';button.title='一键隐藏或恢复所有封面、头像、截图和视频画面。可在片库选项中同时隐藏标题和路径';button.onclick=()=>setPrivacyMode(!document.documentElement.classList.contains('privacyMode'));paintPrivacyButton(button,document.documentElement.classList.contains('privacyMode'));return button}
 $('videoLayoutButton').parentElement.append(privacyButton());
 for(const toolbar of document.querySelectorAll('.dialogChrome,.lightboxToolbar'))toolbar.append(privacyButton());
 setPrivacyMode(document.documentElement.classList.contains('privacyMode'),false);

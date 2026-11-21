@@ -1,4 +1,4 @@
-当前迭代以 [alpha.9 硬盘统一管理](ALPHA9-REQUIREMENTS.md) 为准，状态和证据见 [交付台账](DELIVERY-STATUS.md)。已发布的 alpha.8 见 [验收记录](ALPHA8-VALIDATION.md)。后续排期见 [路线图](ROADMAP.md)。本页旧表用于追溯原始用户需求。
+当前交付范围以 [alpha.10 标签、人物与浏览](ALPHA10-REQUIREMENTS.md) 为准，状态和证据见 [交付台账](DELIVERY-STATUS.md)。硬盘统一管理见 [alpha.9 需求](ALPHA9-REQUIREMENTS.md)。后续排期见 [路线图](ROADMAP.md)。本页旧表用于追溯原始用户需求。
 
 alpha.6范围以[硬盘统一管理与大库查询需求](ALPHA6-REQUIREMENTS.md)为准；该文档区分基础发行范围与原始完整验收基线。
 

@@ -1,6 +1,7 @@
 """Bounded per-work/version/part reads; no hierarchy hydration or media writes."""
 from library_query import LibraryQueryChanged
 from media_presentation import resolution_label
+from library_governance import actor_state,actor_names,display_tags
 from pathlib import Path
 import json
 import uuid
@@ -128,7 +129,9 @@ class MovieDetails:
             parts=[present(r) for r in raw_parts]
             selected=next((r for r in parts if r['id']==ident),None)
             if selected is None:selected=present(selected_raw)
-            selected=dict(selected,source_summary=self.source_summary(selected_raw['amane_snapshot']))
+            selected=dict(selected,source_summary=self.source_summary(selected_raw['amane_snapshot']),
+                          catalog_actors=actor_names(actor_state(c),ident,selected['actors']),
+                          catalog_tags=display_tags(selected,self.browse.config().get('tag_aliases',{})))
             files=parts if any(p['id']==ident for p in parts) else parts+[selected]
             next_row=c.execute('SELECT v.id,v.missing FROM media_links l JOIN videos v ON v.id=l.video_id JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 WHERE l.movie_key=? AND l.version_key=? AND (l.part_no>? OR (l.part_no=? AND v.id>?)) ORDER BY l.part_no,v.id LIMIT 1',(key,version,selected['part_index'],selected['part_index'],ident)).fetchone()
             # SQL selects a version without indexed missing parts; no media is probed.
