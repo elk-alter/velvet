@@ -93,7 +93,7 @@ ensure_manual_card_flags()
 from video_ids import ensure_video_ids
 ensure_video_ids(db,DATA)
 
-from media_libraries import MediaLibraries
+from media_libraries import MediaLibraries,canonical
 from network_checks import NetworkChecks
 from source_catalog import SourceCatalog,NATIVE_SOURCES
 from people_catalog import PeopleCache,FacetCatalog,actor_key
@@ -271,6 +271,9 @@ def scan(force=False,folder_path=None,automatic=False):
   STATUS.update(running=True,message='扫描目录…',processed=0,errors=0)
   try:
    probe=binary('ffprobe');ff=binary('ffmpeg')
+   short_prefixes={}
+   with db() as c:
+    legacy_paths={str(canonical(row[0],short_prefixes)):row[0] for row in c.execute("SELECT path FROM videos WHERE instr(path,'~')>0")}
    for policy in policies:
     folder=policy['path']
     if folder_path and folder!=folder_path:continue
@@ -284,7 +287,7 @@ def scan(force=False,folder_path=None,automatic=False):
       if SCAN_CANCEL.is_set():STATUS['message']='扫描已取消（已完成项目保留）';return
       p=Path(base)/name
       if p.suffix.lower() not in {'.mp4','.mkv','.avi','.mov','.webm','.wmv','.m4v','.ts','.flv','.mpeg','.mpg'}:continue
-      seen.add(str(p))
+      seen.add(str(canonical(p,short_prefixes)))
       try:
        stat=p.stat()
        if LIBRARIES.owner(p,policies)!=folder:continue
@@ -295,7 +298,7 @@ def scan(force=False,folder_path=None,automatic=False):
         if alias['status']=='changed':STATUS['errors']+=1
         continue
        with db() as c:
-        old=c.execute('SELECT * FROM videos WHERE path=?',(str(p),)).fetchone()
+        old=c.execute('SELECT * FROM videos WHERE path=?',(legacy_paths.get(str(canonical(p,short_prefixes)),str(p)),)).fetchone()
         if old:
          vid=old['id']
          c.execute('UPDATE videos SET size=?,mtime=?,missing=0 WHERE id=? AND (size IS NOT ? OR mtime IS NOT ? OR missing IS NOT 0)',(stat.st_size,stat.st_mtime,vid,stat.st_size,stat.st_mtime))
@@ -350,7 +353,8 @@ def scan(force=False,folder_path=None,automatic=False):
      for row in LIBRARIES.filter_rows(candidates):
       if SCAN_CANCEL.is_set():STATUS['message']='扫描已取消（已完成项目保留）';return
       path=row['path']
-      if path not in seen and Path(path).is_relative_to(folder) and LIBRARIES.owner(path,policies)==folder:
+      normalized=canonical(path,short_prefixes)
+      if str(normalized) not in seen and normalized.is_relative_to(canonical(folder,short_prefixes)) and LIBRARIES.owner(path,policies)==folder:
        missing.append((row['id'],path,row['size'],row['mtime']))
      if missing and Path(folder).is_dir():
       with db() as c:
@@ -771,10 +775,25 @@ finally { $dialog.Dispose(); $owner.Close(); $owner.Dispose() }
 def launch(path):
  if sys.platform=='win32':os.startfile(path)
  else:subprocess.Popen(['open' if sys.platform=='darwin' else 'xdg-open',path],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+
+RESTRICTED_SOURCE_REASONS=('login_required','cloudflare_challenge','cloudflare_blocked','access_denied','captcha','age_verification','geo_restricted','ip_banned')
+
+def scrape_failure(job):
+ details=job.get('details') or ''
+ if any(': '+reason in details for reason in RESTRICTED_SOURCE_REASONS):
+  return {'kind':'restricted','action':'检查来源凭据或完成站点验证后重试'}
+ if job.get('retry_kind')=='retryable':
+  return {'kind':'retryable','action':'检查网络、代理及来源状态后重试'}
+ if job.get('retry_kind')=='not_found':
+  return {'kind':'not_found','action':'核对编号与识别依据，或调整来源'}
+ if ': identity_mismatch' in details:
+  return {'kind':'identity_mismatch','action':'返回资料与编号不一致，请核对编号及来源'}
+ return {'kind':'needs_review','action':'核对原任务与执行引擎后重试'}
+
 def scrape_job_page(query):
  status=query.get('status',['all'])[0];reason=query.get('reason',[''])[0]
  if status not in ('all','queued','running','done','failed','images'):raise ValueError('任务状态筛选无效')
- if reason and (status!='failed' or reason not in ('retryable','not_found','needs_review')):raise ValueError('失败原因筛选无效')
+ if reason and (status!='failed' or reason not in ('retryable','not_found','needs_review','restricted')):raise ValueError('失败原因筛选无效')
  offset=max(0,int(query.get('offset',['0'])[0]));limit=min(100,max(1,int(query.get('limit',['100'])[0])))
  latest='NOT EXISTS(SELECT 1 FROM scrape_jobs newer WHERE newer.code=j.code AND newer.id>j.id)'
  conditions=[];parameters=[]
@@ -785,7 +804,9 @@ def scrape_job_page(query):
  elif status!='all':
   conditions.append('j.status=?');parameters.append(status)
  if reason:
-  conditions.append("COALESCE(NULLIF(j.retry_kind,''),'needs_review')=?");parameters.append(reason)
+  restriction=' OR '.join("instr(COALESCE(j.details,''),?)>0" for _ in RESTRICTED_SOURCE_REASONS)
+  conditions.append("(CASE WHEN ("+restriction+") THEN 'restricted' ELSE COALESCE(NULLIF(j.retry_kind,''),'needs_review') END)=?")
+  parameters.extend(': '+item for item in RESTRICTED_SOURCE_REASONS);parameters.append(reason)
  where=' WHERE '+' AND '.join(conditions) if conditions else ''
  with DB_MUTEX:
   if status=='images':BROWSE.refresh()
@@ -795,6 +816,7 @@ def scrape_job_page(query):
                                       (*parameters,limit,offset))]
    engine=config().get('scrape_engine','external')
    for job in jobs:
+    job['failure']=scrape_failure(job) if job['status']=='failed' else None
     is_latest=job.pop('latest')
     job['can_retry']=bool(job['status']=='failed' and job['remote_id'] and job['remote_id']>0 and job['engine']==engine and is_latest)
     job['completeness']='';job['image_failures']=0

@@ -10,7 +10,7 @@ class MovieDetails:
     # Preserve legacy quality/duplicate ordering, including the original first-seen tie.
     ORDER="""b.all_missing,b.preferred DESC,b.min_height DESC,b.total_size DESC,
         b.version_mtime DESC,b.version_first_id,b.version_key"""
-    LABELS={'censored':'有码','uncensored':'无码','unknown':'未知'}
+    LABELS={'censored':'有码','uncensored':'无码','unknown':'未知','mixed':'分段标记不一致'}
 
     def __init__(self,browse,review):
         self.browse,self.review=browse,review
@@ -55,6 +55,12 @@ class MovieDetails:
         sources=snapshot.get('field_sources')
         if isinstance(sources,dict) and isinstance(sources.get('score'),str):
             result['score_source']=sources['score']
+        score_source=result.get('score_source','').casefold()
+        scale={'javdb':5,'javlibrary':10}.get(score_source)
+        if scale is None:
+            scale=snapshot.get('score_scale')
+        if type(scale) in (int,float) and scale>0 and result.get('score',0)<=scale:
+            result['score_max']=scale
         return result
 
     def compare_versions(self, connection, movie_key, versions):

@@ -6,6 +6,7 @@
 |---|---|
 |当前已发布能力|[功能](FEATURES.md)及对应版本说明，仍须核对代码|
 |迭代顺序|[路线图](ROADMAP.md)|
+|alpha.8 日常使用稳定版及 P0 门槛|[A8-01–06](ALPHA8-REQUIREMENTS.md)、[验收](ALPHA8-VALIDATION.md)|
 |alpha.7 三个 Epic、性能预算及逐项验收|[A7-01–16](ALPHA7-REQUIREMENTS.md)|
 |alpha.6总览、必达场景及逐项验收|[8个Feature / A6-01–30](ALPHA6-REQUIREMENTS.md)|
 |alpha.5需求及验收|[A5-01–32](ALPHA5-REQUIREMENTS.md)|
@@ -24,7 +25,7 @@
 
 ## 范围
 
-alpha.5：A5-01–32可靠性/目录政策；E-ORG的F01–F05及F09首批。F06复制、F07绑定是条件试点，必须先满足前置验收；F08移动/改名/源处置延后。alpha.6已拆为A6-01–30，硬盘统一管理为必达，旧alpha.5条件/后续分配不能覆盖新的alpha.6承诺；alpha.7 的性能、功能和 UI 需求以 [A7-01–16](ALPHA7-REQUIREMENTS.md) 为准。
+历史范围按各版本需求与发行说明记录。alpha.8 以 [A8-01–06](ALPHA8-REQUIREMENTS.md) 为准，承接 alpha.7 的日常使用、识别及交互收口。A7-08/09/15 转入 alpha.10，设备验证 A7-10 在 alpha.9 及设备可用时进行。
 
 ## 使用Skill
 

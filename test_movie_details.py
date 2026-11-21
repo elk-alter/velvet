@@ -1,5 +1,6 @@
 """Large single works remain paged without changing preferred playback or edit scope."""
 import unittest
+import json
 from unittest.mock import patch
 from library_query import LibraryQueryChanged
 import test_features as fixtures
@@ -7,6 +8,12 @@ import test_library_query as query_fixtures
 
 
 class MovieDetailTests(unittest.TestCase):
+    def test_source_rating_reports_its_original_scale(self):
+        from movie_details import MovieDetails
+        for source,score,scale in [('javdb',4.5,5),('javlibrary',8.4,10)]:
+            result=MovieDetails.source_summary(json.dumps({'score':score,'field_sources':{'score':source}}))
+            self.assertEqual((result['score'],result['score_max'],result['score_source']),(score,scale,source))
+
     setUp=fixtures.FeatureTests.setUp
     tearDown=fixtures.FeatureTests.tearDown
 
@@ -131,7 +138,7 @@ class MovieDetailTests(unittest.TestCase):
             self.app.BROWSE.__init__(self.app.db,self.app.CORE,self.app.LIBRARIES,self.app.DIRECTORY_POLICY,self.app.config)
             self.app.BROWSE.refresh()
         with self.app.db() as c:
-            self.assertEqual(c.execute('SELECT projection_schema FROM browse_state').fetchone()[0],9)
+            self.assertEqual(c.execute('SELECT projection_schema FROM browse_state').fetchone()[0],11)
             self.assertEqual(c.execute("SELECT min_height FROM browse_version_rows WHERE version_key='cut-0'").fetchone()[0],1080)
 
     def test_version_ties_keep_legacy_latest_visible_member_order(self):

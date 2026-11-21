@@ -49,6 +49,7 @@ class LibraryQueryTests(unittest.TestCase):
                          SELECT 'copy-location','copied',path,'local',1,'copy-job' FROM videos WHERE id=?""",
                       (organized,))
         self.assertEqual(query.query({'collections':'off'})['total'], 2)
+
         self.app.LIBRARIES.remove(root)
         self.assertEqual(query.query({'collections':'off'})['items'][0]['code'], 'DEMO-3')
         with self.app.db() as c:
@@ -58,6 +59,24 @@ class LibraryQueryTests(unittest.TestCase):
         self.assertTrue((self.root/'library/member.mp4').is_file())
         self.app.LIBRARIES.save({'path': root})
         self.assertEqual(query.query({'collections':'off'})['total'], 2)
+
+
+    def test_missing_index_explains_scan_state_and_recovers_after_rescan(self):
+        ident=self.video('library/Example.mp4','DEMO-5',missing=1)
+        root=self.app.LIBRARIES.save({'path':str(self.root/'library'),'automation':'off'})
+        self.app.LIBRARIES.finish(root,'Synthetic warning')
+        before=self.app.LIBRARIES.files(root,status='missing')
+        self.assertEqual(before['items'][0]['availability'],'indexed_missing')
+        self.assertTrue(before['library']['online'])
+        self.assertGreater(before['library']['last_scan'],0)
+        self.assertEqual(before['library']['last_error'],'Synthetic warning')
+        with patch.object(self.app,'binary',return_value=None):
+            self.app.scan()
+        after=self.app.LIBRARIES.files(root,status='missing')
+        self.assertEqual(after['total'],0)
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM videos').fetchone()[0],1)
+            self.assertEqual(c.execute('SELECT missing FROM videos WHERE id=?',(ident,)).fetchone()[0],0)
 
     def test_snapshot_caches_only_requested_rows_and_resolves_uncached_selection(self):
         for i in range(12):self.video(f'{i}.mp4',f'DEMO-{i}',title=f'Film {i:02}')
@@ -71,6 +90,24 @@ class LibraryQueryTests(unittest.TestCase):
         self.assertEqual([item['code'] for item in later['items']],['DEMO-10','DEMO-11'])
         with patch.object(query,'_matches',side_effect=AssertionError('cached page must be reused')):
             self.assertEqual(query.query({'sort':'title','snapshot':ident,'offset':10,'limit':5}),later)
+
+    def test_old_projected_index_and_restored_scope_are_rebuilt(self):
+        ident=self.video('Example.mp4','DEMO-12',domestic=1,source_tags='无码')
+        query=self.query_service()
+        before=query.query({})['items'][0]
+        with self.app.db() as c:
+            c.execute('DROP TABLE library_scope')
+            c.execute("UPDATE browse_projection SET marks='{}'")
+            c.execute('UPDATE browse_state SET projection_schema=9')
+        query=self.query_service()
+        after=query.query({})['items'][0]
+        self.assertEqual((after['id'],after['domestic'],after['censorship']),(ident,True,'uncensored'))
+        self.assertEqual(before['version_key'],after['version_key'])
+        with self.app.db() as c:
+            c.execute("UPDATE videos SET source_tags='有码' WHERE id=?",(ident,))
+        changed=query.query({})['items'][0]
+        self.assertEqual(changed['censorship'],'censored')
+        self.assertNotEqual(changed['version_key'],after['version_key'])
 
     def test_snapshot_rejects_changed_facet_aliases_even_without_video_edits(self):
         self.video('demo.mp4','DEMO-1',source_tags='Action')
@@ -410,6 +447,54 @@ class LibraryQueryHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/api/edit',data={'id':ident,'domestic':0,'censor_override':'auto'})[0],200)
         self.assertTrue(card('DEMO-2')['domestic'])
         self.assertEqual(card('DEMO-2')['censorship'],'uncensored')
+
+    def test_recognition_filters_share_manual_and_source_conflict_decisions(self):
+        ident=self.video('国产/Conflict.mp4','DEMO-9',source_tags='素人',
+                         amane_snapshot=json.dumps({'raw':{'first':{'content_type':'censored'},
+                                                          'second':{'content_type':'uncensored'}}}))
+        page='/api/library/query?domestic=yes&amateur=yes'
+        result=self.request(page)[1]
+        self.assertEqual(result['total'],1)
+        self.assertTrue(result['items'][0]['recognition_conflict'])
+        detail=self.request('/api/library/detail?id='+str(ident))[1]['detail']['selected']
+        self.assertEqual(detail['recognition']['censorship']['value'],'unknown')
+        self.assertEqual(len(detail['recognition']['censorship']['evidence']),2)
+        self.assertEqual(self.request('/api/edit',data={'id':ident,'domestic':-1})[0],200)
+        self.assertEqual(self.request(page)[1]['total'],0)
+        self.assertEqual(self.request('/api/library/query?domestic=no&amateur=yes')[1]['total'],1)
+        self.assertEqual(self.request('/api/edit',data={'id':ident,'domestic':0})[0],200)
+        self.assertEqual(self.request(page)[1]['total'],1)
+        self.assertEqual(self.request('/api/library/query?domestic=invalid')[0],400)
+
+    def test_restricted_source_history_is_classified_before_paging(self):
+        with self.app.db() as c:
+            c.execute("""INSERT INTO scrape_jobs(code,status,details,retry_kind)
+                         VALUES('DEMO-8','failed','javdb: login_required','needs_review')""")
+        status,data=self.request('/api/amane-jobs?status=failed&reason=restricted&limit=1')
+        self.assertEqual(status,200)
+        self.assertEqual(data['total'],1)
+        self.assertEqual(data['jobs'][0]['failure']['kind'],'restricted')
+
+    def test_unidentified_files_have_a_separate_review_filter(self):
+        ident=self.video('VIDEO.mp4','')
+        status,result=self.request('/api/library/query?source=unidentified&collections=off')
+        self.assertEqual(status,200)
+        self.assertEqual([item['id'] for item in result['items']],[ident])
+
+    def test_manually_grouped_parts_show_mixed_content_in_card_and_header(self):
+        other=self.video('OtherPart.mp4','DEMO-1',source_tags='无码')
+        with self.app.db() as c:
+            c.execute("UPDATE videos SET source_tags='有码' WHERE id=?",(self.ident,))
+            c.executemany('INSERT OR REPLACE INTO media_links VALUES(?,?,?,?,1)',
+                          [(self.ident,'mixed-work','mixed-version',1),(other,'mixed-work','mixed-version',2)])
+        status,page=self.request('/api/library/query?censorship=mixed')
+        self.assertEqual(status,200)
+        self.assertEqual(page['total'],1)
+        self.assertEqual(page['items'][0]['censorship'],'mixed')
+        status,detail=self.request('/api/library/detail?id='+str(self.ident))
+        self.assertEqual(status,200)
+        self.assertIn('分段标记不一致',detail['detail']['active_version']['version_label'])
+        self.assertEqual(detail['detail']['selected']['censorship'],'censored')
 
     def test_identification_lists_candidates_without_replacing_manual_code(self):
         ident=self.video('DIR-202/FILE-101.mp4','LOCK-303',locked_fields='["code"]')

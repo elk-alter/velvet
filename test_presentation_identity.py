@@ -7,6 +7,18 @@ import test_features as fixtures
 
 
 class IdentityPresentationTests(unittest.TestCase):
+    def test_conflicting_countries_and_foreign_titles_keep_manual_control(self):
+        from media_presentation import presentation
+        row={'path':'Example.mp4','source_tags':'国产','amane_snapshot':
+             '{"raw":{"one":{"country":"China"},"two":{"country":"France"}}}'}
+        result=presentation(row)
+        self.assertFalse(result['domestic'])
+        self.assertTrue(result['recognition']['domestic']['conflict'])
+        row['domestic']=1
+        result=presentation(row)
+        self.assertTrue(result['domestic'])
+        self.assertFalse(result['recognition']['domestic']['conflict'])
+
     setUp=fixtures.FeatureTests.setUp
     tearDown=fixtures.FeatureTests.tearDown
 
@@ -33,7 +45,10 @@ class IdentityPresentationTests(unittest.TestCase):
         for relative,source,manual,locks,snapshot,amane_id in product(paths,['filename','nfo',''],[0,1],['[]','["title"]'],['{}','{"vr":true,"content_type":"censored"}'],[0,12]):
             row={'path':str(self.root/relative),'title':'VIDEO','source':source,'manual':manual,'locked_fields':locks,'amane_snapshot':snapshot,'height':2160,'amane_id':amane_id}
             original=dict(row);full=presentation(row);summary=projection_presentation(row)
-            self.assertEqual(summary,{key:full[key] for key in ('title','vr','censorship','resolution_label')})
+            self.assertEqual({key:summary[key] for key in ('title','vr','censorship','resolution_label')},
+                             {key:full[key] for key in ('title','vr','censorship','resolution_label')})
+            self.assertEqual(summary['marks']['domestic'],full['domestic'])
+            self.assertEqual(summary['marks']['amateur'],full['amateur'])
             self.assertEqual(row,original)
 
     def test_application_browse_does_not_generate_full_detail_fields(self):

@@ -30,6 +30,8 @@ class MediaLibraries:
 
     def membership(self, c):
         # An empty library is still scoped after its last root is removed.
+        # Restoring an older main-library backup can remove this additive table.
+        c.execute('CREATE TABLE IF NOT EXISTS library_scope(id INTEGER PRIMARY KEY CHECK(id=1))')
         enforced = bool(c.execute('SELECT 1 FROM folders UNION ALL SELECT 1 FROM library_scope LIMIT 1').fetchone())
         if not enforced:
             return False, set()
@@ -158,7 +160,14 @@ class MediaLibraries:
             if status=='matched' and not row['amane_id'] or status=='pending' and (row['amane_id'] or row['missing']) or status=='missing' and not row['missing'] or status=='error' and not row['error']:
                 continue
             members.append(row)
-        return {'items': members[offset:offset+limit], 'total': len(members), 'offset': offset, 'limit': limit}
+        policy=next(row for row in policies if row['path']==path)
+        online=Path(path).is_dir()
+        items=members[offset:offset+limit]
+        for row in items:
+            row['availability']='library_offline' if not online else 'indexed_missing' if row['missing'] else 'indexed_present'
+        return {'items': items, 'total': len(members), 'offset': offset, 'limit': limit,
+                'library': {'path':path,'online':online,'last_scan':policy['last_scan'],
+                            'last_error':policy['last_error'],'automation':policy['automation']}}
 
     @staticmethod
     def included(path, policy, size):

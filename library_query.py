@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from file_review import FileReview
 from media_libraries import canonical
-from media_presentation import projection_presentation, category_tags, card_flags
+from media_presentation import projection_presentation, category_tags, recognition
 
 
 class LibraryQueryChanged(ValueError):pass
@@ -25,6 +25,7 @@ def tokens(value):return [part.strip() for part in re.split(r'[,，;；\n]',str(
 
 
 class LibraryQuery:
+    MATCH_SCHEMA=4
     def __init__(self,db,core,libraries,policy,config=lambda:{},project=None,write_guard=None):
         self.db,self.core,self.libraries,self.policy=db,core,libraries,policy
         self.config=config
@@ -33,19 +34,25 @@ class LibraryQuery:
         self.project=project if project is not None else lambda row,path:self.core.present(row)
         self.projection_fields=(
             'v.id,v.path,v.size,v.mtime,v.height,v.code,v.source,v.title,v.manual,v.amane_id,'
-            'v.locked_fields,v.censor_override,v.amane_snapshot,v.source_tags,v.tags,v.auto_tags,v.actors,v.studio'
+            'v.locked_fields,v.censor_override,v.amane_snapshot,v.source_tags,v.tags,v.auto_tags,v.actors,v.studio,v.domestic,v.amateur'
             if project is projection_presentation else 'v.*'
         )
         libraries.exclusions();policy.ensure()
         with db() as c:
             c.execute('CREATE TABLE IF NOT EXISTS browse_projection(video_id INTEGER PRIMARY KEY,title TEXT,vr INTEGER,censorship TEXT,resolution_label TEXT,folder TEXT,visible INTEGER,tags TEXT,actors TEXT,review TEXT)')
+            if 'marks' not in {r[1] for r in c.execute('PRAGMA table_info(browse_projection)')}:
+                c.execute("ALTER TABLE browse_projection ADD COLUMN marks TEXT DEFAULT '{}'")
             c.execute('CREATE TABLE IF NOT EXISTS browse_dirty(video_id INTEGER PRIMARY KEY)')
             c.execute('CREATE TABLE IF NOT EXISTS browse_state(id INTEGER PRIMARY KEY,revision INTEGER,rebuild INTEGER)')
             c.execute('INSERT OR IGNORE INTO browse_state(id,revision,rebuild) VALUES(1,1,0)')
             if 'projected_revision' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projected_revision INTEGER DEFAULT -1')
             if 'projection_schema' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projection_schema INTEGER DEFAULT 0')
             scope_enforced, _ = self.libraries.membership(c)
-            c.execute('UPDATE browse_state SET rebuild=CASE WHEN projection_schema BETWEEN 1 AND 7 AND (?=0 OR projection_schema>=6) AND NOT EXISTS(SELECT 1 FROM videos WHERE length(source_tags)>0) THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=9,revision=revision+1 WHERE projection_schema!=9',(scope_enforced,))
+            c.execute("""UPDATE browse_state SET rebuild=CASE
+                WHEN projection_schema BETWEEN 1 AND 11 AND (?=0 OR projection_schema>=6)
+                AND NOT EXISTS(SELECT 1 FROM browse_projection WHERE marks IS NULL OR marks='{}')
+                THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=11,revision=revision+1
+                WHERE projection_schema!=11""",(scope_enforced,))
             c.execute('DROP TABLE IF EXISTS browse_query_members')
             c.execute('CREATE TABLE IF NOT EXISTS browse_queries(id TEXT PRIMARY KEY,created REAL,revision INTEGER,criteria TEXT,totals TEXT)')
             c.execute('CREATE INDEX IF NOT EXISTS browse_query_reuse ON browse_queries(revision,criteria,created DESC)')
@@ -144,6 +151,8 @@ class LibraryQuery:
                 c.execute('INSERT OR IGNORE INTO browse_dirty_movies SELECT l.movie_key FROM browse_dirty q JOIN media_links l ON l.video_id=q.video_id')
             setting=c.execute("SELECT value FROM review_settings WHERE key='target'").fetchone();target=int(setting[0]) if setting else 1080
             unreviewed={}
+            empty_marks={'domestic':False,'amateur':False,'conflict':False}
+            empty_marks_json='{"domestic":false,"amateur":false,"conflict":false}'
             total=c.execute("SELECT COUNT(*) FROM browse_dirty q JOIN media_links l ON l.video_id=q.video_id").fetchone()[0]
             processed=0
             self._progress={"stage":"indexing","processed":processed,"total":total}
@@ -176,12 +185,20 @@ class LibraryQuery:
                         # With no review record, only the target-height rule varies.
                         # Keep this cache local to the current target/transaction.
                         if record is None:unreviewed[below_target]=review_json
-                    tag_json=json.dumps(list(dict.fromkeys(tokens(category_tags(row))+tokens(row['auto_tags']))))
+                    tag_json=(json.dumps(list(dict.fromkeys(tokens(category_tags(row))+tokens(row['auto_tags']))))
+                              if row['tags'] or row['source_tags'] or row['auto_tags'] else '[]')
                     actor_json=json.dumps(tokens(row['actors'])) if row['actors'] else '[]'
-                    values.append((row['id'],present['title'],present['vr'],present['censorship'],present['resolution_label'],self.folder(row,rules,short_prefixes,folder_cache),visible,tag_json,actor_json,review_json))
+                    compact=present.get('marks')
+                    if compact is None:
+                        decisions=present.get('recognition') or recognition(row,raw_path)
+                        compact={flag:decisions[flag]['value'] for flag in ('domestic','amateur')}
+                        compact['conflict']=any(mark['conflict'] for mark in decisions.values())
+                        compact.update({flag+'_reason':decisions[flag]['reason'] for flag in ('domestic','amateur') if compact[flag]})
+                    marks=empty_marks_json if compact==empty_marks else json.dumps(compact,ensure_ascii=False,separators=(',',':'))
+                    values.append((row['id'],present['title'],present['vr'],present['censorship'],present['resolution_label'],self.folder(row,rules,short_prefixes,folder_cache),visible,tag_json,actor_json,review_json,marks))
                 for start in range(0,len(values),90):
                     rows=values[start:start+90]
-                    placeholders=','.join(['(?,?,?,?,?,?,?,?,?,?)']*len(rows))
+                    placeholders=','.join(['(?,?,?,?,?,?,?,?,?,?,?)']*len(rows))
                     c.execute('INSERT OR REPLACE INTO browse_projection VALUES '+placeholders,
                               [value for row in rows for value in row])
                 c.execute('DELETE FROM browse_dirty WHERE video_id IN ('+slots+')',ids)
@@ -217,14 +234,17 @@ class LibraryQuery:
 
     def parameters(self,query):
         criteria={key:str(query.get(key,default)).strip() for key,default in [('q',''),('mode','all'),('length','all'),('censorship',''),('vr',''),('height','0'),('tag_logic','all'),('exclude_tag',''),('actor',''),('studio',''),('source',''),('quality',''),('sort','new'),('collections','on'),('collection',''),('facet_kind',''),('facet_name','')]}
-        for key,choices in [('mode',{'all','favorite','unwatched','recent','missing'}),('length',{'all','short','long'}),('censorship',{'','censored','uncensored','unknown','mixed'}),('vr',{'','vr','flat'}),('height',{'0','720','1080','1440','2160','4320'}),('tag_logic',{'all','any'}),('source',{'','matched','pending','error','partial'}),('quality',{'','needs_update','update','watermark','damaged','replace','suspected_watermark','suspected_black','suspected_freeze','decode_error','below_target','higher_local','auto_pending','auto_error','auto_unchecked','unchecked','active','inspection','pending','metadata_error','incomplete','no_cover','accepted','ignored'}),('sort',{'new','title','duration','rating','size'}),('collections',{'on','off'}),('facet_kind',{'','tags','user_tags','technical','studio','series','director'})]:
+        for key,choices in [('mode',{'all','favorite','unwatched','recent','missing'}),('length',{'all','short','long'}),('censorship',{'','censored','uncensored','unknown','mixed'}),('vr',{'','vr','flat'}),('height',{'0','720','1080','1440','2160','4320'}),('tag_logic',{'all','any'}),('source',{'','matched','pending','error','partial','unidentified'}),('quality',{'','needs_update','update','watermark','damaged','replace','suspected_watermark','suspected_black','suspected_freeze','decode_error','below_target','higher_local','auto_pending','auto_error','auto_unchecked','unchecked','active','inspection','pending','metadata_error','incomplete','no_cover','accepted','ignored'}),('sort',{'new','title','duration','rating','size'}),('collections',{'on','off'}),('facet_kind',{'','tags','user_tags','technical','studio','series','director'})]:
             if criteria[key] not in choices:raise ValueError('无效片库筛选：'+key)
         try:tags=json.loads(query.get('tags','[]'))
         except (ValueError,TypeError):raise ValueError('标签筛选应为JSON数组')
         if not isinstance(tags,list) or len(tags)>50 or not all(isinstance(t,str) and 0<len(t)<=200 for t in tags):raise ValueError('标签筛选无效')
         criteria['tags']=sorted(set(tags))
+        for flag in ('domestic','amateur'):
+            criteria[flag]=str(query.get(flag,'')).strip()
+            if criteria[flag] not in ('','yes','no'):raise ValueError('无效标记筛选')
         # Keep persisted result sets from older matching semantics out of reuse.
-        criteria['_match_schema']=3
+        criteria['_match_schema']=self.MATCH_SCHEMA
         if any(len(value)>500 for value in criteria.values() if isinstance(value,str)):raise ValueError('筛选内容过长')
         return criteria
 
@@ -248,7 +268,13 @@ class LibraryQuery:
  movie_health AS (SELECT s.movie_key,MAX(s.needs_update OR (s.open_parts AND s.min_height<COALESCE(a.best_height,0))) AS needs_update,MAX(s.min_height<COALESCE(a.best_height,0)) AS higher_local,MAX(s.auto_pending) AS auto_pending FROM stats s LEFT JOIN available_heights a ON a.movie_key=s.movie_key GROUP BY s.movie_key),
  collection_stats AS (SELECT collection_root,CASE WHEN collection_root='' THEN 0 ELSE COUNT(*) END AS collection_count FROM movie_stats GROUP BY collection_root),
  versions AS (
- SELECT v.id,v.path,v.size,v.mtime,v.duration,v.favorite,v.tags,v.error,v.code,v.actors,v.studio,v.date,v.width,v.height,v.codec,v.missing,v.watched,v.rating,v.source,v.source_tags,v.amane_id,v.auto_tags,v.position,p.title AS display_title,p.vr,p.censorship,p.resolution_label,p.folder,p.tags AS tag_list,p.actors AS actor_list,p.review,l.movie_key,l.version_key,l.part_no,s.part_count,s.total_size,s.total_duration,s.min_height,s.all_watched,s.max_position,s.all_missing,s.any_missing,s.preferred,health.needs_update,health.auto_pending,
+ SELECT v.id,v.path,v.size,v.mtime,v.duration,v.favorite,v.tags,v.error,v.code,v.actors,v.studio,v.date,v.width,v.height,v.codec,v.missing,v.watched,v.rating,v.source,v.source_tags,v.amane_id,v.auto_tags,v.position,p.title AS display_title,p.vr,
+ CASE WHEN s.part_count=1 THEN p.censorship ELSE (
+ SELECT CASE WHEN MIN(pc.censorship)=MAX(pc.censorship) THEN MIN(pc.censorship) ELSE 'mixed' END
+ FROM media_links lc JOIN browse_projection pc ON pc.video_id=lc.video_id AND pc.visible=1
+ WHERE lc.movie_key=s.movie_key AND lc.version_key=s.version_key
+ ) END AS censorship,
+ p.resolution_label,p.folder,p.tags AS tag_list,p.actors AS actor_list,p.review,l.movie_key,l.version_key,l.part_no,s.part_count,s.total_size,s.total_duration,s.min_height,s.all_watched,s.max_position,s.all_missing,s.any_missing,s.preferred,health.needs_update,health.auto_pending,
  m.version_count,m.movie_favorite,m.movie_mtime,m.collection_root,cs.collection_count,
  CASE WHEN s.part_count=1 THEN v.id ELSE (
    SELECT lr.video_id FROM media_links lr JOIN videos vr ON vr.id=lr.video_id
@@ -296,6 +322,10 @@ class LibraryQuery:
         if criteria['censorship']:where.append('v.censorship=?');args.append(criteria['censorship'])
         where.append('v.min_height>=?');args.append(int(criteria['height']))
         if criteria['vr']:where.append('v.vr=?');args.append(criteria['vr']=='vr')
+        for flag in ('domestic','amateur'):
+            if criteria[flag]:
+                marked=member("json_extract(pf.marks,'$."+flag+"')=1")
+                where.append(marked if criteria[flag]=='yes' else 'NOT '+marked)
         if criteria['tags']:
             tests=[]
             for tag in criteria['tags']:tests.append(member('EXISTS(SELECT 1 FROM json_each(pf.tags) WHERE value=?)'));args.append(tag)
@@ -307,6 +337,7 @@ class LibraryQuery:
         if source=='matched':where.append("v.source IN ('nfo','online','amane')")
         elif source=='pending':where.append("v.source NOT IN ('nfo','online','amane')")
         elif source=='error':where.append("v.error!=''")
+        elif source=='unidentified':where.append(member("TRIM(COALESCE(vf.code,''))=''") )
         elif source=='partial':where.append("v.amane_id>0 AND (v.actors='' OR v.studio='' OR v.source_tags='')")
         quality=criteria['quality']
         if quality in ('needs_update','update'):where.append('v.needs_update=1')
@@ -477,13 +508,16 @@ class LibraryQuery:
                 fields={'title':'display_title','height':'min_height','duration':'total_duration','size':'total_size','position':'max_position','watched':'all_watched','missing':'all_missing','favorite':'movie_favorite','mtime':'movie_mtime'}
                 item.update({key:row[column] for key,column in fields.items()})
                 flags=c.execute('''
-                    SELECT v.path,v.domestic,v.amateur,v.source_tags,v.amane_snapshot
+                    SELECT p.marks
                     FROM media_links l JOIN browse_projection p ON p.video_id=l.video_id AND p.visible=1
                     JOIN videos v ON v.id=l.video_id
                     WHERE l.movie_key=? AND l.version_key=?
                 ''',(item['movie_key'],item['version_key']))
-                resolved=[card_flags(dict(file)) for file in flags]
-                item.update({flag:any(file[flag] for file in resolved) for flag in ('domestic','amateur')})
+                resolved=[json.loads(file['marks']) for file in flags]
+                for flag in ('domestic','amateur'):
+                    item[flag]=any(file[flag] for file in resolved)
+                    item[flag+'_reason']='、'.join(dict.fromkeys(file[flag+'_reason'] for file in resolved if file[flag])) or '未标记'
+                item['recognition_conflict']=any(file['conflict'] for file in resolved)
                 item.update({key:row[key] for key in ('code','actors','studio','date','rating','vr','censorship','resolution_label','part_count','version_count','needs_update','higher_local')})
         for item in items:
             if item['kind']=='movie':item['censorship_label']={'censored':'有码','uncensored':'无码','unknown':'未知'}.get(item['censorship'],'标记不一致')
@@ -539,7 +573,7 @@ class LibraryQuery:
         row=c.execute('SELECT created,revision,criteria FROM browse_queries WHERE id=?',(snapshot,)).fetchone();revision=c.execute('SELECT revision FROM browse_state WHERE id=1').fetchone()[0]
         if not row or time.time()-row['created']>1800 or row['revision']!=revision:raise LibraryQueryChanged('查询范围已变化，请重新查询')
         criteria=json.loads(row['criteria'])
-        if criteria.get('_match_schema')!=3:raise LibraryQueryChanged('筛选规则已更新，请重新查询')
+        if criteria.get('_match_schema')!=self.MATCH_SCHEMA:raise LibraryQueryChanged('筛选规则已更新，请重新查询')
         covers=self.cover_ids() if '_covers' in criteria else None
         if covers is not None and criteria['_covers']!=hashlib.sha256(json.dumps(sorted(covers)).encode()).hexdigest():raise LibraryQueryChanged('封面缓存已变化，请重新查询')
         aliases=self._facet_aliases(criteria)

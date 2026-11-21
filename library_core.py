@@ -36,6 +36,10 @@ class LibraryCore:
     ('replace_path','BEFORE INSERT ON videos WHEN EXISTS(SELECT 1 FROM videos WHERE path=NEW.path AND id!=NEW.id)','(SELECT id FROM videos WHERE path=NEW.path)'),
    ):
     self._relation_trigger(c,name,action,ident)
+   if not c.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='media_relation_source_metadata'").fetchone():
+    self._relation_trigger(c,'source_metadata',
+     'AFTER UPDATE OF source_tags,studio ON videos WHEN OLD.source_tags IS NOT NEW.source_tags OR OLD.studio IS NOT NEW.studio','NEW.id')
+    c.execute('UPDATE media_relation_revision SET first_dirty=NULL,generation=generation+1 WHERE id=1')
    c.execute('CREATE INDEX IF NOT EXISTS media_link_movie ON media_links(movie_key,version_key,part_no,video_id)')
    c.execute('CREATE INDEX IF NOT EXISTS duplicate_preferred_id ON duplicate_choices(preferred_id)')
  def _relation_trigger(self,c,name,event,ident):
@@ -76,7 +80,7 @@ class LibraryCore:
     c.execute('INSERT INTO media_links VALUES '+placeholders+
               ' ON CONFLICT(video_id) DO UPDATE SET movie_key=excluded.movie_key,version_key=excluded.version_key,part_no=excluded.part_no',
               [value for row in rows for value in row])
-   cursor=c.execute('SELECT id,path,code,height,codec,censor_override,amane_snapshot FROM videos'+suffix+' ORDER BY id',bounds)
+   cursor=c.execute('SELECT id,path,code,height,codec,censor_override,amane_snapshot,source_tags,studio FROM videos'+suffix+' ORDER BY id',bounds)
    for raw in cursor:
     row=dict(raw);old=old_links.get(row['id'])
     if old and old['manual']:
@@ -117,8 +121,11 @@ class LibraryCore:
     # Resume the first unfinished part with progress, otherwise first unfinished part.
     playable=[p for p in parts if not p['missing']]
     resume=next((p for p in playable if not p['watched'] and p['position']>0),next((p for p in playable if not p['watched']),first))
-    label=' / '.join(dict.fromkeys(p['resolution_label'] for p in parts))+' · '+first['censorship_label']+' · '+(first['codec'] or '未知编码')
+    content=first['censorship'] if len({p['censorship'] for p in parts})==1 else 'mixed'
+    content_label=first['censorship_label'] if content!='mixed' else '分段标记不一致'
+    label=' / '.join(dict.fromkeys(p['resolution_label'] for p in parts))+' · '+content_label+' · '+(first['codec'] or '未知编码')
     v=dict(first,resolution_label=' / '.join(dict.fromkeys(p['resolution_label'] for p in parts)),height=min(p['height'] or 0 for p in parts),_parts=parts,version_key=key,version_label=label,resume_id=resume['id'],duration=sum(p['duration'] or 0 for p in parts),size=sum(p['size'] or 0 for p in parts),watched=all(p['watched'] for p in parts),position=max(p['position'] for p in parts),missing=all(p['missing'] for p in parts),preferred=any(p['id'] in choices for p in parts))
+    v.update(censorship=content,censorship_label=content_label)
     outputs.append(v)
    outputs.sort(key=lambda v:(v['missing'],not v['preferred'],-v['height'],-v['size']))
    preferred=next((v for v in outputs if any(p['id']==preferred_ids.get(movie) for p in v['_parts']) and not v['missing']),next((v for v in outputs if v['version_key']==prefs.get(movie) and not v['missing']),outputs[0]))

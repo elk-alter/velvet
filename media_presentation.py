@@ -9,9 +9,6 @@ CENSORED_PATTERN=re.compile(r'有码|有碼|(?i:\bcensored\b)')
 VR_PATTERN=re.compile(r'(?i)(?<![a-z])vr(?![a-z])|虚拟现实|虛擬實境')
 DOMESTIC_LABELS={'国产','國產','国产片','國產片','国产视频','國產影片','中国大陆','中國大陸','中国内地','中國內地'}
 CHINA_REGIONS=DOMESTIC_LABELS|{'中国','中國','大陆','大陸','china','mainland china','cn','chn','prc'}
-OTHER_REGIONS={'日本','japan','jp','jpn','韩国','韓國','south korea','korea','kr','kor',
-               '美国','美國','united states','us','usa','台湾','臺灣','台灣','taiwan','tw',
-               '香港','hong kong','hk','澳门','澳門','macau','mo'}
 HAN_PATTERN=re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff]')
 JAPANESE_KANA_PATTERN=re.compile(r'[\u3041-\u3096\u30a1-\u30fa\uff66-\uff9d]')
 CHINESE_SUBTITLE_PATTERN=re.compile(r'中文字幕|中字|中字幕|简中字幕|簡中字幕|繁中字幕|中日双字|中日雙字')
@@ -22,6 +19,7 @@ TOKYO_HOT_FILENAME=re.compile(r'(?<![a-z0-9])(?:tokyo[ _-]?hot|東京熱|东京�
 
 
 def source_metadata(row):
+ if not row.get('amane_snapshot') or row['amane_snapshot']=='{}':return {}
  try:
   metadata=json.loads(row.get('amane_snapshot') or '{}')
  except ValueError:
@@ -30,18 +28,46 @@ def source_metadata(row):
 
 
 def source_labels(row):
+ if not row.get('source_tags'):return set()
  return {tag.strip().casefold() for tag in re.split(r'[,，;；\n]',row.get('source_tags') or '') if tag.strip()}
 
+def censorship_evidence(row, metadata):
+    if not metadata and not row.get('source_tags'):
+        return []
+    evidence = []
+    snapshots = [('merged', metadata)]
+    raw = metadata.get('raw')
+    if isinstance(raw, dict):
+        snapshots.extend((name, value) for name, value in raw.items() if isinstance(value, dict))
+    for source, snapshot in snapshots:
+        tags = snapshot.get('tags') or []
+        if isinstance(tags, str):
+            tags = re.split(r'[,，;；\n]', tags)
+        if not isinstance(tags, list):
+            tags = []
+        labels = {str(tag).strip().casefold() for tag in tags}
+        labels.add(str(snapshot.get('content_type') or '').casefold())
+        if source == 'merged':
+            labels.update(source_labels(row))
+        for value, names in CENSOR_LABELS.items():
+            if labels & names:
+                evidence.append({'value': value, 'source': source, 'labels': sorted(labels & names)})
+    return evidence
 
-def card_flags(row,path=None):
+
+def card_flags(row,path=None,metadata=None):
  p=path if path is not None else Path(row['path'])
  names=set(re.split(r'[\W_]+',f'{p.parent.name} {p.stem}'.casefold()))
  labels=source_labels(row)
- metadata=source_metadata(row)
- region={str(metadata.get(field) or '').strip().casefold() for field in ('country','region')}
+ if metadata is None:metadata=source_metadata(row)
+ snapshots=[metadata] if metadata else []
+ if isinstance(metadata.get('raw'),dict):
+  snapshots.extend(value for value in metadata['raw'].values() if isinstance(value,dict))
+ region={str(snapshot.get(field) or '').strip().casefold() for snapshot in snapshots for field in ('country','region')}
+ foreign_region=bool(region-CHINA_REGIONS-{'','unknown','未知','不详','不詳','n/a'})
  kind=str(metadata.get('content_type') or '').strip().casefold()
  chinese_filename=bool(HAN_PATTERN.search(p.stem) and not JAPANESE_KANA_PATTERN.search(p.stem)
-                       and not CHINESE_SUBTITLE_PATTERN.search(p.stem) and not region & OTHER_REGIONS)
+                       and not CHINESE_SUBTITLE_PATTERN.search(p.stem) and not foreign_region)
  results={}
  for field,scraped,named in (
   ('domestic',bool(labels & DOMESTIC_LABELS or region & CHINA_REGIONS),bool(names & DOMESTIC_LABELS)),
@@ -49,12 +75,15 @@ def card_flags(row,path=None):
  ):
   override=row.get(field) or 0
   inferred=field=='domestic' and chinese_filename
-  results[field]=override==1 if override else scraped or named or inferred
+  conflict=bool(field=='domestic' and scraped and foreign_region and not named)
+  results[field]=override==1 if override else named or (scraped or inferred) and not conflict
   results[field+'_override']=override
-  results[field+'_reason']='手动显示' if override==1 else '手动隐藏' if override==-1 else '刮削资料' if scraped else '文件名或直接父目录' if named else '按中文文件名推定' if inferred else '缺少明确标记'
+  results[field+'_conflict']=conflict and not override
+  results[field+'_reason']='手动显示' if override==1 else '手动隐藏' if override==-1 else '文件名或直接父目录' if named else '来源产地资料冲突，请核对' if conflict else '刮削资料' if scraped else '按中文文件名推定' if inferred else '缺少明确标记'
  return results
 
 def category_tags(row):
+ if not row.get('tags') and not row.get('source_tags'):return ''
  manual = row.get('tags') or ''
  if 'category_tags' in json.loads(row.get('locked_fields') or '[]'):
   return manual
@@ -78,11 +107,9 @@ def censorship(row,metadata=None,path=None,*,name_context=None):
  if uncensored:return 'uncensored','文件名/目录明确标记'
  if censored:return 'censored','文件名/目录明确标记'
  if metadata is None:metadata=source_metadata(row)
- kind=str(metadata.get('content_type') or '').strip().casefold()
- labels=source_labels(row)|{kind}
- matched=[value for value,names in CENSOR_LABELS.items() if labels & names]
+ matched={item['value'] for item in censorship_evidence(row, metadata)}
  if len(matched)>1:return 'unknown','刮削资料的有码／无码标记冲突'
- if matched:return matched[0],'刮削资料的明确标记'
+ if matched:return next(iter(matched)),'刮削资料的明确标记'
  studios={str(value or '').strip().casefold() for value in (row.get('studio'),metadata.get('studio'))}
  code=str(row.get('code') or '').strip()
  if studios & TOKYO_HOT_STUDIOS and re.fullmatch(r'n\d{4,5}',code,re.I):
@@ -91,16 +118,39 @@ def censorship(row,metadata=None,path=None,*,name_context=None):
   return 'uncensored','根据文件名中的 Tokyo-Hot 和作品编号推定'
  return 'unknown','缺少可靠资料，请手动确认'
 
-def identity_presentation(row,path=None):
+def recognition(row, path=None):
+    path = path if path is not None else Path(row['path'])
+    metadata = source_metadata(row)
+    value, reason = censorship(row, metadata, path)
+    flags = card_flags(row, path, metadata)
+    result = {
+        'censorship': {
+            'value': value, 'mode': row.get('censor_override') or 'auto',
+            'reason': reason, 'conflict': '冲突' in reason,
+            'inferred': '推定' in reason, 'evidence': censorship_evidence(row, metadata),
+        },
+    }
+    for field in ('domestic', 'amateur'):
+        result[field] = {
+            'value': bool(flags[field]), 'mode': flags[field+'_override'],
+            'reason': flags[field+'_reason'], 'conflict': bool(flags[field+'_conflict']),
+            'inferred': '推定' in flags[field+'_reason'],
+        }
+    return result
+
+def identity_presentation(row,path=None,*,with_recognition=False):
  p=path if path is not None else Path(row['path'])
  stem=p.stem;match=PART_PATTERN.search(stem)
  metadata=source_metadata(row)
  name_context=stem+' '+p.parent.name
  named=bool(VR_PATTERN.search(name_context))
- kind,reason=censorship(row,metadata,name_context=name_context)
- return {'part_index':int(match[1] or match[2]) if match else 0,'vr':bool(metadata.get('vr')) or named,
+ marks=recognition(row,p) if with_recognition else None
+ kind,reason=(marks['censorship']['value'],marks['censorship']['reason']) if marks else censorship(row,metadata,name_context=name_context)
+ result={'part_index':int(match[1] or match[2]) if match else 0,'vr':bool(metadata.get('vr')) or named,
          'vr_source':'Amane' if metadata.get('vr') else '文件名/目录' if named else '',
          'censorship':kind,'censorship_source':reason}
+ if marks:result['recognition']=marks
+ return result
 
 
 def display_title(row,path):
@@ -110,20 +160,30 @@ def display_title(row,path):
 
 def projection_presentation(row,path=None):
  p=path if path is not None else Path(row['path']);traits=identity_presentation(row,p)
- return {'title':display_title(row,p),'vr':traits['vr'],'censorship':traits['censorship'],'resolution_label':resolution_label(row.get('height'))}
+ flags=card_flags(row,p)
+ marks={'domestic':bool(flags['domestic']),'amateur':bool(flags['amateur']),
+        'conflict':bool('冲突' in traits['censorship_source'] or flags['domestic_conflict'] or flags['amateur_conflict'])}
+ for flag in ('domestic','amateur'):
+  if marks[flag]:marks[flag+'_reason']=flags[flag+'_reason']
+ return {'title':display_title(row,p),'vr':traits['vr'],'censorship':traits['censorship'],'resolution_label':resolution_label(row.get('height')),'marks':marks}
 
 
 def presentation(row):
  row=dict(row);p=Path(row['path']);title=display_title(row,p)
  # Preserve absent title keys on sparse inputs used by legacy callers.
  if 'title' in row or title is not None:row['title']=title
- row.update(identity_presentation(row,p))
+ row.update(identity_presentation(row,p,with_recognition=True))
  base=PART_PATTERN.sub(' ',p.stem);base=re.sub(r'[ ._\-]+',' ',base).strip().casefold()
  row['part_key']=str(p.parent).casefold()+'|'+base if PART_PATTERN.search(p.stem) else ''
  row['censorship_label']={'censored':'有码','uncensored':'无码','unknown':'未知'}[row['censorship']]
  h=int(row.get('height') or 0)
  row['category_tags']=category_tags(row)
- row.update(card_flags(row,p))
+ for flag in ('domestic','amateur'):
+  mark=row['recognition'][flag]
+  row[flag]=mark['value']
+  row[flag+'_override']=mark['mode']
+  row[flag+'_reason']=mark['reason']
+  row[flag+'_conflict']=mark['conflict']
  row.pop('amane_snapshot',None)
  row['resolution_label']=resolution_label(h)
  return row

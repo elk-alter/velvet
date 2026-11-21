@@ -4,7 +4,7 @@
 
 |阶段|先读|按影响补读|
 |---|---|---|
-|需求和排期|[规划索引](../PLAN-INDEX.md)、[alpha.7 需求](../ALPHA7-REQUIREMENTS.md)|[路线图](../ROADMAP.md)、[体验审计](../UX-AUDIT.md)、[交付台账](../DELIVERY-STATUS.md)|
+|需求和排期|[规划索引](../PLAN-INDEX.md)、[alpha.8 需求](../ALPHA8-REQUIREMENTS.md)|[路线图](../ROADMAP.md)、[体验审计](../UX-AUDIT.md)、[交付台账](../DELIVERY-STATUS.md)|
 |设计与实现|[仓库约束](../../AGENTS.md)、[开发与交付流程](WORKFLOW.md)|[架构](../ARCHITECTURE.md)、[模块职责](MODULES.md)、[数据与迁移](DATA.md)、[ADR](../adr/README.md)、[片库查询](LIBRARY-QUERY-API.md)、[整理接口](ORGANIZATION-API.md)|
 |测试与审查|[测试规范](TESTING.md)、[变更审查模板](../../.github/pull_request_template.md)|[性能基线](../ALPHA6-PERFORMANCE.md)、[升级演练](../ALPHA6-UPGRADE-VALIDATION.md)、[安全说明](../../SECURITY.md)|
 |发布与运行|[发布流程](../RELEASING.md)、[部署与回滚](../DEPLOYMENT.md)|[已发布功能](../FEATURES.md)、[用户指南](../USAGE.md)、[硬盘整理操作](../ALPHA6-OPERATIONS.md)|

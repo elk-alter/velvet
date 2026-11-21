@@ -7,6 +7,8 @@ description: Plan, implement, verify, release, and hand off changes to the Velve
 
 Locate the Velvet checkout. Check Git status, VERSION, and current context in the checkout's docs/HANDOFF.md. For runtime work, verify the served source path, service identity, and health. Develop in a separate checkout from the serving copy, since separate VELVET_DATA does not isolate static assets. Keep existing edits and use synthetic media, an independent data directory, and a free port for verification.
 
+Compare the published commit, development checkout, installed files and data schema before an upgrade. Post-release local fixes may already be installed without a new release. Preserve and review those fixes before changing the candidate.
+
 ## Route by task
 
 Resolve the following repository paths from the Velvet checkout, including when this skill is installed separately.
@@ -26,5 +28,7 @@ Use the current requested version and the linked requirements. Historical audits
 - Treat real source media as read-only for development, scanning and planning. Actual organization requires authorization for the specific execution plan. Preserve approved scope, file identity and proof, durable checkpoints, and reconcile protection. Restore of the database requires separate reconciliation of physical file operations.
 - Preserve manual locks and decisions, ratings, playback progress, exclusions, and privacy masking. Folder collections are presentation groups distinct from movie, version, and part identity. Automatic OCR scores are heuristics.
 - Verify changes through the public entry point with synthetic data. Inspect code to read constants, since importing app.py initializes data. New UI assets must agree across UI_ASSETS, HTML and Docker packaging. Extend existing queue and navigation lifecycles when changing tasks or views.
+- Recognition rules need positive examples, counterexamples, evidence and manual-override tests. Check card/detail/filter agreement, original metadata preservation and old projected indexes. Studio rules require a documented source and a bounded code/name match.
+- Select targeted tests during implementation. At release, run the complete suite, browser acceptance, performance and upgrade/rollback gates from the active requirements. Report current results separately from historical evidence.
 - Keep private paths, real images, media, runtime data, OCR output, and credentials out of commits and reports. Check relevant tests and actual browser behavior. Use release.py --check for tracked or staged public files and run tests separately.
 - Report implemented, accepted, merged, released, and deployed as separate facts. Follow existing user authorization for publishing and runtime operations. For an authorized upgrade, verify the process, drain work safely, back up data, preserve automation settings, and verify the new health response.

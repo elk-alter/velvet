@@ -87,7 +87,7 @@ function renderSelectedFilmSummary(){
  const v=selected,source=v.source_summary||{};
  const categories=[...new Set(String(v.category_tags||'').split(/[,，]/).map(tag=>tag.trim()).filter(Boolean))];
  const score=source.score
-  ?`<span class="filmScore">★ ${esc(source.score)} <small>${esc(source.score_source?.toLowerCase()==='javdb'?'JavDB 评分':source.score_source?source.score_source+' 评分':'来源评分')}</small></span>`
+  ?`<span class="filmScore">★ ${esc(source.score)}${source.score_max?` / ${esc(source.score_max)}`:''} <small>${esc(source.score_source?.toLowerCase()==='javdb'?'JavDB 评分':source.score_source?source.score_source+' 评分':'来源评分')}</small></span>`
   :v.rating?`<span>★ ${esc(v.rating)} <small>个人评分</small></span>`:'';
  const badges=[['国产',v.domestic,v.domestic_reason],['素人',v.amateur,v.amateur_reason]].filter(([,shown])=>shown);
  const facts=[v.date,source.runtime?`${source.runtime} 分钟`:v.duration>0?duration(v.duration):'',v.height?v.resolution_label:'',v.vr?'VR':'',v.censorship_label==='未知'?'':v.censorship_label].filter(Boolean);
@@ -97,6 +97,7 @@ function renderSelectedFilmSummary(){
   ${score||facts.length||badges.length?`<div class="filmFacts">${score}${facts.map(value=>`<span>${esc(value)}</span>`).join('')}${badges.map(([label,,reason])=>`<span title="${esc(reason)}">${label}</span>`).join('')}</div>`:''}
   <div class="filmCategories" aria-label="类别标签">${categories.map(tag=>`<button type="button" data-tag="${esc(tag)}" onclick="openDetailTag(this.dataset.tag)">${esc(tag)}</button>`).join('')}<button type="button" onclick="editFilmCategories()">编辑类别标签</button></div>
   ${credits.length?`<dl class="filmCredits">${credits.map(([label,value])=>`<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`:''}
+  <details class="filmRecognition"><summary>自动识别依据${v.recognition&&Object.values(v.recognition).some(mark=>mark.conflict)?' · 有冲突待确认':''}</summary>${Object.entries(v.recognition||{}).map(([key,mark])=>`<p><strong>${esc(({censorship:'有码／无码',domestic:'国产',amateur:'素人'})[key])}</strong> · ${esc(mark.reason)}${mark.evidence?.length?`<small>${mark.evidence.map(item=>esc(item.source)+' '+esc(item.labels.join('、'))).join(' · ')}</small>`:''}</p>`).join('')}<button type="button" onclick="editor.open=true;$('editCensor').focus()">修正识别结果</button></details>
   ${v.plot?`<p class="filmPlot">${esc(v.plot)}</p>`:''}`;
 }
 
