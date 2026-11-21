@@ -1,6 +1,6 @@
 # 迭代路线图
 
-已发布基线为 alpha.7，当前开发 alpha.8。现状核对与 P0 验收见 [alpha.8 需求](ALPHA8-REQUIREMENTS.md)。结构审计见 [U01–U40](UX-AUDIT.md)，已实现功能见 [功能清单](FEATURES.md)。版本顺序以本文件为准。
+当前已发布 alpha.8，下一迭代为 alpha.9。现状核对与 P0 验收见 [alpha.8 需求](ALPHA8-REQUIREMENTS.md) 和 [验收记录](ALPHA8-VALIDATION.md)。结构审计见 [U01–U40](UX-AUDIT.md)，已实现功能见 [功能清单](FEATURES.md)。版本顺序以本文件为准。
 
 ## alpha.5：可靠性与目录政策闭环
 

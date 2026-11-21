@@ -12,7 +12,7 @@ source 增加 unidentified，表示候选版本至少一个可见分段的编号
 
 详情 source_summary 增加 score_max。JavDB 为 5、JavLibrary 为 10；未知来源仅在资料明确给出有效 score_scale 时附带量表。个人 rating 的 0–5 星独立保存。
 
-参数：q；mode=all/favorite/unwatched/recent/missing；length=all/short/long（1200秒分界）；censorship空/censored/uncensored/unknown/mixed；vr空/vr/flat；height=0/720/1080/1440/2160/4320；tags为最多50项JSON数组；tag_logic=all/any；exclude_tag；actor；studio；source空/matched/pending/error/partial；quality；sort=new/title/duration/rating/size；collections=on/off；collection为集合ID；offset≥0；limit=1–96（默认48）；可选snapshot。
+参数：q；mode=all/favorite/unwatched/recent/missing；length=all/short/long（1200秒分界）；censorship空/censored/uncensored/unknown/mixed；vr空/vr/flat；height=0/720/1080/1440/2160/4320；tags为最多50项JSON数组；tag_logic=all/any；exclude_tag；actor；studio；source空/matched/pending/error/partial/unidentified；quality；sort=new/title/duration/rating/size；collections=on/off；collection为集合ID；offset≥0；limit=1–96（默认48）；可选snapshot。
 
 演员、厂商、标签与q的资料搜索检查候选版本的全部可见分段，不只第一段；精确演员/标签不作子串匹配。多标签all可以在同一版本的不同分段满足，不能把不同版本的标签拼为命中；exclude_tag排除含该标签的版本，其它版本仍可命中。排除目录成员不贡献这些条件。q的路径搜索沿用整作品可见路径范围，画质/时长等仍按候选版本计算。criteria中的_match_schema为服务端内部匹配契约标识，客户端不能覆盖；旧语义快照返回409，重新查询不复用旧结果，不改业务字段或人工资料。
 

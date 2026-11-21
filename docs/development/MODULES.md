@@ -36,7 +36,9 @@
 
 数据取舍见[ADR0001](../adr/0001-alpha5-reliability-and-readonly-plans.md)，性能限制见[测量报告](../ALPHA5-PERFORMANCE.md)。
 
-## alpha.6开发模块（开发候选，尚未整版验收）
+## alpha.6 引入的模块
+
+以下保留引入各模块时的设计上下文，当前交付状态与覆盖范围见 [alpha.8 验收](../ALPHA8-VALIDATION.md) 和交付台账。
 
 - resource_leases：跨流程持久范围读/独占写租约及冲突写者FIFO；播放、按根扫描、逐文件检查/图片、刮削缓存已分范围。部分同步/重复检查/通用HTTP/预览/维护仍全局，备份恢复全局独占；不能称全部细粒度完成。
 - media_locations：稳定文件身份与经过验证的位置绑定、多位置扫描去重和待入库身份复用。
@@ -52,7 +54,7 @@
 
 - inventory_query：跨盘SQL范围、重叠根去重、固定排序标识缓存及分页DTO；独立于整理批准和主片库全图。
 
-- library_query：开发中的片库派生投影、SQL版本/合集聚合、固定分页卡片与按作品详情后端；主片库前端已接server_browse。FileReview.describe为旧/新查询共享的单文件质量推导。
+- library_query：片库派生投影、SQL版本/合集聚合、固定分页卡片与按作品详情后端；主片库前端已接server_browse。FileReview.describe为旧/新查询共享的单文件质量推导。
 
 - server_browse.js：分页请求/取消、固定选择、合集URL/返回、按作品资料缓存、范围刮削及有限筛选/关系建议；index/browse的交互处理器显式调用，替代主页面全量bootstrap。
 

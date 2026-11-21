@@ -2,7 +2,7 @@
 
 ## alpha.8 版本增量
 
-基线 alpha.7 已发布。alpha.8 开发状态与验收见 [需求](ALPHA8-REQUIREMENTS.md) 和 [验收记录](ALPHA8-VALIDATION.md)。
+alpha.8 已发布为源码预发布版，需求与验收见 [需求](ALPHA8-REQUIREMENTS.md) 和 [验收记录](ALPHA8-VALIDATION.md)。
 
 - 媒体库范围统一过滤，移除目录后保留索引，普通库外记录隐藏。
 - 生效类别标签统一展示、编辑和筛选，来源评分展示来源与量表。
