@@ -64,7 +64,10 @@ def destination_conflicts(path, destinations, filesystem='unknown',allowed=(),ca
 def target_space(entries,target,operation='copy'):
     parent=Path(target)
     while not parent.exists() and parent!=parent.parent:parent=parent.parent
-    free=shutil.disk_usage(parent).free if parent.exists() else None
+    try:
+        free=shutil.disk_usage(parent).free
+    except OSError:
+        free=None
     volume=volume_details(parent);companions={}
     for entry in entries:
         for resource in entry['companions']:
@@ -149,11 +152,19 @@ class StorageInventory:
                 elif proof and proof['file_id'] and proof['file_id']!=file_id:row['status']='directory_changed'
                 else:
                     row.update(online=True,status='online',directory_verified=bool(proof and proof['file_id']))
-                    capacity=shutil.disk_usage(root);row['capacity']={'total':capacity.total,'free':capacity.free,'used':capacity.used};row['volume']=volume_details(root)
             except FileNotFoundError:pass
             except PermissionError:row.update(online=False,status='permission_denied')
             except OSError:row.update(online=False,status='unavailable')
             except ValueError:row.update(online=False,status='not_directory')
+            if row['online']:
+                row['volume']=volume_details(root)
+                try:
+                    capacity=shutil.disk_usage(root)
+                    row['capacity']={'total':capacity.total,'free':capacity.free,'used':capacity.used}
+                except PermissionError:
+                    row.update(online=False,status='permission_denied')
+                except OSError:
+                    pass
             row['identity_note']='卷及目录身份已记录' if row['stable'] and proof and proof['file_id'] else '卷身份已记录；旧登记无目录证明，重连需人工核对' if row['stable'] else '位置标识，跨设备或挂载变化需人工核对'
             with self.db() as c:
                 row['latest_snapshot'] = next((dict(r) for r in c.execute('SELECT * FROM inventory_snapshots WHERE device_id=? ORDER BY created DESC LIMIT 1', (row['id'],))), None)

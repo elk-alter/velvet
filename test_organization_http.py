@@ -52,6 +52,64 @@ class OrganizationHTTPTests(unittest.TestCase):
             time.sleep(.03)
         self.fail('Synthetic organization job did not finish')
 
+    def test_fixed_review_exclusion_estimates_companions_without_creating_draft(self):
+        (self.source/'other.mp4').write_bytes(b'other synthetic media')
+        self.inventory.scan(self.device,hashing=True)
+        status,result=self.request('/api/storage/plan',{'id':self.device,'target':str(self.target),'layout':'preserve'})
+        self.assertEqual(status,200)
+        plan=result['plan']
+        excluded=next(i for i,e in enumerate(plan['entries']) if e['relative']=='other.mp4')
+        scope={'id':plan['id'],'digest':plan['digest'],'selected':{'exclude':[excluded]}}
+        route='/api/organization/selection-review'
+        self.assertEqual(self.request(route,scope,token=False)[0],403)
+        self.assertEqual(self.request(route,dict(scope,digest='stale'))[0],400)
+        self.assertEqual(self.request(route,dict(scope,selected={'exclude':[excluded,excluded]}))[0],400)
+        status,review=self.request(route,scope)
+        self.assertEqual(status,200,review)
+        self.assertEqual(review['total'],1)
+        self.assertEqual(review['space']['companions_bytes'],(self.source/'part1.en.srt').stat().st_size)
+        self.assertEqual(review['sources'][0]['files'],1)
+        self.assertEqual(review['blocked'],0)
+        self.assertFalse(self.target.exists())
+        with self.app.db() as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM organization_drafts').fetchone()[0],0)
+        status,draft=self.request('/api/organization/prepare',dict(scope,operation='copy'))
+        self.assertEqual(status,200,draft)
+        status,details=self.request('/api/organization/draft?id='+draft['id'])
+        self.assertEqual((status,details['media_count'],details['resource_count']),(200,1,1))
+        job=self.app.ORGANIZATION.approve(draft['id'],details['digest'])
+        status,task=self.request('/api/organization/job?id='+job)
+        self.assertEqual(status,200,task)
+        self.assertEqual(task['approval']['draft_id'],draft['id'])
+        self.assertEqual(task['approval']['preview_id'],plan['id'])
+        self.assertIsNone(task['items'][0].get('bound_video_id'))
+        self.assertEqual(self.app.ORGANIZATION.run_once(job)['state'],'done')
+        status,task=self.request('/api/organization/job?id='+job+'&limit=1')
+        self.assertEqual(status,200)
+        self.assertIsInstance(task['items'][0]['bound_video_id'],int)
+        status,approved=self.request('/api/organization/draft?id='+draft['id'])
+        self.assertEqual((status,approved['approved_job']),(200,job))
+
+    def test_review_reports_offline_source_and_unreadable_capacity(self):
+        status,result=self.request('/api/storage/plan',{'id':self.device,'target':str(self.target)})
+        self.assertEqual(status,200)
+        plan=result['plan']
+        payload={'id':plan['id'],'digest':plan['digest'],'selected':'all'}
+        with patch('storage_inventory.shutil.disk_usage',side_effect=OSError('synthetic unavailable capacity')):
+            status,review=self.request('/api/organization/selection-review',payload)
+        self.assertEqual(status,200,review)
+        self.assertEqual(review['sources'][0]['status'],'online')
+        self.assertIsNone(review['space']['free'])
+        self.assertFalse(review['space']['sufficient'])
+        self.source.rename(self.root/'offline-source')
+        status,review=self.request('/api/organization/selection-review',payload)
+        self.assertEqual(status,200,review)
+        self.assertEqual(review['sources'][0]['status'],'offline')
+        self.assertEqual(review['blocked'],1)
+        self.assertIn('source_unavailable',[item['code'] for item in review['conflicts']])
+        self.assertEqual(self.request('/api/organization/prepare',dict(payload,operation='copy'))[0],400)
+        self.assertFalse(self.target.exists())
+
     def test_completed_target_reconnect_updates_video_and_subtitle_via_http(self):
         from organization_jobs import root_proof
 

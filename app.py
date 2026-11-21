@@ -1030,10 +1030,10 @@ class Handler(BaseHTTPRequestHandler):
   if self.headers.get('X-Velvet-Token')!=TOKEN:return self.send({},status=403)
   try:
    length=int(self.headers.get('Content-Length',0))
-   selection_request=urlparse(self.path).path in ('/api/storage/selection','/api/storage/query-plan','/api/organization/prepare')
+   selection_request=urlparse(self.path).path in ('/api/storage/selection','/api/storage/query-plan','/api/organization/prepare','/api/organization/selection-review','/api/storage/revise')
    if length>(2000000 if selection_request else 100000):raise ValueError('请求过大')
    a=json.loads(self.rfile.read(length) or '{}');path=urlparse(self.path).path
-   DB_REVISION+=1
+   if path!='/api/organization/selection-review':DB_REVISION+=1
    if RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
    if path=='/api/runtime/resume':
     SHUTTING_DOWN.clear();ORGANIZATION.start();REVIEW.cancel.clear();REVIEW.resume()
@@ -1047,6 +1047,8 @@ class Handler(BaseHTTPRequestHandler):
     self.send({'ok':True,'waiting':False});threading.Thread(target=self.server.shutdown,daemon=True).start();return
    if SHUTTING_DOWN.is_set() and path!='/api/task-cancel':raise ValueError('服务正在安全停止，请稍后操作')
    if path.startswith('/api/storage/') and RESTORING.is_set():raise ValueError('恢复中，请稍后操作')
+   if path=='/api/organization/selection-review':
+    return self.send(ORGANIZATION.selection_review(a.get('id'),a.get('digest'),a.get('selected')))
    if path=='/api/organization/prepare':
     selected=ORGANIZATION.selected(a.get('id'),a.get('selected'))
     draft=ORGANIZATION.prepare(a.get('id'),a.get('digest'),selected,a.get('operation','copy'))
@@ -1107,7 +1109,11 @@ class Handler(BaseHTTPRequestHandler):
     return self.send({'ok':True,'task_id':task_key})
    elif path=='/api/storage/prefer':
     INVENTORY.prefer(a.get('id'),a.get('relative'),a.get('preferred'),a.get('note',''));return self.send({'ok':True})
-   elif path=='/api/storage/revise':return self.send({'ok':True,'plan':INVENTORY.revise_plan(a.get('id'),a.get('digest'),a.get('selected'),a.get('edits'))})
+   elif path=='/api/storage/revise':
+    selected=ORGANIZATION.selected(a.get('id'),a.get('selected'))
+    revised=INVENTORY.revise_plan(a.get('id'),a.get('digest'),selected,a.get('edits'))
+    if a.get('summary') is True:revised={key:revised[key] for key in ('id','digest')}
+    return self.send({'ok':True,'plan':revised})
    elif path=='/api/storage/selection':
     return self.send(ORGANIZATION.planner.selection(a.get('snapshot'),a.get('selected')))
    elif path=='/api/storage/query-plan':

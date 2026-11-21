@@ -68,6 +68,10 @@ POST /api/organization/archive-preview：id为已完成copy任务，返回独立
 
 ## 从固定查询选择到多来源计划
 
+alpha.9 增加 POST /api/organization/selection-review。请求提交预览 id、digest 以及 selected，沿用操作 Token。selected 可为预览条目索引数组、all、eligible 或 {exclude:[索引]}。索引必须属于固定预览，重复、空范围和失效摘要返回 400。返回 total、bytes、blocked、operation、space、sources 与 conflicts。sources 逐登记位置报告 alias、root、status、files、bytes，conflicts 提供 code、message、files。检查可读取根状态和可用空间，摘要来自固定预览，无资料注册、哈希任务或执行草稿。
+
+/api/organization/prepare 和 /api/storage/revise 接受相同的选择范围。revise 的 summary=true 仅回传新固定预览 id、digest，原响应保留。任务详情 approval 包含 draft_id、preview_id，旧任务无匹配清单时返回 null。已完成且有现存入库关联的媒体行附 bound_video_id。草稿详情 approved_job 指向已批准的任务。
+
 storage/query的每项增加query_ordinal。POST /api/storage/selection：snapshot、selected（ordinal数组/all/{exclude:[ordinal]}），返回total/bytes、各来源位置计数/在线状态、criteria、scope和query_total，不返回全量元数据。POST /api/storage/query-plan使用同样固定选择，加target、layout、operation=copy/move/keep；返回精简plan摘要（id/digest/total/bytes/source_roots/selection/space），具体条目通过原organization/preview分页读取。
 
 过期、设备/排除/建议变化、成员不属于查询返回409；重复/类型错误/空规划400。选中离线项仍进入只读预览并列冲突，prepare拒绝执行；不偷偷缩成在线子集。新盘点不改变固定老成员。source_devices与逐项来源快照/路径属于计划摘要，prepare重新校验所选根/卷/完整内容。选择/规划/prepare请求上限2MB，其余保持原100KB。选中范围不是对后续新增文件的授权。

@@ -20,6 +20,7 @@ from inventory_query import InventoryQuery
 from organization_planner import QueryPlanner
 from resource_leases import ResourceBusy
 from restore_safety import require_reconciled_files
+from storage_inventory import target_space
 
 
 class OrganizationService:
@@ -40,15 +41,22 @@ class OrganizationService:
         self.wake=threading.Event();self.stopping=threading.Event()
         self.dispatch=threading.Lock();self.thread=None
 
+    def _fixed_preview(self,plan_id,expected_digest):
+        with self.db() as c:
+            row=c.execute('SELECT * FROM organization_plans WHERE id=?',(plan_id,)).fetchone()
+        if not row:raise ValueError('整理预览不存在')
+        payload=json.loads(row['payload'])
+        unsigned={key:value for key,value in payload.items() if key!='digest'}
+        actual=hashlib.sha256(json.dumps(unsigned,sort_keys=True).encode()).hexdigest()
+        if payload['digest']!=expected_digest or actual!=expected_digest:
+            raise ValueError('整理预览已变化，请重新载入')
+        return row,payload
+
     def prepare(self,plan_id,expected_digest,selected,operation='copy'):
         if operation not in ('copy','move','keep'):raise ValueError('请选择原位保留、复制或同盘移动')
         with self.jobs.leases.hold('organization-preview'):
-            with self.db() as c:row=c.execute('SELECT * FROM organization_plans WHERE id=?',(plan_id,)).fetchone()
-            if not row:raise ValueError('整理预览不存在')
-            payload=json.loads(row['payload'])
+            row,payload=self._fixed_preview(plan_id,expected_digest)
             if (operation=='keep')!=(payload.get('operation')=='keep'):raise ValueError('原位保留需要独立预览，请返回规则页选择操作')
-            unsigned={key:value for key,value in payload.items() if key!='digest'}
-            if payload['digest']!=expected_digest or hashlib.sha256(json.dumps(unsigned,sort_keys=True).encode()).hexdigest()!=expected_digest:raise ValueError('整理预览已变化，请重新载入')
             if not isinstance(selected,list) or not selected or any(type(i) is not int or not 0<=i<len(payload['entries']) for i in selected):raise ValueError('请选择当前预览中的文件')
             if len(selected)!=len(set(selected)):raise ValueError('选择包含重复条目')
             frozen=payload.get('source_devices') or {row['device_id']:{'root':payload['source_root'],'identity':payload['source_device_identity']}}
@@ -234,11 +242,70 @@ class OrganizationService:
 
     def selected(self,plan_id,scope):
         if isinstance(scope,list):return scope
-        if scope not in ('all','eligible'):raise ValueError('请选择明确的操作范围')
+        if scope not in ('all','eligible') and not (isinstance(scope,dict) and set(scope)=={'exclude'}):
+            raise ValueError('请选择明确的操作范围')
         with self.db() as c:row=c.execute('SELECT payload FROM organization_plans WHERE id=?',(plan_id,)).fetchone()
         if not row:raise ValueError('整理预览不存在')
-        entries=json.loads(row[0])['entries']
-        return [i for i,entry in enumerate(entries) if scope=='all' or not entry.get('conflicts')]
+        return self._selected_indices(json.loads(row[0])['entries'],scope)
+
+    @staticmethod
+    def _selected_indices(entries,scope):
+        if isinstance(scope,dict):
+            excluded=scope.get('exclude')
+            if set(scope)!={'exclude'} or not isinstance(excluded,list):
+                raise ValueError('排除范围无效')
+            if any(type(i) is not int or not 0<=i<len(entries) for i in excluded) or len(set(excluded))!=len(excluded):
+                raise ValueError('排除条目无效或重复')
+            excluded=set(excluded)
+            return [i for i in range(len(entries)) if i not in excluded]
+        if scope=='all':return list(range(len(entries)))
+        if scope=='eligible':return [i for i,entry in enumerate(entries) if not entry.get('conflicts')]
+        if isinstance(scope,list):
+            if any(type(i) is not int or not 0<=i<len(entries) for i in scope) or len(set(scope))!=len(scope):
+                raise ValueError('选择条目无效或重复')
+            return scope
+        raise ValueError('请选择明确的操作范围')
+
+    def selection_review(self,plan_id,expected_digest,scope):
+        row,payload=self._fixed_preview(plan_id,expected_digest)
+        entries=payload['entries']
+        selected=[entries[index] for index in self._selected_indices(entries,scope)]
+        if not selected:raise ValueError('请选择本次整理的文件')
+        operation=payload.get('requested_operation','copy')
+        space=dict(payload.get('space',{}))
+        target=Path(row['target'])
+        if operation!='keep':space=target_space(selected,target,operation)
+        target_device=self.jobs.device_identity(target) if operation=='move' else None
+        sources={}
+        statuses={device['id']:device for device in self.inventory.devices()}
+        conflict_counts={}
+        blocked=0
+        for entry in selected:
+            device_id=entry.get('device_id',row['device_id'])
+            device=statuses.get(device_id,{})
+            root=entry.get('source_root',payload['source_root'])
+            status=device.get('status','offline') if device.get('root')==root else 'directory_changed'
+            source=sources.setdefault(device_id,{'alias':entry.get('device_alias',payload.get('device_alias','')),
+                                      'root':root,'status':status,'files':0,'bytes':0})
+            source['files']+=1
+            source['bytes']+=entry['size']
+            conflicts=set(entry.get('conflicts',[]))
+            if status!='online':conflicts.add('source_unavailable')
+            if operation=='move' and status=='online' and device.get('identity')!=target_device:
+                conflicts.add('cross_device_move')
+            if operation=='copy' and (target.is_relative_to(root) or Path(root).is_relative_to(target)):
+                conflicts.add('copy_target_overlaps_source')
+            if any(not item.get('shared') and (not item.get('available') or 'mtime_ns' not in item)
+                   for item in entry.get('companions',[])):conflicts.add('companion_unavailable')
+            if conflicts:blocked+=1
+            for code in conflicts:conflict_counts[code]=conflict_counts.get(code,0)+1
+        explanations=LABELS|{'companion_unavailable':'伴随资源不可用或需要重新盘点',
+                             'cross_device_move':'源与目标不在同一卷，请改为复制',
+                             'copy_target_overlaps_source':'复制目标须独立于所选源目录'}
+        return {'total':len(selected),'bytes':sum(entry['size'] for entry in selected),
+                'blocked':blocked,'operation':operation,'space':space,'sources':list(sources.values()),
+                'conflicts':[{'code':code,'message':explanations.get(code,code),'files':count}
+                             for code,count in sorted(conflict_counts.items())]}
 
     def draft(self,draft_id,offset=0,limit=50,retained_offset=0):
         with self.db() as c:
@@ -246,9 +313,10 @@ class OrganizationService:
             inverse=c.execute('SELECT original_job_id FROM organization_inverses WHERE draft_id=?',(draft_id,)).fetchone()
             origin=c.execute('SELECT preview_id FROM organization_draft_origins WHERE draft_id=?',(draft_id,)).fetchone()
             archive=c.execute('SELECT original_job_id FROM organization_archive_plans WHERE draft_id=?',(draft_id,)).fetchone()
+            approved=c.execute('SELECT j.id FROM organization_jobs j JOIN organization_drafts d ON d.digest=j.approval_digest WHERE d.id=?',(draft_id,)).fetchone()
         if not row:raise ValueError('Unknown organization draft')
         payload=json.loads(row['payload']);entries=payload['entries'];offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
-        return {'archive_of':archive[0] if archive else None,'preview_id':origin['preview_id'] if origin else None,'id':row['id'],'digest':row['digest'],'items':entries[offset:offset+limit],'total':len(entries),'bytes':sum(entry['fingerprint']['size'] for entry in entries),'offset':offset,'limit':limit,
+        return {'archive_of':archive[0] if archive else None,'preview_id':origin['preview_id'] if origin else None,'approved_job':approved[0] if approved else None,'id':row['id'],'digest':row['digest'],'items':entries[offset:offset+limit],'total':len(entries),'bytes':sum(entry['fingerprint']['size'] for entry in entries),'offset':offset,'limit':limit,
                 'retained':payload.get('retained',[])[max(0,int(retained_offset)):max(0,int(retained_offset))+limit],'retained_total':len(payload.get('retained',[])),'retained_offset':max(0,int(retained_offset)),'operation':entries[0]['operation'],'inverse_of':inverse['original_job_id'] if inverse else None,
                 'preflight':payload.get('preflight'),'media_count':sum(entry.get('role')!='companion' for entry in entries),'resource_count':sum(entry.get('role')=='companion' for entry in entries)}
 
@@ -261,7 +329,11 @@ class OrganizationService:
 
     def detail(self,job_id,offset=0,limit=50):
         job=self.jobs.get(job_id);offset=max(0,int(offset));limit=min(100,max(1,int(limit)))
-        entries=[dict(entry,step=step) for entry,step in zip(job['payload']['entries'],job['steps'])]
+        total=len(job['payload']['entries'])
+        entries=[dict(entry,step=step) for entry,step in
+                 zip(job['payload']['entries'][offset:offset+limit],job['steps'][offset:offset+limit])]
+        completed=[entry for entry in entries if entry.get('asset_id') and entry.get('role')!='companion'
+                   and entry['step']['state']=='done' and not entry['step']['details'].get('skip')]
         for entry in entries:
             entry['step']['details']['preflight_messages']=[LABELS.get(code,code) for code in entry['step']['details'].get('preflight',[])]
         with self.db() as c:
@@ -272,6 +344,12 @@ class OrganizationService:
             archives=[dict(r) for r in c.execute('SELECT p.archive_job_id AS id,j.state,i.inverse_job_id,reverse.state AS reverse_state FROM organization_archive_plans p JOIN organization_jobs j ON j.id=p.archive_job_id LEFT JOIN organization_inverses i ON i.original_job_id=j.id LEFT JOIN organization_jobs reverse ON reverse.id=i.inverse_job_id WHERE p.original_job_id=? ORDER BY j.created DESC LIMIT 20',(job_id,))]
             if superseded:inverse_of=(superseded['original_job'],)
             recovery_map=c.execute('SELECT roots,activated FROM organization_recovery_maps WHERE job_id=?',(job_id,)).fetchone()
+            approval=c.execute('SELECT d.id AS draft_id,o.preview_id FROM organization_drafts d LEFT JOIN organization_draft_origins o ON o.draft_id=d.id WHERE d.digest=?',(job['approval_digest'],)).fetchone()
+            if completed:
+                ids=list(dict.fromkeys(entry['asset_id'] for entry in completed))
+                slots=','.join('?' for _ in ids)
+                links=dict(c.execute(f'SELECT a.id,v.id FROM media_assets a JOIN videos v ON v.id=a.video_id WHERE a.id IN ({slots})',ids))
+                for entry in completed:entry['bound_video_id']=links.get(entry['asset_id'])
         recovery={'roots':sorted(job['payload'].get('root_proofs',{})),
                   'mapping':json.loads(recovery_map['roots']) if recovery_map else {},
                   'activated':bool(recovery_map and recovery_map['activated'])}
@@ -281,4 +359,4 @@ class OrganizationService:
                 for root in job['payload'].get('source_roots',[job['payload']['source_root']]):self.archive.capability(root)
                 capability={'supported':True}
             except (OSError,ValueError) as error:capability={'supported':False,'reason':str(error)}
-        return {'recovery':recovery,'archive_capability':capability,'archive_of':archive[0] if archive else None,'source_archives':archives,'superseded':dict(superseded) if superseded else None,'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries[offset:offset+limit],'total':len(entries),'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}
+        return {'recovery':recovery,'approval':dict(approval) if approval else None,'archive_capability':capability,'archive_of':archive[0] if archive else None,'source_archives':archives,'superseded':dict(superseded) if superseded else None,'inverse':dict(inverse) if inverse else None,'inverse_of':inverse_of[0] if inverse_of else None,'operation':job['payload']['entries'][0]['operation']}|{key:job[key] for key in ('id','state','created','updated')}|{'items':entries,'total':total,'offset':offset,'limit':limit,'progress':self.jobs.progress(job_id),'paused':self.jobs.pause_requested(job_id)}

@@ -6,6 +6,7 @@
 |---|---|
 |当前已发布能力|[功能](FEATURES.md)及对应版本说明，仍须核对代码|
 |迭代顺序|[路线图](ROADMAP.md)|
+|alpha.9 硬盘统一管理及 P0 门槛|[A9-01–05](ALPHA9-REQUIREMENTS.md)|
 |alpha.8 日常使用稳定版及 P0 门槛|[A8-01–06](ALPHA8-REQUIREMENTS.md)、[验收](ALPHA8-VALIDATION.md)|
 |alpha.7 三个 Epic、性能预算及逐项验收|[A7-01–16](ALPHA7-REQUIREMENTS.md)|
 |alpha.6总览、必达场景及逐项验收|[8个Feature / A6-01–30](ALPHA6-REQUIREMENTS.md)|
