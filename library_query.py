@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from file_review import FileReview
 from media_libraries import canonical
-from media_presentation import projection_presentation
+from media_presentation import projection_presentation, category_tags, card_flags
 
 
 class LibraryQueryChanged(ValueError):pass
@@ -33,7 +33,7 @@ class LibraryQuery:
         self.project=project if project is not None else lambda row,path:self.core.present(row)
         self.projection_fields=(
             'v.id,v.path,v.size,v.mtime,v.height,v.code,v.source,v.title,v.manual,v.amane_id,'
-            'v.locked_fields,v.censor_override,v.amane_snapshot,v.tags,v.auto_tags,v.actors'
+            'v.locked_fields,v.censor_override,v.amane_snapshot,v.source_tags,v.tags,v.auto_tags,v.actors,v.studio'
             if project is projection_presentation else 'v.*'
         )
         libraries.exclusions();policy.ensure()
@@ -44,7 +44,8 @@ class LibraryQuery:
             c.execute('INSERT OR IGNORE INTO browse_state(id,revision,rebuild) VALUES(1,1,0)')
             if 'projected_revision' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projected_revision INTEGER DEFAULT -1')
             if 'projection_schema' not in {r[1] for r in c.execute('PRAGMA table_info(browse_state)')}:c.execute('ALTER TABLE browse_state ADD COLUMN projection_schema INTEGER DEFAULT 0')
-            c.execute('UPDATE browse_state SET rebuild=CASE WHEN projection_schema IN (1,2,3,4) THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=5,revision=revision+1 WHERE projection_schema!=5')
+            scope_enforced, _ = self.libraries.membership(c)
+            c.execute('UPDATE browse_state SET rebuild=CASE WHEN projection_schema BETWEEN 1 AND 7 AND (?=0 OR projection_schema>=6) AND NOT EXISTS(SELECT 1 FROM videos WHERE length(source_tags)>0) THEN rebuild ELSE 1 END,projected_revision=-1,projection_schema=9,revision=revision+1 WHERE projection_schema!=9',(scope_enforced,))
             c.execute('DROP TABLE IF EXISTS browse_query_members')
             c.execute('CREATE TABLE IF NOT EXISTS browse_queries(id TEXT PRIMARY KEY,created REAL,revision INTEGER,criteria TEXT,totals TEXT)')
             c.execute('CREATE INDEX IF NOT EXISTS browse_query_reuse ON browse_queries(revision,criteria,created DESC)')
@@ -74,6 +75,13 @@ class LibraryQuery:
                     event='UPDATE OF path,exclude_patterns,min_size' if table=='library_settings' and action=='UPDATE' else action
                     c.execute('DROP TRIGGER IF EXISTS browse_'+table+'_'+action)
                     c.execute('CREATE TRIGGER IF NOT EXISTS browse_'+table+'_'+action+' AFTER '+event+' ON '+table+' BEGIN'+dirty+' UPDATE browse_state SET '+rebuild+'revision=revision+1 WHERE id=1; END')
+
+            if 'media_locations' in tables:
+                for action in ('INSERT', 'UPDATE', 'DELETE'):
+                    rows = ('OLD', 'NEW') if action == 'UPDATE' else ('OLD' if action == 'DELETE' else 'NEW',)
+                    event = 'UPDATE OF path,preferred,origin_task,asset_id' if action == 'UPDATE' else action
+                    dirty = ''.join(f' INSERT INTO browse_dirty SELECT a.video_id FROM media_assets a WHERE a.id={row}.asset_id AND a.video_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM browse_dirty WHERE video_id=a.video_id);' for row in rows)
+                    c.execute(f'CREATE TRIGGER IF NOT EXISTS browse_media_locations_{action} AFTER {event} ON media_locations BEGIN{dirty} UPDATE browse_state SET revision=revision+1 WHERE id=1; END')
 
     def folder(self,row,rules,short_prefixes,cache=None):
         # Directory decisions are shared by siblings; manual identity remains per file.
@@ -118,6 +126,8 @@ class LibraryQuery:
             state=c.execute('SELECT rebuild,revision,projected_revision FROM browse_state WHERE id=1').fetchone()
             if not state[0] and state[1]==state[2] and not c.execute('SELECT 1 FROM browse_dirty LIMIT 1').fetchone():return
         short_prefixes={};folder_cache={}
+        with self.db() as c:
+            scope_enforced, organized = self.libraries.membership(c)
         policies=self.libraries.policies();excluded=[canonical(root,short_prefixes) for root in self.libraries.exclusions()]
         policies=[dict(p,path=str(canonical(p['path'],short_prefixes)),excluded_directories=excluded) for p in policies]
         rules=[dict(rule,path=str(canonical(rule['path'],short_prefixes))) for rule in self.policy.rules()]
@@ -149,10 +159,11 @@ class LibraryQuery:
                 for raw in batch:
                     row=dict(zip(columns,raw));raw_path=Path(row['path']);present=self.project(row,raw_path)
                     visible=True
-                    if policies or excluded:
+                    if scope_enforced or policies or excluded:
                         path=canonical(raw_path,short_prefixes);owner=self.libraries.owner(path,policies)
                         policy=next((p for p in policies if p['path']==owner),None)
-                        visible=not any(path.is_relative_to(root) for root in excluded) and (not policy or self.libraries.included(path,policy,row['size'] or 0))
+                        visible=(not scope_enforced or policy is not None or row['path'] in organized)
+                        visible=visible and not any(path.is_relative_to(root) for root in excluded) and (not policy or self.libraries.included(path,policy,row['size'] or 0))
                     record=records.get(row['id']);below_target=bool(target and 0<(row['height'] or 0)<target)
                     if record is None and below_target in unreviewed:review_json=unreviewed[below_target]
                     else:
@@ -165,7 +176,7 @@ class LibraryQuery:
                         # With no review record, only the target-height rule varies.
                         # Keep this cache local to the current target/transaction.
                         if record is None:unreviewed[below_target]=review_json
-                    tag_json=json.dumps(list(dict.fromkeys(tokens(row['tags'])+tokens(row['auto_tags'])))) if row['tags'] or row['auto_tags'] else '[]'
+                    tag_json=json.dumps(list(dict.fromkeys(tokens(category_tags(row))+tokens(row['auto_tags']))))
                     actor_json=json.dumps(tokens(row['actors'])) if row['actors'] else '[]'
                     values.append((row['id'],present['title'],present['vr'],present['censorship'],present['resolution_label'],self.folder(row,rules,short_prefixes,folder_cache),visible,tag_json,actor_json,review_json))
                 for start in range(0,len(values),90):
@@ -321,7 +332,7 @@ class LibraryQuery:
                 where.append("EXISTS(SELECT 1 FROM files p,json_each(p.review,'$.issues') issue WHERE p.movie_key=v.movie_key AND json_extract(issue.value,'$.code')=?)");args.append(quality)
         if criteria['facet_kind'] and criteria['facet_name']:
             kind=criteria['facet_kind'];name=criteria['facet_name']
-            if kind=='tags':condition='EXISTS(SELECT 1 FROM json_each(facet_tags(vf.source_tags)) WHERE value=?)'
+            if kind=='tags':condition='EXISTS(SELECT 1 FROM json_each(facet_tags(vf.source_tags,vf.tags,vf.locked_fields)) WHERE value=?)'
             elif kind=='studio':condition='vf.studio=?'
             elif kind=='series':condition="json_extract(vf.amane_snapshot,'$.series')=?"
             elif kind=='director':condition="EXISTS(SELECT 1 FROM json_each(vf.amane_snapshot,'$.directors') WHERE value=?)"
@@ -354,7 +365,7 @@ class LibraryQuery:
     def _query_functions(self,c,aliases):
         c.create_function('fold',1,fold,deterministic=True)
         c.create_function('token_list',1,lambda value:json.dumps(tokens(value)),deterministic=True)
-        c.create_function('facet_tags',1,lambda value:json.dumps([aliases.get(t,t) for t in tokens(value)]),deterministic=True)
+        c.create_function('facet_tags',3,lambda source,tags,locks:json.dumps([aliases.get(t,t) for t in tokens(category_tags({'source_tags':source,'tags':tags,'locked_fields':locks}))]),deterministic=True)
         c.create_function('collection_id',1,lambda root:hashlib.sha256(fold(root).encode()).hexdigest()[:24] if root else '',deterministic=True)
         c.create_function('basename',1,lambda path:path_text(path).split('/')[-1],deterministic=True)
 
@@ -466,12 +477,13 @@ class LibraryQuery:
                 fields={'title':'display_title','height':'min_height','duration':'total_duration','size':'total_size','position':'max_position','watched':'all_watched','missing':'all_missing','favorite':'movie_favorite','mtime':'movie_mtime'}
                 item.update({key:row[column] for key,column in fields.items()})
                 flags=c.execute('''
-                    SELECT MAX(v.domestic),MAX(v.amateur)
+                    SELECT v.path,v.domestic,v.amateur,v.source_tags,v.amane_snapshot
                     FROM media_links l JOIN browse_projection p ON p.video_id=l.video_id AND p.visible=1
                     JOIN videos v ON v.id=l.video_id
                     WHERE l.movie_key=? AND l.version_key=?
-                ''',(item['movie_key'],item['version_key'])).fetchone()
-                item.update(domestic=bool(flags[0]),amateur=bool(flags[1]))
+                ''',(item['movie_key'],item['version_key']))
+                resolved=[card_flags(dict(file)) for file in flags]
+                item.update({flag:any(file[flag] for file in resolved) for flag in ('domestic','amateur')})
                 item.update({key:row[key] for key in ('code','actors','studio','date','rating','vr','censorship','resolution_label','part_count','version_count','needs_update','higher_local')})
         for item in items:
             if item['kind']=='movie':item['censorship_label']={'censored':'有码','uncensored':'无码','unknown':'未知'}.get(item['censorship'],'标记不一致')

@@ -4,7 +4,7 @@ window.MovieDetailView=(()=>{
  function cancelComparison(){compareRequest?.abort();compareRequest=null}
  function movie(data){
   const headers=[...data.versions.items];for(const pinned of [data.active_version,data.default_version])if(pinned&&!headers.some(v=>v.version_key===pinned.version_key))headers.push(pinned);
-  const files=[...data.parts.items];if(!files.some(p=>p.id===data.selected.id))files.push(data.selected);
+  const files=data.parts.items.map(part=>part.id===data.selected.id?data.selected:part);if(!files.some(p=>p.id===data.selected.id))files.push(data.selected);
   return {...data.selected,movie_key:data.movie_key,id:data.selected.id,version_key:data.default_version_key,favorite:data.favorite,mtime:data.mtime,_total_files:data.total_files,_edit_file_count:data.edit_file_count,_version_count:data.versions.total,_detail:data,
    _versions:headers.map(v=>({...v,_parts:v.version_key===data.active_version.version_key?files:[]}))};
  }

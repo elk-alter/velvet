@@ -127,10 +127,19 @@ def binary(name):
 
 def run(args,timeout=90):
  return subprocess.run(args,capture_output=True,timeout=timeout,creationflags=0x08000000 if os.name=='nt' else 0)
+# Keep PPV inside an FC2 token so it cannot become a standalone prefix.
+NUMBER_PATTERN=re.compile(
+ r'(?i)(?<![a-z0-9])(?:FC2[-_ ]*(?:PPV[-_ ]*)?(\d{2,})(?![a-z0-9])'
+ r'|(?!(?<=FC2[-_ ])PPV[-_ ])([a-z]{2,10})[-_ ](\d{2,7})(?!\d))'
+)
+
 def identify(stem):
- m=re.search(r'(?i)(?<![a-z0-9])([a-z]{2,10})[-_ ](\d{2,7})(?!\d)',stem)
- return (m[1]+'-'+m[2]).upper() if m else ''
-from media_presentation import censorship,presentation,identity_presentation,projection_presentation
+ if stem.strip().casefold().startswith('video') and generic_name(stem):return ''
+ match=NUMBER_PATTERN.search(stem)
+ if not match:return ''
+ article,prefix,number=match.groups()
+ return 'FC2-'+article if article else prefix.upper()+'-'+number
+from media_presentation import censorship,presentation,identity_presentation,projection_presentation,category_tags
 
 sys.path.insert(0,str(ROOT))
 from resource_leases import ResourceLeases,ResourceBusy,path_resource,video_resources
@@ -217,8 +226,8 @@ def classify(row):
  def add(tag,why):
   tag=str(tag).strip()[:80]
   if tag:reasons.setdefault(tag,why)
- for tag in re.split(r'[,，]',row.get('source_tags') or ''):
-  if tag.strip():add('题材/'+aliases.get(tag.strip(),tag.strip()),'Amane 资料分类')
+ for tag in re.split(r'[,，]',category_tags(row)):
+  if tag.strip():add('题材/'+aliases.get(tag.strip(),tag.strip()),'影片类别标签')
  status,why=censorship(row)
  add('制式/'+{'censored':'有码','uncensored':'无码','unknown':'未知'}[status],why)
  p=Path(row['path']);height=int(row.get('height') or 0);duration=float(row.get('duration') or 0)
@@ -1172,10 +1181,7 @@ class Handler(BaseHTTPRequestHandler):
     if str(p) not in [policy['path'] for policy in LIBRARIES.policies()]:LIBRARIES.save({'path':str(p)})
     threading.Thread(target=scan,daemon=True).start()
    elif path=='/api/remove-folder':
-    LIBRARIES.policies()
-    with db() as c:
-     c.execute('DELETE FROM folders WHERE path=?',(a['path'],))
-     c.execute('DELETE FROM library_settings WHERE path=?',(a['path'],))
+    LIBRARIES.remove(a['path'])
    elif path=='/api/scan':
     if LOCK.locked():return self.send({'ok':True,'busy':True})
     threading.Thread(target=scan,args=(bool(a.get('force')),),daemon=True).start()
@@ -1348,10 +1354,11 @@ class Handler(BaseHTTPRequestHandler):
     (DATA/'tag_rules.json').write_text(json.dumps(rules,ensure_ascii=False,indent=2),'utf-8')
     return self.send({'ok':True,'count':retag_all()})
    elif path=='/api/edit':
-    allowed={'title','tags','actors','studio','code','plot','date','favorite','watched','rating','censor_override','domestic','amateur'};updates={k:v for k,v in a.items() if k in allowed}
+    allowed={'title','tags','category_tags','actors','studio','code','plot','date','favorite','watched','rating','censor_override','domestic','amateur'};updates={k:v for k,v in a.items() if k in allowed}
     for flag in ('domestic','amateur'):
-     if flag in updates and (type(updates[flag]) is not int or updates[flag] not in (0,1)):raise ValueError('手动标记必须为 0 或 1')
+     if flag in updates and (type(updates[flag]) is not int or updates[flag] not in (-1,0,1)):raise ValueError('标记必须为自动、显示或隐藏')
     if 'censor_override' in updates and updates['censor_override'] not in ('auto','censored','uncensored','unknown'):raise ValueError('有码/无码标记无效')
+    if 'category_tags' in updates and (not isinstance(updates['category_tags'],str) or len(updates['category_tags'])>10000 or 'tags' in updates):raise ValueError('类别标签无效')
     expected=a.get('expected')
     if 'expected' in a and (not isinstance(expected,dict) or set(expected)!=set(updates) or any(not isinstance(value,str) for value in expected.values())):
      raise ValueError('编辑基线无效，请重新打开详情')
@@ -1362,13 +1369,17 @@ class Handler(BaseHTTPRequestHandler):
      if expected is not None:
       defaults={'rating':0,'domestic':0,'amateur':0,'censor_override':'auto'}
       for field,value in expected.items():
-       current=old[field] if old[field] is not None else defaults.get(field,'')
+       current=category_tags(dict(old)) if field=='category_tags' else old[field]
+       if current is None:current=defaults.get(field,'')
        if field=='censor_override' and not current:current='auto'
        if str(current)!=value:
         raise LibraryQueryChanged('正在编辑的字段已在后台或其他页面更新，当前草稿保留。请核对最新资料后再保存。')
      locked=set(json.loads(old['locked_fields'] or '[]'))
      if old['manual'] and not locked:locked.update(['title','code','actors','studio','date','plot'])
      locked.update(k for k,v in updates.items() if k in {'title','code','actors','studio','date','plot','tags'} and str(v)!=str(old[k]))
+     if 'category_tags' in updates:
+      updates['tags']=category_tags({'tags':updates.pop('category_tags')})
+      locked.update(('tags','category_tags'))
      updates['locked_fields']=json.dumps(sorted(locked));updates['manual']=0
      if 'code' in updates and updates['code']!=old['code']:
       updates.update(amane_id=0,source_tags='',amane_snapshot='{}',source='filename',poster_origin='',cover_origin='')

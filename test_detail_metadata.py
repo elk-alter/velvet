@@ -13,12 +13,12 @@ class DetailMetadataTests(unittest.TestCase):
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const html=fs.readFileSync(SOURCE,'utf8'),start=html.indexOf('async function saveVideo(){'),end=html.indexOf('let playbackEpoch=',start);
 let completed=false;process.on('beforeExit',()=>{if(!completed){console.error('Metadata scenario did not complete');process.exitCode=1}});
-const fields=['title','code','actors','studio','tags','date','rating'];
-const baseline={id:1,title:'Original',code:'DEMO-1',actors:'Original Actor',studio:'Studio',tags:'',date:'',rating:0,plot:'',censor_override:'auto',part_index:20};
-const fresh={...baseline,title:'Submitted',actors:'Saved Actor',tags:'Manual tag',auto_tags:'Auto tag',tag_reasons:'{}',locked_fields:'["title","actors"]',censorship_label:'Unknown',censorship_source:'Synthetic'};
+const fields=['title','code','actors','studio','category_tags','date','rating'];
+const baseline={id:1,title:'Original',code:'DEMO-1',actors:'Original Actor',studio:'Studio',category_tags:'',date:'',rating:0,plot:'',censor_override:'auto',part_index:20};
+const fresh={...baseline,title:'Submitted',actors:'Saved Actor',category_tags:'Manual tag',auto_tags:'Auto tag',tag_reasons:'{}',locked_fields:'["title","actors"]',censorship_label:'Unknown',censorship_source:'Synthetic'};
 const nodes={},button={disabled:false};for(const key of fields)nodes['edit_'+key]={value:String(baseline[key])};
 for(const id of ['heading','fieldLocks','autoTagDetail','actorLinks','censorEvidence'])nodes[id]={textContent:'',innerHTML:''};
-nodes.edit_plot={value:''};nodes.editCensor={value:'auto'};nodes.edit_domestic={checked:false};nodes.edit_amateur={checked:false};nodes.editDirty={textContent:'unsaved'};nodes.currentReviewNote={value:'Independent quality draft'};
+nodes.edit_plot={value:''};nodes.editCensor={value:'auto'};nodes.edit_domestic={value:'0'};nodes.edit_amateur={value:'0'};nodes.editDirty={textContent:'unsaved'};nodes.currentReviewNote={value:'Independent quality draft'};
 let post,submitted,loads=0,refreshes=0,nav=null,summaries=0;const messages=[];
 const work=()=>({...fresh,_detail:{selected:fresh,active_version:{part_count:22},parts:{offset:20}},_versions:[{part_count:22,_parts:[fresh]}]});
 const context={window:{MovieDetailView:{parameters:()=>({version_offset:0,part_offset:20}),show:data=>nav=data}},detail:{open:true,querySelector:()=>button},detailGeneration:7,selected:{...baseline},editBaseline:{...baseline},cardFlagFields:['domestic','amateur'],editFields:fields.map(key=>[key,key]),library:{movies:[],videos:[]},
@@ -35,12 +35,12 @@ vm.createContext(context);vm.runInContext(html.slice(start,end),context);
 
     def test_save_keeps_later_input_and_updates_authoritative_links(self):
         self.run_case(r'''
-nodes.edit_title.value='Submitted';nodes.edit_actors.value='Saved Actor';nodes.edit_tags.value='Manual tag';
+nodes.edit_title.value='Submitted';nodes.edit_actors.value='Saved Actor';nodes.edit_category_tags.value='Manual tag';
 const pending=context.saveVideo();assert.equal(submitted.id,1);assert.equal(submitted.title,'Submitted');assert.equal(submitted.expected.title,'Original');assert.equal(submitted.expected.actors,'Original Actor');
 nodes.edit_title.value='Typed while saving';post({});await pending;
 assert.equal(nodes.edit_title.value,'Typed while saving');assert.ok(nodes.editDirty.textContent);
 assert.equal(context.editBaseline.title,'Submitted');assert.equal(context.selected.actors,'Saved Actor');
-assert.match(nodes.actorLinks.innerHTML,/Saved Actor/);assert.match(nodes.autoTagDetail.innerHTML,/Manual tag/);assert.match(nodes.autoTagDetail.innerHTML,/Auto tag/);
+assert.match(nodes.actorLinks.innerHTML,/Saved Actor/);assert.equal(context.selected.category_tags,"Manual tag");assert.equal(submitted.expected.category_tags,"");assert.match(nodes.autoTagDetail.innerHTML,/Auto tag/);
 assert.match(nodes.fieldLocks.textContent,/actors/);assert.match(nodes.heading.textContent,/Part 20/);
 assert.equal(nodes.currentReviewNote.value,'Independent quality draft');assert.equal(button.disabled,false);assert.equal(summaries,1);assert.ok(nav);
 ''')

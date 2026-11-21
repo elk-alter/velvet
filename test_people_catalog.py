@@ -55,10 +55,11 @@ class PeopleCatalogTests(unittest.TestCase):
             c.execute("INSERT INTO videos(id,path,code,missing,source_tags) VALUES(3,'offline','ABC-2',1,'Other')")
         catalog=FacetCatalog(self.db,lambda:{'tag_aliases':{'AliasTag':'Canonical'}})
         tags=[c for c in catalog.list() if c['kind']=='tags']
-        self.assertEqual(len(tags),1);self.assertEqual(tags[0]['name'],'Canonical')
-        self.assertEqual((tags[0]['movie_count'],tags[0]['file_count']),(1,2))
+        self.assertEqual({c['name'] for c in tags},{'Canonical','MyTag'})
+        canonical=next(c for c in tags if c['name']=='Canonical')
+        self.assertEqual((canonical['movie_count'],canonical['file_count']),(1,2))
         catalog.favorite('tags','Canonical',1)
-        self.assertTrue(next(c for c in catalog.list() if c['kind']=='tags')['favorite'])
+        self.assertTrue(next(c for c in catalog.list() if c['kind']=='tags' and c['name']=='Canonical')['favorite'])
         self.assertEqual({c['kind'] for c in catalog.list()},{'tags','user_tags','technical','studio','series','director'})
         with self.assertRaises(ValueError):catalog.favorite('invalid','Name',1)
 

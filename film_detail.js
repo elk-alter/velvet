@@ -5,11 +5,12 @@ const originalFigure=$('coverPreview').parentElement;
 const playbackActions=detailBody.querySelector('.playback-actions');
 const playbackHint=$('player').nextElementSibling;
 const hero=document.createElement('section');hero.className='filmHero';hero.innerHTML='<div class="filmPoster"></div><div class="filmSummary"><div id="filmSummary"></div></div>';
-hero.querySelector('.filmPoster').append($('coverPreview'));originalFigure.remove();hero.querySelector('.filmSummary').append(playbackActions,$('actorLinks'),$('autoTagDetail'));
+hero.querySelector('.filmPoster').append($('coverPreview'));originalFigure.remove();hero.querySelector('.filmSummary').append(playbackActions,$('actorLinks'));
 const playbackSection=document.createElement('section');playbackSection.id='filmPlayback';playbackSection.hidden=true;playbackSection.append($('player'),playbackHint);
 const gallerySection=document.createElement('section');gallerySection.className='filmGallery';gallerySection.innerHTML='<div class="filmSectionHeader"><div><h3>剧照与预览</h3><small id="filmGalleryStatus" class="muted">正在加载图片…</small></div><button onclick="retryFilmArtwork()">获取 / 重试剧照</button></div><nav id="filmGalleryFilters" class="filmGalleryFilters"></nav>';gallerySection.append($('shots'));
 const editor=document.createElement('details');editor.id='filmEditor';editor.className='filmEditor';editor.innerHTML='<summary>编辑资料与文件信息</summary><div id="filmEditorBody"></div>';
 while(detailBody.firstChild)editor.querySelector('#filmEditorBody').append(detailBody.firstChild);
+editor.querySelector('#filmEditorBody').append($('autoTagDetail'));
 detailBody.append(hero,playbackSection,gallerySection,editor);
 const saveButton=detail.querySelector('button[onclick="saveVideo()"]');saveButton.hidden=true;
 const forgetButton=detail.querySelector('button[onclick="forget()"]');editor.querySelector('#filmEditorBody').append(forgetButton);
@@ -77,7 +78,28 @@ internalPlay=function(){playbackSection.hidden=false;fitPlayerToDetail();previou
 if(typeof ResizeObserver==='function')new ResizeObserver(fitPlayerToDetail).observe(detailBody);else window.addEventListener('resize',fitPlayerToDetail);
 async function retryFilmArtwork(){try{await api('/api/artwork-retry',{id:selected.id});toast('已加入剧照下载队列；不重新刮削文字资料');artworkPollRounds=0;loadFilmArtwork(selected.id,detailGeneration)}catch(e){toast(e.message)}}
 
-function renderSelectedFilmSummary(){const v=selected;$('filmSummary').innerHTML=`<div class="filmEyebrow">${esc(v.code||'本地收藏')} ${v.date?' · '+esc(v.date):''}</div><h2>${esc(v.title)}</h2><div class="filmFacts"><span>${esc(v.resolution_label||'画质待解析')}</span>${v.vr?'<span>VR</span>':''}${v.height>=2160?'<span class="premiumFact">✦ 精品</span>':''}<span>${esc(v.censorship_label||'类型未知')}</span><span>${duration(v.duration)}</span>${v.rating?'<span>★ '+v.rating+'</span>':''}</div><p class="filmStudio">${esc(v.studio||'厂商资料待补全')}</p><p class="filmPlot">${esc(v.plot||'暂无简介。可以在刮削中心补全资料，或展开下方编辑区手动整理。')}</p>`;}
+function editFilmCategories(){
+ editor.open=true;
+ $('edit_category_tags').focus();
+}
+
+function renderSelectedFilmSummary(){
+ const v=selected,source=v.source_summary||{};
+ const categories=[...new Set(String(v.category_tags||'').split(/[,，]/).map(tag=>tag.trim()).filter(Boolean))];
+ const score=source.score
+  ?`<span class="filmScore">★ ${esc(source.score)} <small>${esc(source.score_source?.toLowerCase()==='javdb'?'JavDB 评分':source.score_source?source.score_source+' 评分':'来源评分')}</small></span>`
+  :v.rating?`<span>★ ${esc(v.rating)} <small>个人评分</small></span>`:'';
+ const badges=[['国产',v.domestic,v.domestic_reason],['素人',v.amateur,v.amateur_reason]].filter(([,shown])=>shown);
+ const facts=[v.date,source.runtime?`${source.runtime} 分钟`:v.duration>0?duration(v.duration):'',v.height?v.resolution_label:'',v.vr?'VR':'',v.censorship_label==='未知'?'':v.censorship_label].filter(Boolean);
+ const credits=[['片商',v.studio],['发行商',source.publisher!==v.studio?source.publisher:''],['系列',source.series],['导演',source.directors?.join('、')]].filter(([,value])=>value);
+ $('filmSummary').innerHTML=`${v.code?`<div class="filmEyebrow">${esc(v.code)}</div>`:''}
+  <h2>${esc(v.title)}</h2>
+  ${score||facts.length||badges.length?`<div class="filmFacts">${score}${facts.map(value=>`<span>${esc(value)}</span>`).join('')}${badges.map(([label,,reason])=>`<span title="${esc(reason)}">${label}</span>`).join('')}</div>`:''}
+  <div class="filmCategories" aria-label="类别标签">${categories.map(tag=>`<button type="button" data-tag="${esc(tag)}" onclick="openDetailTag(this.dataset.tag)">${esc(tag)}</button>`).join('')}<button type="button" onclick="editFilmCategories()">编辑类别标签</button></div>
+  ${credits.length?`<dl class="filmCredits">${credits.map(([label,value])=>`<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`:''}
+  ${v.plot?`<p class="filmPlot">${esc(v.plot)}</p>`:''}`;
+}
+
 
 
 const physicalFileButton=document.createElement('button');physicalFileButton.id='filmPhysicalFiles';physicalFileButton.textContent='物理文件与副本';physicalFileButton.onclick=()=>DiskFileView.fromVideo(selected.id);playbackActions.append(physicalFileButton);

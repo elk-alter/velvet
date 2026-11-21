@@ -34,6 +34,31 @@ class LibraryQueryTests(unittest.TestCase):
         for item in first['items']:
             for key in ('plot','locked_fields','amane_snapshot','_versions','_parts'):self.assertNotIn(key,item)
 
+    def test_library_membership_hides_detached_records_and_preserves_organized_imports(self):
+        member = self.video('library/member.mp4', 'DEMO-1')
+        detached = self.video('outside.mp4', 'DEMO-2')
+        organized = self.video('organized.mp4', 'DEMO-3')
+        query = self.query_service()
+        self.assertEqual(query.query({'collections':'off'})['total'], 3)
+        root = self.app.LIBRARIES.save({'path': str(self.root/'library')})
+        self.assertEqual(query.query({'collections':'off'})['total'], 1)
+        with self.app.db() as c:
+            c.execute("INSERT INTO organization_jobs(id) VALUES('copy-job')")
+            c.execute("INSERT INTO media_assets(id,video_id,created) VALUES('copied',?,0)", (organized,))
+            c.execute("""INSERT INTO media_locations(id,asset_id,path,device_token,preferred,origin_task)
+                         SELECT 'copy-location','copied',path,'local',1,'copy-job' FROM videos WHERE id=?""",
+                      (organized,))
+        self.assertEqual(query.query({'collections':'off'})['total'], 2)
+        self.app.LIBRARIES.remove(root)
+        self.assertEqual(query.query({'collections':'off'})['items'][0]['code'], 'DEMO-3')
+        with self.app.db() as c:
+            rows = [dict(row) for row in c.execute('SELECT id,path FROM videos ORDER BY id')]
+        self.assertEqual([r['id'] for r in rows], [member, detached, organized])
+        self.assertEqual([r['id'] for r in self.app.LIBRARIES.filter_rows(rows)], [organized])
+        self.assertTrue((self.root/'library/member.mp4').is_file())
+        self.app.LIBRARIES.save({'path': root})
+        self.assertEqual(query.query({'collections':'off'})['total'], 2)
+
     def test_snapshot_caches_only_requested_rows_and_resolves_uncached_selection(self):
         for i in range(12):self.video(f'{i}.mp4',f'DEMO-{i}',title=f'Film {i:02}')
         query=self.query_service()
@@ -292,6 +317,23 @@ class LibraryQueryHTTPTests(unittest.TestCase):
         with self.app.db() as c:c.execute('UPDATE videos SET favorite=1 WHERE id=?',(self.ident,))
         self.assertEqual(self.request('/api/library/query?snapshot='+data['snapshot'])[0],409)
         self.assertEqual(self.request('/api/library/query?sort=invalid')[0],400)
+
+    def test_edited_categories_drive_both_filters_and_survive_scraping(self):
+        with self.app.db() as c:
+            c.execute("UPDATE videos SET source_tags='Original',tags='Existing' WHERE id=?", (self.ident,))
+        query = '/api/library/query?collections=off&'
+        self.assertEqual(self.request(query+'tags=%5B%22Original%22%5D')[1]['total'], 1)
+        status, _ = self.request('/api/edit', data={
+            'id':self.ident, 'category_tags':'Existing, Replacement',
+            'expected':{'category_tags':'Original, Existing'},
+        })
+        self.assertEqual(status, 200)
+        with self.app.db() as c:
+            c.execute("UPDATE videos SET source_tags='UpdatedSource' WHERE id=?", (self.ident,))
+        self.assertEqual(self.request(query+'tags=%5B%22Original%22%5D')[1]['total'], 0)
+        self.assertEqual(self.request(query+'tags=%5B%22Replacement%22%5D')[1]['total'], 1)
+        self.assertEqual(self.request(query+'facet_kind=tags&facet_name=Replacement')[1]['total'], 1)
+        self.assertEqual(self.request(query+'facet_kind=tags&facet_name=UpdatedSource')[1]['total'], 0)
         self.assertEqual(self.request('/api/library/movie?id=99999')[0],400)
     def test_progress_is_readable_while_projection_runs_and_resets_on_failure(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -333,6 +375,42 @@ class LibraryQueryHTTPTests(unittest.TestCase):
         self.assertEqual(self.request(edit,data={'id':self.ident,'amateur':'false'})[0],400)
         self.assertEqual(flags(),(False,True))
 
+    def test_automatic_badges_use_explicit_signals_and_respect_overrides(self):
+        ident=self.video('国产/Example.mp4','DEMO-2',source_tags='素人, 无码')
+        self.video('FC2-123.mp4','FC2-123',amane_snapshot='{"content_type":"fc2"}')
+        self.video('中文短片.mp4','DEMO-3')
+        self.video('作品-中文字幕.mp4','DEMO-4')
+        self.video('作品の記録.mp4','DEMO-5')
+        self.video('中文译名.mp4','DEMO-6',amane_snapshot='{"country":"Japan"}')
+        self.video('Tokyo-Hot n1153.mp4','n1153')
+        self.video('StudioSample.mp4','n1154',studio='東京熱')
+        self.video('n1155.mp4','n1155')
+        self.video('Tokyo-Hot n1156.mp4','n1156',source_tags='有码')
+        def card(code):
+            return self.request('/api/library/query?q='+code)[1]['items'][0]
+        auto=card('DEMO-2')
+        self.assertEqual((auto['domestic'],auto['amateur'],auto['censorship']),(True,True,'uncensored'))
+        other=card('FC2-123')
+        self.assertEqual((other['domestic'],other['amateur'],other['censorship']),(False,False,'unknown'))
+        self.assertTrue(card('DEMO-3')['domestic'])
+        self.assertEqual(card('n1153')['censorship'],'uncensored')
+        self.assertEqual(card('n1154')['censorship'],'uncensored')
+        self.assertEqual(card('n1155')['censorship'],'unknown')
+        self.assertEqual(card('n1156')['censorship'],'censored')
+        for code in ('DEMO-4','DEMO-5','DEMO-6'):
+            self.assertFalse(card(code)['domestic'],code)
+        self.assertEqual(self.request('/api/edit',data={
+            'id':ident,'domestic':-1,'censor_override':'censored',
+            'expected':{'domestic':'0','censor_override':'auto'},
+        })[0],200)
+        current=card('DEMO-2')
+        self.assertEqual((current['domestic'],current['amateur'],current['censorship']),(False,True,'censored'))
+        detail=self.request('/api/library/detail?id='+str(ident))[1]['detail']['selected']
+        self.assertEqual((detail['domestic'],detail['domestic_override']),(False,-1))
+        self.assertEqual(self.request('/api/edit',data={'id':ident,'domestic':0,'censor_override':'auto'})[0],200)
+        self.assertTrue(card('DEMO-2')['domestic'])
+        self.assertEqual(card('DEMO-2')['censorship'],'uncensored')
+
     def test_identification_lists_candidates_without_replacing_manual_code(self):
         ident=self.video('DIR-202/FILE-101.mp4','LOCK-303',locked_fields='["code"]')
         source=self.root/'DIR-202/FILE-101.nfo'
@@ -344,6 +422,23 @@ class LibraryQueryHTTPTests(unittest.TestCase):
         self.assertEqual(data['candidates'],{'filename':'FILE-101','directory':'DIR-202','nfo':'NFO-404'})
         source.write_text('<broken>',encoding='utf-8')
         self.assertTrue(self.request(f'/api/identification/{ident}')[1]['warning'])
+
+    def test_fc2_number_detection_agrees_between_metadata_and_http_evidence(self):
+        for name in ('FC2PPV-7654321-C','FC2-PPV-7654321-C','FC2 PPV 7654321','FC2_7654321'):
+            with self.subTest(name=name):
+                ident=self.video(f'{name}/VIDEO__0123.mp4','LOCK-303',locked_fields='["code"]')
+                path=self.root/name/'VIDEO__0123.mp4'
+                self.assertEqual(self.app.read_metadata(path)['code'],'FC2-7654321')
+                status,data=self.request(f'/api/identification/{ident}')
+                self.assertEqual(status,200)
+                self.assertEqual(data['candidates'],{'filename':'','directory':'FC2-7654321','nfo':None})
+                self.assertEqual(data['code'],'LOCK-303')
+
+        self.assertEqual(self.app.identify('FC2-PPV-7654321 sample'),'FC2-7654321')
+        self.assertEqual(self.app.identify('ABC-001 part2'),'ABC-001')
+        self.assertEqual(self.app.identify('prefixFC2PPV-7654321'),'')
+        self.assertEqual(self.app.identify('FC2PPV-7654321x'),'')
+        self.assertEqual(self.app.identify('VIDEO-0123'),'')
 
     def test_scrape_jobs_report_image_failures_only_on_latest_completed_job(self):
         with self.app.db() as c:

@@ -133,7 +133,14 @@ body[data-video-layout=landscape] .movieCard .picture>img{object-fit:cover;backg
 .filmFacts{display:flex;gap:8px;flex-wrap:wrap}
 .filmFacts span{font-size:11px;padding:4px 7px;border-radius:5px;background:var(--bg);color:var(--muted)}
 .filmFacts .premiumFact{color:#a47a24}
-.filmStudio{font-size:12px;color:var(--muted);margin:14px 0 8px}
+.filmFacts .filmScore{color:var(--text);font-weight:650}
+.filmScore small{font-weight:400}
+.filmCategories{display:flex;flex-wrap:wrap;gap:5px;margin:10px 0}
+.filmCategories button{font-size:11px;padding:3px 7px;border:1px solid var(--line);border-radius:6px;overflow-wrap:anywhere}
+.filmCredits{display:grid;gap:5px;margin:12px 0;font-size:12px}
+.filmCredits div{display:flex;gap:8px}
+.filmCredits dt{color:var(--muted);flex:none}
+.filmCredits dd{margin:0;overflow-wrap:anywhere}
 .filmPlot{font-size:13px;line-height:1.9;white-space:pre-line;max-height:145px;overflow:auto;color:var(--muted)}
 #detail .playback-actions{margin:18px 0 10px}
 #detail .playback-actions button{font-size:12px}
@@ -238,8 +245,8 @@ html.privacyMode .picture,html.privacyMode .actorPhoto,html.privacyMode .heroPor
 .cardTopFlags .domesticMark{color:#ffd7d1;background:#542827e6}
 .cardTopFlags .amateurMark{color:#d1f5e9;background:#1c423be6}
 .manualCardFlags{border:1px solid var(--line);border-radius:8px;margin:0 0 12px;padding:6px 10px}
-.manualCardFlags label{margin-right:14px}
-.manualCardFlags input{width:auto;margin:0 4px 0 0;vertical-align:middle}
+.manualCardFlags label{display:inline-flex;align-items:center;gap:6px;margin:4px 14px 4px 0}
+.manualCardFlags select{width:auto}
 
 .movieCard[aria-busy="true"] .picture::after{content:"正在打开…";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:3;white-space:nowrap;padding:7px 12px;border-radius:8px;background:#171821e6;color:white}
 

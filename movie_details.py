@@ -2,6 +2,7 @@
 from library_query import LibraryQueryChanged
 from media_presentation import resolution_label
 from pathlib import Path
+import json
 import uuid
 
 
@@ -31,6 +32,30 @@ class MovieDetails:
                 'preferred':bool(row['preferred']),'resolution_label':resolution,
                 'codec':row['codec'] or '', 'estimated_bitrate':round(row['total_size']*8/row['total_duration']) if row['total_duration'] and row['total_duration']>0 and row['total_size'] else None,
                 'version_label':label[:120]+' · '+('最低 ' if row['part_count']>1 and height else '')+resolution+' · '+self.LABELS[row['censorship']]+' · '+(row['codec'] or '未知编码')}
+
+    @staticmethod
+    def source_summary(raw):
+        try:
+            snapshot=json.loads(raw or '{}')
+        except (ValueError,TypeError):
+            return {}
+        if not isinstance(snapshot,dict):
+            return {}
+        result={}
+        for key in ('publisher','series'):
+            value=snapshot.get(key)
+            if isinstance(value,str) and value.strip():result[key]=value.strip()
+        directors=snapshot.get('directors')
+        if isinstance(directors,list):
+            result['directors']=[name.strip() for name in directors if isinstance(name,str) and name.strip()]
+        for key in ('runtime','score'):
+            value=snapshot.get(key)
+            if type(value) in (int,float) and 0<value<100000:
+                result[key]=value
+        sources=snapshot.get('field_sources')
+        if isinstance(sources,dict) and isinstance(sources.get('score'),str):
+            result['score_source']=sources['score']
+        return result
 
     def compare_versions(self, connection, movie_key, versions):
         keys=[version['version_key'] for version in versions]
@@ -97,6 +122,7 @@ class MovieDetails:
             parts=[present(r) for r in raw_parts]
             selected=next((r for r in parts if r['id']==ident),None)
             if selected is None:selected=present(selected_raw)
+            selected=dict(selected,source_summary=self.source_summary(selected_raw['amane_snapshot']))
             files=parts if any(p['id']==ident for p in parts) else parts+[selected]
             next_row=c.execute('SELECT v.id,v.missing FROM media_links l JOIN videos v ON v.id=l.video_id JOIN browse_projection p ON p.video_id=v.id AND p.visible=1 WHERE l.movie_key=? AND l.version_key=? AND (l.part_no>? OR (l.part_no=? AND v.id>?)) ORDER BY l.part_no,v.id LIMIT 1',(key,version,selected['part_index'],selected['part_index'],ident)).fetchone()
             # SQL selects a version without indexed missing parts; no media is probed.

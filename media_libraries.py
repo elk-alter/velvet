@@ -26,6 +26,30 @@ class MediaLibraries:
         with db() as c:
             c.execute("CREATE TABLE IF NOT EXISTS library_settings(path TEXT PRIMARY KEY,name TEXT DEFAULT '',automation TEXT DEFAULT 'scrape',exclude_patterns TEXT DEFAULT '[]',min_size INTEGER DEFAULT 0,settle_seconds INTEGER DEFAULT 0,last_scan REAL DEFAULT 0,last_error TEXT DEFAULT '')")
 
+            c.execute('CREATE TABLE IF NOT EXISTS library_scope(id INTEGER PRIMARY KEY CHECK(id=1))')
+
+    def membership(self, c):
+        # An empty library is still scoped after its last root is removed.
+        enforced = bool(c.execute('SELECT 1 FROM folders UNION ALL SELECT 1 FROM library_scope LIMIT 1').fetchone())
+        if not enforced:
+            return False, set()
+        tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {'media_assets', 'media_locations', 'organization_jobs'}.issubset(tables):
+            return True, set()
+        if not c.execute('SELECT 1 FROM organization_jobs LIMIT 1').fetchone():
+            return True, set()
+        paths = c.execute('''SELECT v.path FROM videos v
+            JOIN media_assets a ON a.video_id=v.id
+            JOIN media_locations l ON l.asset_id=a.id AND l.path=v.path AND l.preferred=1
+            JOIN organization_jobs j ON j.id=l.origin_task''')
+        return True, {r[0] for r in paths}
+
+    def remove(self, path):
+        with self.db() as c:
+            if c.execute('DELETE FROM folders WHERE path=?', (path,)).rowcount:
+                c.execute('INSERT OR IGNORE INTO library_scope VALUES(1)')
+            c.execute('DELETE FROM library_settings WHERE path=?', (path,))
+
     def exclusions(self):
         with self.db() as c:
             c.execute("CREATE TABLE IF NOT EXISTS excluded_directories(path TEXT PRIMARY KEY)")
@@ -146,6 +170,8 @@ class MediaLibraries:
 
     def filter_rows(self, rows):
         policies=self.policies();excluded=self.exclusions()
+        with self.db() as c:
+            enforced, organized = self.membership(c)
         result=[]
         for row in rows:
             path=canonical(row['path'])
@@ -153,6 +179,7 @@ class MediaLibraries:
             if any(path.is_relative_to(canonical(root)) for root in excluded):continue
             owner=self.owner(path,policies)
             policy=next((p for p in policies if p['path']==owner),None)
+            if enforced and not policy and row['path'] not in organized:continue
             if policy and not self.included(path,policy,row.get('size',0) or 0):continue
             result.append(row)
         return result
