@@ -177,7 +177,7 @@ alpha.8 按 A8-01–06 收口，代码基线为 e31e3b9。最终源码全量 441
 
 alpha.8 交付完成。GitHub 预发布 v0.1.0-alpha.8 指向 0edab43，源码和解压包各 441 项通过，发布附件下载与测试包一致。本机已切换至下载包解压的独立 alpha.8 程序与数据副本，保留升级前快照，核对既有索引 ID、人工字段、偏好、手工质量、资产身份及配置。健康与十三个静态资源通过，原自动化继续。当前后续主线为 alpha.9 硬盘统一管理，其他迭代按 ROADMAP.md。仓库与安装的开发 Skill 已同步；运行维护继续从实际进程、数据描述符和健康接口定位实例。
 
-alpha.9、alpha.10 的历史发布和部署见 [交付台账](DELIVERY-STATUS.md)。[alpha.11 界面统一](ALPHA11-REQUIREMENTS.md) 将主题和共享样式收敛到 `velvet.css`。继续修改界面时沿用 [界面规范](development/UI.md)，保持片库查询、详情生命周期、任务批准和人工资料的既有语义。alpha.12 改善常用流程，NAS 实测转入 alpha.14。
+alpha.11 已发布并部署到 Windows 本机，验收和历史部署见 [交付台账](DELIVERY-STATUS.md)。[alpha.11 界面统一](ALPHA11-REQUIREMENTS.md) 将主题和共享样式收敛到 `velvet.css`。继续修改界面时沿用 [界面规范](development/UI.md)，保持片库查询、详情生命周期、任务批准和人工资料的既有语义。alpha.12 改善常用流程及首次建索引体验，NAS 实测转入 alpha.14。
 
 治理存储使用 SQLite `app_state`，`library_governance.py` 管理生效规则、演员身份与撤销，`catalog_tools.js` 实现表单及浏览器筛选预设。旧规则文件在首次治理前仍是读取来源。关注资料更新后原始信息、投影、偏好与筛选结果的一致性。
 
