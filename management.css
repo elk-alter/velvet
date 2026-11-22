@@ -3,7 +3,7 @@
 @media(max-width:1000px){.managerView{padding:0 22px 24px}.sourceTable td,.sourceTable th{padding:12px 6px}.managerBody{padding:18px}}
 @media(max-width:750px){.managerView{margin-left:0;padding:0 16px 24px}.managerHeader{padding-top:18px}.managerHeader h2{font-size:24px}.sourceSummary{gap:8px}.sourceSummary div{padding:12px}.sourceTable .sourceHost{display:none}.managerBody .folder{flex-wrap:wrap}.routeList{grid-template-columns:90px 1fr}.managerFooter{flex-wrap:wrap}}
 
-body.manager-open aside button.nav-active{background:transparent;color:var(--text);box-shadow:none}body.manager-open aside button.nav-active svg{color:var(--muted)}body.manager-open aside button[data-manager-active]{background:var(--accent);color:white;box-shadow:0 3px 9px #007aff20}
+body.manager-open aside button.nav-active{background:transparent;color:var(--text);box-shadow:none}body.manager-open aside button.nav-active svg{color:var(--muted)}
 
 .nativeSourceRow{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding:12px 4px}.managerBody .nativeSourceRow label{flex-direction:row;align-items:center;gap:12px;margin:0}.managerBody .nativeSourceRow input{width:18px;min-height:18px;height:18px;accent-color:var(--accent)}.nativeSourceRow button{min-height:32px;padding:4px 12px}
 

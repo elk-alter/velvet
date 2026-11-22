@@ -189,7 +189,7 @@ function setPrivacyText(enabled){
  $('privacyTextOption').checked=Boolean(enabled);
 }
 
-$('activeTags').insertAdjacentHTML('afterend',`<details class="savedFilterPanel">
+$('savedFilterSlot').insertAdjacentHTML('afterbegin',`<details class="savedFilterPanel">
  <summary>保存的筛选与隐私</summary>
  <div class="row"><select id="savedFilterChoice" aria-label="已保存的筛选"></select>
  <button onclick="SavedFilters.apply()">应用</button><button onclick="SavedFilters.remove()">移除</button></div>

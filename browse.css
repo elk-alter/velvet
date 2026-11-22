@@ -116,10 +116,7 @@ aside .foot{position:static!important;margin-top:24px;padding-bottom:12px}
 body[data-video-layout=landscape] .grid{grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:26px 20px}
 body[data-video-layout=landscape] .movieCard .picture{aspect-ratio:16/9}
 body[data-video-layout=landscape] .movieCard .picture>img{object-fit:cover;background:var(--panel)}
-.movieCard .movieCard .info b{min-height:39px;font-size:14px}
 .movieCard .cardTopFlags{max-width:88%}
-.movieCard .picture{box-shadow:none}
-.movieCard:hover{transform:translateY(-2px)}
 
 #detail{width:1120px;max-width:96vw}
 #detail .dialogBody{padding:24px 28px}

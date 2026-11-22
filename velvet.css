@@ -1,0 +1,393 @@
+/* Shared visual language for app chrome, controls and content surfaces. */
+:root {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --panel: #fff;
+  --surface-raised: #fff;
+  --surface-quiet: #edf0f5;
+  --line: #dce1e9;
+  --text: #1a2230;
+  --muted: #586474;
+  --accent: #175bc9;
+  --on-accent: #fff;
+  --accent-soft: #e7effd;
+  --control: #fff;
+  --sidebar: #edf0f5;
+  --shadow: 0 1px 3px #1827470b;
+  --layer-shadow: 0 20px 60px #121d393d;
+  --page-padding: clamp(22px, 2.8vw, 44px);
+  --sidebar-width: 218px;
+  --page-title: clamp(25px, 2.4vw, 35px);
+  --section-title: 15px;
+  --radius-small: 8px;
+  --radius-medium: 12px;
+  --radius-large: 18px;
+  --control-height: 36px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --status-ok: #176849;
+  --status-error: #a8223b;
+  --status-warning: #855112;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #141820;
+  --panel: #1c232e;
+  --surface-raised: #222b38;
+  --surface-quiet: #222a36;
+  --line: #3b4656;
+  --text: #edf1f8;
+  --muted: #afbaca;
+  --accent: #8db9ff;
+  --on-accent: #111f36;
+  --accent-soft: #263b59;
+  --control: #252e3c;
+  --sidebar: #191f29;
+  --shadow: 0 1px 3px #0003;
+  --layer-shadow: 0 20px 60px #0007;
+  --status-ok: #7de0b1;
+  --status-error: #ff9bad;
+  --status-warning: #ffd092;
+}
+
+body { font-size: 14px; line-height: 1.5; }
+
+button, input, select, textarea {
+  min-height: var(--control-height);
+  border-radius: var(--radius-small);
+}
+
+button:hover { background: var(--surface-quiet); box-shadow: none; }
+
+:is(.accent, .pageNumbers button[aria-current="page"], .taskFilters .active, .filmGalleryFilters .active):not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  box-shadow: none;
+}
+
+.accent:not(:disabled):hover { background: color-mix(in srgb, var(--accent) 90%, var(--on-accent)); }
+
+:is(button, input, select, textarea, summary, [tabindex="0"]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+:is(input[type="checkbox"], input[type="radio"]) {
+  appearance: auto;
+  accent-color: var(--accent);
+  min-height: 0;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  vertical-align: middle;
+}
+
+:is(.top, .browseHeading, .managerHeader) h2 {
+  font-size: var(--page-title);
+  font-weight: 650;
+  letter-spacing: -.045em;
+  line-height: 1.22;
+  margin: 0;
+}
+
+aside {
+  width: var(--sidebar-width);
+  padding: 24px 14px 20px;
+  background: var(--sidebar);
+  backdrop-filter: none;
+}
+
+.brand { gap: 10px; padding: 0 8px 22px; }
+.brandMark { width: 36px; height: 36px; border-radius: var(--radius-medium); }
+.brand h1 { font-size: 22px; }
+.navLabel { margin: 18px 10px 7px; }
+
+aside nav button {
+  min-height: 40px;
+  gap: var(--space-2);
+  padding: 8px 10px;
+  border-radius: var(--radius-small);
+}
+
+aside nav button:is(.nav-active, [data-manager-active]) {
+  background: var(--accent-soft);
+  box-shadow: none;
+  color: var(--accent);
+  font-weight: 650;
+}
+
+aside nav button:is(.nav-active, [data-manager-active]) svg { color: currentColor; }
+
+aside .foot { position: static; margin: 20px 10px 0; }
+#navigationToggle { display: none; }
+
+main, .managerView {
+  margin-left: var(--sidebar-width);
+  padding: var(--page-padding);
+  max-width: 1760px;
+}
+
+.top {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.top .row { max-width: none; justify-content: flex-start; gap: 6px; }
+.top .row button { font-size: 13px; }
+.top .stats { margin: 7px 0 0; }
+.stats { gap: 12px; flex-wrap: wrap; }
+.stat { white-space: nowrap; }
+.stat b { font-size: 13px; font-variant-numeric: tabular-nums; }
+.stat small { color: var(--muted); }
+.stat + .stat { border-left: 1px solid var(--line); padding-left: 12px; }
+
+.toolbarMenu { position: relative; }
+.toolbarMenu summary, .savedFilterPanel > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 550;
+}
+.toolbarMenu summary::-webkit-details-marker, .savedFilterPanel summary::-webkit-details-marker { display: none; }
+.toolbarMenu summary {
+  background: var(--control);
+  min-height: var(--control-height);
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+}
+.toolbarMenu summary::after { content: '⌄'; color: var(--muted); }
+.toolbarMenu[open] summary { background: var(--accent-soft); color: var(--accent); }
+.toolbarMenu .toolbarMenuItems {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 12;
+  display: grid;
+  gap: var(--space-1);
+  width: max-content;
+  min-width: 168px;
+  max-width: calc(100vw - 36px);
+  padding: 6px;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-medium);
+  box-shadow: var(--layer-shadow);
+}
+.toolbarMenuItems button { background: transparent; border-color: transparent; text-align: left; }
+.toolbarMenuItems button:hover { background: var(--accent-soft); color: var(--accent); }
+
+.filterPanel {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-medium);
+  box-shadow: var(--shadow);
+}
+.searchBox { background: var(--surface-quiet); border-radius: var(--radius-small); }
+.searchBox input::placeholder { color: var(--muted); }
+.filterPanel .toolbar { margin-top: var(--space-2); }
+.filterPanel .toolbar select {
+  background-color: var(--surface-quiet);
+  border-radius: var(--radius-small);
+  min-width: 0;
+}
+.advancedFilters { padding: 4px 0; margin-top: 8px; }
+.advancedFilters summary { min-height: 28px; display: flex; align-items: center; gap: 7px; }
+.advancedFilters .tagPanelTools { margin: 5px 0; }
+.tagOptions { gap: 6px; max-height: 76px; margin: 6px 0; padding: 2px; }
+.tagOption { gap: 6px; min-height: 32px; padding: 3px 8px; color: var(--text); }
+.tagOption small { color: var(--muted); }
+.tagOption:has(input:checked) { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.tagOption input { margin: 0; }
+.savedFilterPanel { margin: 0; padding: 6px 0 2px; border-top: 1px solid var(--line); }
+.savedFilterPanel > summary { min-height: 28px; }
+.savedFilterPanel > summary::before { content: '›'; color: var(--muted); }
+.savedFilterPanel[open] > summary::before { rotate: 90deg; }
+.savedFilterPanel > label { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.status, .notice { color: var(--muted); }
+.status:empty, .notice:empty, #activeTags:empty { display: none; }
+
+.empty, .galleryEmpty, .managerError, .managerLoading {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-medium);
+  padding: 24px;
+  background: var(--panel);
+  color: var(--muted);
+}
+.empty h2, .managerError h3 { color: var(--text); font-size: var(--section-title); }
+.empty > button { margin: 3px; }
+
+:is(#topPagination, #bottomPagination) { margin: 12px 0; }
+.pager :is(button, select) { border-radius: var(--radius-small); }
+.pager button[aria-current="page"] { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+
+body[data-video-layout="landscape"] .grid { grid-template-columns: repeat(auto-fill, minmax(236px, 1fr)); gap: 20px 14px; }
+.movieCard {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-medium);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.movieCard:hover { border-color: color-mix(in srgb, var(--accent) 38%, var(--line)); box-shadow: var(--shadow); }
+.movieCard .picture { background: var(--surface-quiet); border-radius: 0; }
+.movieCard .picture::before { content: ""; position: absolute; inset: 0; background: linear-gradient(155deg,transparent 35%,var(--accent-soft)); }
+.movieCard:hover .picture { box-shadow: none; }
+.movieCard .info { padding: 10px 12px; }
+.movieCard .info b { margin: 3px 0 2px; font-size: 14px; line-height: 1.43; min-height: 40px; font-weight: 650; }
+.movieCode, .movieMeta, .movieCard .info .movieActors { color: var(--muted); }
+.cardTopFlags span, .collectionCount { border-radius: 5px; font-size: 10px; line-height: 1.2; }
+.cardTopFlags .cardUnknown { opacity: .78; }
+.cardTechnical { font-size: 11px; margin-top: 9px; gap: 8px; }
+.cardResolution { background: var(--surface-quiet); color: var(--text); border-color: transparent; border-radius: 5px; padding: 3px 6px; }
+.movieMeta { margin-top: 5px; }
+.movieMeta:not(:has(span:not(:empty))) { display: none; }
+.portraitCard, .categoryCard { border-radius: var(--radius-medium); }
+.actorPhoto, .categoryArt, .episodePicture { border-radius: var(--radius-medium); }
+.actorCardInfo { padding-inline: 3px; }
+.categoryTabs { gap: var(--space-2); }
+.categoryTabs button.active, .managerNav button.active,
+aside nav button:is(.nav-active, [data-manager-active]):hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+.facetHeader { padding: 0 0 var(--space-3); margin: 0 0 var(--space-4); }
+.facetHeader h3 { font-size: var(--section-title); }
+
+dialog { border-radius: var(--radius-large); box-shadow: var(--layer-shadow); }
+dialog::backdrop { background: #121b335e; backdrop-filter: blur(4px); }
+.dialogChrome {
+  gap: var(--space-2);
+  min-height: 58px;
+  padding: 10px 16px;
+  background: var(--surface-raised);
+}
+.dialogChrome h2, #detail .dialogChrome h2 { font-size: 16px; line-height: 1.35; }
+.dialogChrome .close {
+  display: grid;
+  place-content: center;
+  background: var(--surface-quiet);
+  border-radius: var(--radius-small);
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--text);
+}
+.dialogChrome .close:hover { background: var(--accent-soft); color: var(--accent); }
+.dialogChrome .privacyToggle { margin-left: auto; }
+.dialogFooter { background: var(--surface-raised); }
+
+#detail { width: 1010px; }
+#detail .dialogBody { padding: 20px 24px; }
+#detail .dialogTools { padding: 8px 16px; background: var(--surface-quiet); }
+.filmHero {
+  grid-template-columns: clamp(135px, 18%, 180px) minmax(0, 1fr);
+  gap: clamp(14px, 2vw, 24px);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4);
+  background: var(--surface-quiet);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-medium);
+}
+.filmPoster { min-height: 0; aspect-ratio: 3/4; border-radius: var(--radius-small); background: var(--panel); }
+.filmPoster #coverPreview { height: 100%; }
+.filmSummary h2 { font-size: clamp(19px, 2vw, 28px); line-height: 1.28; }
+.filmFacts span { background: var(--panel); border-radius: 5px; }
+.filmCategories button { min-height: 27px; }
+.filmSummary .playback-actions { gap: 6px; }
+.filmGallery { margin-bottom: var(--space-4); padding-top: var(--space-4); }
+.filmSectionHeader h3 { font-size: var(--section-title); }
+.filmGalleryFilters { margin-top: var(--space-2); }
+.filmDisclosure { border: 1px solid var(--line); border-radius: var(--radius-medium); margin: 0 0 10px; background: var(--panel); padding: 0; }
+.filmDisclosure > summary { padding: 10px 13px; margin: 0; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text); }
+.filmDisclosure[open] > summary { margin: 0; border-bottom: 1px solid var(--line); }
+.filmDisclosure > :not(summary) { padding: var(--space-3); }
+.filmDisclosure .fileReviewDetail { border: 0; }
+.lightboxToolbar, .lightboxNav { padding: 10px 13px; }
+
+.managerView { padding-top: 0; }
+.managerHeader { padding: var(--page-padding) 0 var(--space-3); gap: var(--space-3); }
+.managerBreadcrumb { color: var(--muted); }
+.managerNav { margin: 8px 0 var(--space-4); padding: 4px; width: fit-content; border-radius: var(--radius-medium); background: var(--surface-quiet); }
+.managerNav button { min-height: 33px; }
+.managerNav button.active { background: var(--panel); box-shadow: var(--shadow); font-weight: 650; }
+.managerBody { border-radius: var(--radius-large); padding: clamp(14px, 2vw, 24px); box-shadow: var(--shadow); min-width: 0; }
+.managerBody label { margin: 10px 0; }
+.managerBody label:has(> input[type="checkbox"]) { flex-direction: row; align-items: center; }
+.managerBody label > input[type="checkbox"] { flex: none; width: 16px; }
+.managerBody :is(.reviewRow, .folder, .sourceTable td) { padding-block: 12px; }
+.managerBody .catalogEditorRow label { margin: 0; }
+.managerFooter { padding: 12px 0; }
+.settingsSection { padding-bottom: 16px; margin-bottom: 16px; }
+.settingsSection h3 { font-size: var(--section-title); }
+.sourceTable th { background: var(--surface-quiet); color: var(--muted); }
+.sourceTag { color: var(--accent); background: var(--accent-soft); }
+.taskPill.done { color: var(--status-ok); }
+.taskPill.failed { color: var(--status-error); }
+.taskPill:is(.running, .queued) { color: var(--accent); background: var(--accent-soft); }
+.diskScope, .diskRetained, .diskApproval { margin: 14px 0; border-radius: var(--radius-medium); }
+.diskScope, .diskRetained { background: var(--surface-quiet); }
+.diskApproval { border-inline-start: 3px solid var(--accent); }
+.diskPill { background: var(--surface-quiet); }
+.diskWarning { color: var(--status-warning); }
+.diskPlanRow { padding-block: var(--space-3); }
+.privacyMode .privacyToggle { background: var(--accent); color: var(--on-accent); }
+
+@media (max-width: 750px) {
+  :root { --page-padding: 14px; --control-height: 38px; }
+  aside { display: block; width: auto; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--line); }
+  .brand { padding: 0 0 8px; }
+  .brand small { display: none; }
+  #navigationToggle { display: inline-flex; align-items: center; margin-left: auto; width: auto; }
+  aside .browseLinks { display: flex; gap: 5px; }
+  aside .browseLinks button { flex: 1; justify-content: center; padding-inline: 5px; }
+  aside :is(.libraryShelves, .managerLinks) { display: none; }
+  aside.navigationExpanded :is(.libraryShelves, .managerLinks) { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+  aside.navigationExpanded .libraryShelves { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+  aside nav button { width: 100%; text-align: left; }
+  main, .managerView { margin-left: 0; padding-inline: var(--page-padding); }
+  .top .row { flex-wrap: wrap; }
+  .top .row button { font-size: 12px; padding-inline: 9px; }
+  .libraryHeader { position: relative; padding-top: 2px; }
+  .libraryHeader #viewMenu { position: absolute; top: 0; right: 0; }
+  .libraryHeader h2 { padding-right: 106px; }
+  .filterPanel .toolbar {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding: 3px;
+  }
+  .filterPanel .toolbar select { flex: 0 0 auto; width: auto; max-width: 176px; }
+  .stats { gap: 7px; }
+  .stat + .stat { padding-left: 7px; }
+  body[data-video-layout="landscape"] .grid, .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 9px; }
+  .movieCard .info { padding: 7px 8px; }
+  .movieCard .info b { min-height: 34px; font-size: 12px; }
+  .cardTopFlags span { font-size: 9px; }
+  .cardTechnical { font-size: 10px; gap: 5px; }
+  #detail .dialogBody { padding: 12px; }
+  .filmHero { grid-template-columns: 94px minmax(0, 1fr); gap: 10px; padding: 10px; }
+  #detail .playback-actions { margin-top: 10px; }
+  #detail .playback-actions button { min-height: 34px; padding-inline: 7px; }
+  .dialogChrome { padding-inline: 12px; }
+  .managerHeader { align-items: flex-start; }
+  .managerHeader > .row { gap: 5px; }
+  .managerHeader > .row button { min-height: 34px; font-size: 11px; }
+  .managerNav { max-width: 100%; }
+  .managerBody .catalogEditorRow label { margin: 0; }
+  #topPagination .pageNumbers { order: initial; flex-basis: auto; }
+}

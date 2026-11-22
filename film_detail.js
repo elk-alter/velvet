@@ -8,7 +8,7 @@ const hero=document.createElement('section');hero.className='filmHero';hero.inne
 hero.querySelector('.filmPoster').append($('coverPreview'));originalFigure.remove();hero.querySelector('.filmSummary').append(playbackActions,$('actorLinks'));
 const playbackSection=document.createElement('section');playbackSection.id='filmPlayback';playbackSection.hidden=true;playbackSection.append($('player'),playbackHint);
 const gallerySection=document.createElement('section');gallerySection.className='filmGallery';gallerySection.innerHTML='<div class="filmSectionHeader"><div><h3>剧照与预览</h3><small id="filmGalleryStatus" class="muted">正在加载图片…</small></div><button onclick="retryFilmArtwork()">获取 / 重试剧照</button></div><nav id="filmGalleryFilters" class="filmGalleryFilters"></nav>';gallerySection.append($('shots'));
-const editor=document.createElement('details');editor.id='filmEditor';editor.className='filmEditor';editor.innerHTML='<summary>编辑资料与文件信息</summary><div id="filmEditorBody"></div>';
+const editor=document.createElement('details');editor.id='filmEditor';editor.className='filmEditor filmDisclosure';editor.innerHTML='<summary>编辑资料与文件信息</summary><div id="filmEditorBody"></div>';
 while(detailBody.firstChild)editor.querySelector('#filmEditorBody').append(detailBody.firstChild);
 editor.querySelector('#filmEditorBody').append($('autoTagDetail'));
 detailBody.append(hero,playbackSection,gallerySection,editor);

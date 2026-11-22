@@ -12,7 +12,7 @@ class ReviewNavigationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             path=Path(root)/'review-client.cjs'
             path.write_text(script.replace('SOURCE',json.dumps(str(source))),encoding='utf-8')
-            result=subprocess.run(['node',str(path)],capture_output=True,text=True,timeout=20)
+            result=subprocess.run(['node',str(path)],capture_output=True,encoding='utf-8',timeout=20)
         self.assertEqual(result.returncode,0,result.stderr)
 
     def test_cancel_and_late_response_preserve_quality_editor(self):
@@ -40,16 +40,19 @@ const source=fs.readFileSync(SOURCE,'utf8'),start=source.indexOf('let reviewEdit
 assert(start>=0&&end>start,'review editor state exists');
 const records={1:{note:'Saved note',decision:'open',status:'unchecked',issues:[]},2:{note:'Other file',decision:'ignored',status:'done',issues:[]}},nodes={},events={};
 const context={selected:{id:1},detail:{addEventListener(name,fn){events[name]=fn}},fileReview:id=>records[id],reviewLabels:{},esc:String,renderAutomaticFindings(){},$:id=>nodes[id]};
+context.reviewDrawer={firstElementChild:{textContent:''}};
 context.reviewDetail={addEventListener(){},set innerHTML(html){nodes.currentReviewNote={value:records[context.selected.id].note};nodes.currentReviewDecision={value:records[context.selected.id].decision};nodes.currentReviewDirty={textContent:''}}};
 vm.createContext(context);vm.runInContext(source.slice(start,end),context);
 context.renderFileReviewDetail();assert.equal(context.hasFileReviewChanges(),false);
+const normalHeading=context.reviewDrawer.firstElementChild.textContent;
 nodes.currentReviewNote.value='Unsaved note';nodes.currentReviewDecision.value='accepted';assert.equal(context.hasFileReviewChanges(),true);
 context.renderFileReviewDetail();assert.equal(nodes.currentReviewNote.value,'Unsaved note');assert.equal(nodes.currentReviewDecision.value,'accepted');assert.equal(context.hasFileReviewChanges(),true);
 // A successful save is reflected by the authoritative review; another edit
 // made while saving stays pending on the next refresh.
 records[1]={...records[1],note:'Unsaved note',decision:'accepted'};nodes.currentReviewNote.value='Edited while saving';
 context.renderFileReviewDetail();assert.equal(nodes.currentReviewNote.value,'Edited while saving');assert.equal(context.hasFileReviewChanges(),true);
-records[1]={...records[1],note:'Edited while saving'};context.renderFileReviewDetail();assert.equal(context.hasFileReviewChanges(),false);
+records[1]={...records[1],note:'Edited while saving',needs_update:true};context.renderFileReviewDetail();assert.equal(context.hasFileReviewChanges(),false);
+assert.notEqual(context.reviewDrawer.firstElementChild.textContent,normalHeading,'a file requiring attention updates the folded heading');
 context.selected={id:2};context.renderFileReviewDetail();assert.equal(nodes.currentReviewNote.value,'Other file');assert.equal(context.hasFileReviewChanges(),false);
 nodes.currentReviewNote.value='Discarded';events.close();context.renderFileReviewDetail();assert.equal(nodes.currentReviewNote.value,'Other file','discarded draft must not reappear on reopen');
 ''')

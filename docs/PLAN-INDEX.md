@@ -6,6 +6,7 @@
 |---|---|
 |当前已发布能力|[功能](FEATURES.md)及对应版本说明，仍须核对代码|
 |迭代顺序|[路线图](ROADMAP.md)|
+|alpha.11 界面统一与体验回归|[A11-01–06](ALPHA11-REQUIREMENTS.md)|
 |alpha.10 标签、演员、浏览及 P0 门槛|[A10-01–05](ALPHA10-REQUIREMENTS.md)|
 |alpha.9 硬盘统一管理及 P0 门槛|[A9-01–05](ALPHA9-REQUIREMENTS.md)|
 |alpha.8 日常使用稳定版及 P0 门槛|[A8-01–06](ALPHA8-REQUIREMENTS.md)、[验收](ALPHA8-VALIDATION.md)|
@@ -27,7 +28,7 @@
 
 ## 范围
 
-历史范围按各版本需求与发行说明记录。alpha.8 以 [A8-01–06](ALPHA8-REQUIREMENTS.md) 为准，承接 alpha.7 的日常使用、识别及交互收口。A7-08/09/15 转入 alpha.10，设备验证 A7-10 在 alpha.9 及设备可用时进行。
+下一版按 [A11-01–06](ALPHA11-REQUIREMENTS.md) 统一界面，alpha.12 改善日常操作，后续版本按[路线图](ROADMAP.md)推进。alpha.8–10 的交付范围及证据保留在各自的版本文档。A7-10 随实际设备继续验收。
 
 ## 使用Skill
 

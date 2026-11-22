@@ -12,6 +12,7 @@
 |library_governance.py、catalog_tools.js|治理规则、演员身份、预览与撤销、浏览器预设|变更与撤销依赖已核对的范围；原始资料和手动字段继续保留|
 |file_review.py、visual_analysis.py|只读检查、自动OCR、证据与人工审阅|隔离子进程、取消、指纹失效；自动与人工分开|
 |index.html、browse.js/css|浏览、分页、合集和基础交互|现有全局状态耦合，避免新增多层包装|
+|velvet.css|主题变量、共享控件、页面骨架视觉|沿用[界面规范](UI.md)，页面专用交互仍在各自模块|
 |management.js、manager_routes.js|管理渲染、路由/请求生命周期|地址、返回、脏表单和轮询一致|
 |film_detail.js、file_review.js|详情/画廊、质量、隐私等|当前文件与影片范围明确；后续逐步拆分职责|
 |scripts/release.py|公开源码检查和归档|不得导入运行服务访问生产资料|

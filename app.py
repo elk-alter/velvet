@@ -12,6 +12,7 @@ RUNTIME=load_runtime(sys.argv[1:] if __name__=='__main__' else ())
 ROOT=Path(__file__).resolve().parent
 APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip()
 UI_ASSETS={
+ '/velvet.css':('velvet.css','text/css'),
  '/':('index.html','text/html'),
  '/catalog_tools.js':('catalog_tools.js','text/javascript'),
  '/management.js':('management.js','text/javascript'),
