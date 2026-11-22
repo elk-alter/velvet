@@ -346,6 +346,15 @@ class LibraryQueryHTTPTests(unittest.TestCase):
         connection.request('POST' if data is not None else 'GET',path,json.dumps(data) if data is not None else None,headers)
         response=connection.getresponse();body=response.read();connection.close()
         return response.status,json.loads(body) if body else {}
+    def test_listener_accepts_browser_startup_burst(self):
+        from contextlib import ExitStack
+        from socket import create_connection
+
+        with ExitStack() as stack:
+            pending=stack.enter_context(self.app.LocalServer(('127.0.0.1',0),self.app.Handler))
+            for _ in range(12):
+                stack.enter_context(create_connection(pending.server_address,timeout=2))
+
     def test_http_list_lazy_detail_and_snapshot_invalidations(self):
         status,data=self.request('/api/library/query?limit=1');self.assertEqual(status,200)
         self.assertEqual(data['total'],1);self.assertNotIn('plot',data['items'][0])
@@ -397,6 +406,34 @@ class LibraryQueryHTTPTests(unittest.TestCase):
         self.assertEqual(self.request(progress),(200,{'stage':'idle'}))
         self.assertEqual(self.request('/api/library/query')[1]['total'],1)
         self.assertEqual(self.request(progress),(200,{'stage':'idle'}))
+
+    def test_workbench_reports_only_latest_visible_failure(self):
+        with self.app.db() as c:
+            c.execute("INSERT INTO scrape_jobs(code,status,error,retry_kind) VALUES('DEMO-1','failed','synthetic failure','not_found')")
+            c.execute("INSERT INTO scrape_jobs(code,status,error,retry_kind) VALUES('EXCLUDED-2','failed','unrelated','retryable')")
+        status,data=self.request('/api/library?review=1')
+        self.assertEqual(status,200)
+        self.assertEqual(list(data['scrape_failures']),['DEMO-1'])
+        self.assertEqual(data['scrape_failures']['DEMO-1']['kind'],'not_found')
+        with self.app.db() as c:
+            c.execute("INSERT INTO scrape_jobs(code,status) VALUES(' demo-1 ','done')")
+        self.assertEqual(self.request('/api/library?review=1')[1]['scrape_failures'],{})
+
+    def test_cover_recovery_is_scoped_and_preserves_cached_image_and_manual_fields(self):
+        cover=self.app.DATA/f'{self.ident}-cover.jpg'
+        cover.write_bytes(b'synthetic existing image')
+        snapshot=json.dumps({'poster_url':'https://example.invalid/sample.jpg','_velvet_engine':'builtin'})
+        with self.app.db() as c:
+            c.execute("UPDATE videos SET amane_snapshot=?,locked_fields=? WHERE id=?",(snapshot,'["title"]',self.ident))
+        route='/api/cover-retry'
+        expected={'id':self.ident}
+        with patch.object(self.app,'cache_artwork',return_value=False) as cache:
+            self.assertEqual(self.request(route,data=expected,token=False)[0],403)
+            self.assertEqual(self.request(route,data=expected),(200,{'fetched':[],'failed':['poster']}))
+            cache.assert_called_once_with('https://example.invalid/sample.jpg',self.ident,'poster',engine='builtin')
+        self.assertEqual(cover.read_bytes(),b'synthetic existing image')
+        with self.app.db() as c:
+            self.assertEqual(tuple(c.execute('SELECT amane_snapshot,locked_fields FROM videos WHERE id=?',(self.ident,)).fetchone()),(snapshot,'["title"]'))
 
     def test_manual_card_flags_are_independent_and_persist_in_browse(self):
         edit='/api/edit'

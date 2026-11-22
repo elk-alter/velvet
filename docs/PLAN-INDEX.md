@@ -6,6 +6,7 @@
 |---|---|
 |当前已发布能力|[功能](FEATURES.md)及对应版本说明，仍须核对代码|
 |迭代顺序|[路线图](ROADMAP.md)|
+|alpha.12 常用操作与索引性能|[A12-01–06](ALPHA12-REQUIREMENTS.md)|
 |alpha.11 界面统一与体验回归|[A11-01–06](ALPHA11-REQUIREMENTS.md)|
 |alpha.10 标签、演员、浏览及 P0 门槛|[A10-01–05](ALPHA10-REQUIREMENTS.md)|
 |alpha.9 硬盘统一管理及 P0 门槛|[A9-01–05](ALPHA9-REQUIREMENTS.md)|

@@ -146,7 +146,7 @@ def identify(stem):
  if not match:return ''
  article,prefix,number=match.groups()
  return 'FC2-'+article if article else prefix.upper()+'-'+number
-from media_presentation import censorship,presentation,identity_presentation,projection_presentation,category_tags
+from media_presentation import censorship,presentation,identity_presentation,projection_presentation,category_tags,source_metadata
 
 sys.path.insert(0,str(ROOT))
 from resource_leases import ResourceLeases,ResourceBusy,path_resource,video_resources
@@ -422,7 +422,7 @@ def external_amane_request(path,data=None):
   if e.code in (401,403):raise ValueError('Amane 认证失败，请检查 Token') from None
   raise ValueError('Amane 接口错误 HTTP '+str(e.code)) from None
 
-def cache_artwork(url,vid,art='poster'):
+def cache_artwork(url,vid,art='poster',*,engine=None):
  if art not in ('poster','cover'):raise ValueError('图片类型无效')
  if not video_included(vid):return False
  # Use Amane's authenticated cached-resource endpoint, never fetch upstream URLs here.
@@ -430,7 +430,7 @@ def cache_artwork(url,vid,art='poster'):
  target=DATA/f'{vid}-{art}.jpg'
  with db() as c:old=c.execute('SELECT '+art+'_origin FROM videos WHERE id=?',(vid,)).fetchone()
  if old and old[0]==url and target.exists():return True
- if config().get('scrape_engine')=='builtin':
+ if (engine or config().get('scrape_engine'))=='builtin':
   with db() as c:snapshot=c.execute('SELECT amane_snapshot FROM videos WHERE id=?',(vid,)).fetchone()
   referer=json.loads(snapshot[0] or '{}').get('source_url','') if snapshot else ''
   ok=builtin_engine().cache_artwork(url,target,referer)
@@ -455,6 +455,25 @@ def cache_artwork(url,vid,art='poster'):
  except (OSError,ValueError):return False
 
 def cache_poster(url,vid):return cache_artwork(url,vid,'poster')
+
+def replenish_cover(row):
+ snapshot=source_metadata(row)
+ origin=snapshot.get('_velvet_engine')
+ engine=origin if origin in ('builtin','external') else config().get('scrape_engine')
+ poster=snapshot.get('poster_url') or row.get('poster_origin')
+ candidates={'poster':poster,'cover':snapshot.get('thumb_url') or row.get('cover_origin') or poster}
+ if not AMANE_LOCK.acquire(False):raise ResourceBusy('正在同步资料或图片，稍后可再次补图')
+ try:
+  missing=[art for art in candidates if not (DATA/f"{row['id']}-{art}.jpg").is_file()]
+  urls={art:candidates[art] for art in missing if isinstance(candidates[art],str) and candidates[art]}
+  if len(missing)==len(candidates) and not urls:raise ValueError('现有资料无图片地址，可先核对编号，再补充来源资料')
+  fetched=[]
+  for art,url in urls.items():
+   try:
+    if cache_artwork(url,row['id'],art,engine=engine):fetched.append(art)
+   except (OSError,ValueError):pass
+  return {'fetched':fetched,'failed':[art for art in urls if art not in fetched]}
+ finally:AMANE_LOCK.release()
 
 def actor_image_bytes(url):
  parsed=urlparse(url);digest=parsed.path.rsplit('/',1)[-1]
@@ -995,7 +1014,15 @@ class Handler(BaseHTTPRequestHandler):
     with db() as c:
      videos=LIBRARIES.filter_rows([dict(r) for r in c.execute('SELECT * FROM videos ORDER BY mtime DESC')]);folders=[r[0] for r in c.execute('SELECT path FROM folders')]
     payload={'movies':movies,'videos':[presentation(r) for r in videos],'collection_rules':DIRECTORY_POLICY.rules(),'excluded_directories':excluded,'folders':folders,'status':STATUS,'ffmpeg':bool(binary('ffmpeg')),'ffprobe':bool(binary('ffprobe')),'settings':cfg,'platform':sys.platform,'server_mode':NAS,'amane':AMANE_STATUS,'token':TOKEN,'review':REVIEW.snapshot(videos,movies)}
-    if parse_qs(urlparse(self.path).query).get('compact')==['1']:
+    query=parse_qs(urlparse(self.path).query)
+    if query.get('review')==['1']:
+     codes={row['code'].strip().upper() for row in videos if row['code']}
+     with db() as c:
+      failures=[dict(row) for row in c.execute("""SELECT j.* FROM scrape_jobs j
+       JOIN (SELECT MAX(id) AS id FROM scrape_jobs GROUP BY UPPER(TRIM(code))) latest ON latest.id=j.id
+       WHERE j.status='failed'""") if row['code'].strip().upper() in codes]
+     payload['scrape_failures']={job['code'].strip().upper():scrape_failure(job)|{'message':job['error'] or job['details']} for job in failures}
+    if query.get('compact')==['1']:
      from library_transport import pack_library
      payload=pack_library(payload)
     return self.send(payload)
@@ -1035,8 +1062,13 @@ class Handler(BaseHTTPRequestHandler):
   except Exception as e:self.send({'error':str(e)},status=400)
  def do_POST(self):
   global ACTIVE_POSTS
-  if not self.authorize():return
-  if self.headers.get('X-Velvet-Token')!=TOKEN:return self.send({},status=403)
+  if not self.authorize():
+   self.finish_rejected_post()
+   return
+  if self.headers.get('X-Velvet-Token')!=TOKEN:
+   self.send({},status=403)
+   self.finish_rejected_post()
+   return
   with POST_LEASE:ACTIVE_POSTS+=1
   try:
    path=urlparse(self.path).path
@@ -1048,6 +1080,14 @@ class Handler(BaseHTTPRequestHandler):
   except ResourceBusy as error:return self.send({'error':str(error)},status=409)
   finally:
    with POST_LEASE:ACTIVE_POSTS-=1
+ def finish_rejected_post(self):
+  # On Windows, closing with unread body bytes can reset the rejection response.
+  try:
+   length=int(self.headers.get('Content-Length',0))
+   if 0<length<=65536:
+    self.connection.settimeout(.25)
+    self.rfile.read(length)
+  except (OSError,ValueError):pass
  def _post(self):
   global DB_REVISION
   if not self.authorize():return
@@ -1200,6 +1240,10 @@ class Handler(BaseHTTPRequestHandler):
     if cookie:options['cookie']=cookie
     if a.get('clear_cookie'):options.pop('cookie',None)
     (DATA/'settings.json').write_text(json.dumps(cfg,ensure_ascii=False,indent=2),'utf-8');return self.send({'ok':True})
+   elif path=='/api/cover-retry':
+    row=self.video(a['id'])
+    if row['missing'] or not LIBRARIES.filter_rows([row]):raise ValueError('作品不在当前媒体库，或文件离线')
+    return self.send(replenish_cover(row))
    elif path=='/api/artwork-retry':
     row=self.video(a['id'])
     if not LIBRARIES.filter_rows([row]):raise ValueError('作品不存在或已排除')
@@ -1536,6 +1580,8 @@ def run_inventory_leased(task_key,device_id,hashing):
 
 class LocalServer(ThreadingHTTPServer):
  allow_reuse_address=False
+ # Keep the browser's parallel asset requests queued while the service starts.
+ request_queue_size=32
  def server_bind(self):
   if os.name=='nt':self.socket.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
   super().server_bind()

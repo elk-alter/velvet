@@ -1,5 +1,6 @@
 """Read-only display and relationship traits, independent of app startup."""
 import json,re
+from os.path import split
 from pathlib import Path
 from media_naming import fallback_title,generic_name
 
@@ -138,11 +139,14 @@ def recognition(row, path=None):
         }
     return result
 
-def identity_presentation(row,path=None,*,with_recognition=False):
- p=path if path is not None else Path(row['path'])
- stem=p.stem;match=PART_PATTERN.search(stem)
+def identity_presentation(row,path=None,*,with_recognition=False,name_parts=None):
+ if name_parts is None or with_recognition:
+  p=path if path is not None else Path(row['path'])
+  stem,parent_name=p.stem,p.parent.name
+ else:stem,parent_name=name_parts
+ match=PART_PATTERN.search(stem)
  metadata=source_metadata(row)
- name_context=stem+' '+p.parent.name
+ name_context=stem+' '+parent_name
  named=bool(VR_PATTERN.search(name_context))
  marks=recognition(row,p) if with_recognition else None
  kind,reason=(marks['censorship']['value'],marks['censorship']['reason']) if marks else censorship(row,metadata,name_context=name_context)
@@ -158,14 +162,34 @@ def display_title(row,path):
  return row.get('title')
 
 
+def file_stem(name):
+ dot=name.rfind('.')
+ return name[:dot] if 0<dot<len(name)-1 else name
+
+
 def projection_presentation(row,path=None):
- p=path if path is not None else Path(row['path']);traits=identity_presentation(row,p)
- flags=card_flags(row,p)
- marks={'domestic':bool(flags['domestic']),'amateur':bool(flags['amateur']),
-        'conflict':bool('冲突' in traits['censorship_source'] or flags['domestic_conflict'] or flags['amateur_conflict'])}
- for flag in ('domestic','amateur'):
-  if marks[flag]:marks[flag+'_reason']=flags[flag+'_reason']
- return {'title':display_title(row,p),'vr':traits['vr'],'censorship':traits['censorship'],'resolution_label':resolution_label(row.get('height')),'marks':marks}
+ p=path if path is not None else row['path']
+ if isinstance(p,str):
+  directory,name=split(p)
+  parent_name=split(directory)[1]
+  if name and name!='.' and parent_name!='.':
+   name_context=file_stem(name)+' '+parent_name
+  else:
+   p=Path(p);name_context=p.stem+' '+p.parent.name
+ else:name_context=p.stem+' '+p.parent.name
+ metadata=source_metadata(row)
+ kind,reason=censorship(row,metadata,name_context=name_context)
+ marks={'domestic':False,'amateur':False,'conflict':'冲突' in reason}
+ # ASCII names without the only ASCII badge keyword need no badge tokenization.
+ if (metadata or row.get('source_tags') or row.get('domestic') or row.get('amateur')
+     or not name_context.isascii() or 'amateur' in name_context.casefold()):
+  flags=card_flags(row,Path(p) if isinstance(p,str) else p,metadata)
+  marks['conflict']|=bool(flags['domestic_conflict'] or flags['amateur_conflict'])
+  for flag in ('domestic','amateur'):
+   marks[flag]=bool(flags[flag])
+   if marks[flag]:marks[flag+'_reason']=flags[flag+'_reason']
+ return {'title':display_title(row,p),'vr':bool(metadata.get('vr')) or bool(VR_PATTERN.search(name_context)),
+         'censorship':kind,'resolution_label':resolution_label(row.get('height')),'marks':marks}
 
 
 def presentation(row):

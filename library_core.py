@@ -1,10 +1,18 @@
 """Persistent library relationships and reversible application-data maintenance."""
 import hashlib,json,sqlite3,time,zipfile,tempfile,threading
 from contextlib import closing
+from functools import lru_cache
+from os.path import split
 from restore_safety import require_reconciled_files
 from video_ids import ensure_video_ids,high_watermark
 from pathlib import Path
-from media_presentation import PART_PATTERN
+from media_presentation import PART_PATTERN,identity_presentation,file_stem
+
+@lru_cache(maxsize=1024)
+def relationship_directory(value):
+ directory=Path(value)
+ return str(directory),directory.name
+
 class LibraryCore:
  def __init__(self,db,data,presentation,identity_traits=None):
   self.db,self.data,self.present=db,data,presentation
@@ -50,8 +58,16 @@ class LibraryCore:
        generation=generation+1 WHERE id=1;
   END''')
  def infer(self,row):
-  p=Path(row['path']);r=self.identity_traits(row,p) if self.identity_traits else self.present(row);code=row.get('code','').strip().upper()
-  stem=PART_PATTERN.sub('',p.stem);parent=str(p.parent)
+  directory,name=split(row['path'])
+  if self.identity_traits is identity_presentation and name and name!='.':
+   parent,parent_name=relationship_directory(directory)
+   filename=file_stem(name)
+   r=self.identity_traits(row,name_parts=(filename,parent_name))
+  else:
+   p=Path(row['path']);r=self.identity_traits(row,p) if self.identity_traits else self.present(row)
+   parent,filename=str(p.parent),p.stem
+  code=row.get('code','').strip().upper()
+  stem=PART_PATTERN.sub('',filename)
   movie='code:'+code if code else 'local:'+hashlib.sha256((parent+stem).casefold().encode()).hexdigest()[:20]
   version='v:'+hashlib.sha256((movie+'|'+parent.casefold()+'|'+stem.casefold()+'|'+str(row.get('height',0))+'|'+str(row.get('codec',''))+'|'+r['censorship']+'|'+str(r['vr'])).encode()).hexdigest()[:20]
   return movie,version,r['part_index'] or 1
@@ -69,6 +85,7 @@ class LibraryCore:
    if revision[0]==revision[1]:return
    c.execute('BEGIN IMMEDIATE')
    first=c.execute('SELECT first_dirty FROM media_relation_revision WHERE id=1').fetchone()[0]
+   has_prefix=first is not None and c.execute('SELECT 1 FROM media_links WHERE video_id<? LIMIT 1',(first,)).fetchone() is not None
    suffix=' WHERE id>=?' if first is not None else ''
    bounds=(first,) if first is not None else ()
    old_links={r['video_id']:r for r in c.execute('SELECT * FROM media_links'+(' WHERE video_id>=?' if bounds else ''),bounds)}
@@ -87,7 +104,7 @@ class LibraryCore:
      occupied.add((old['movie_key'],old['version_key'],old['part_no']));continue
     row['path']=relation_paths.get(row['id'],row['path'])
     movie,version,part=self.infer(row)
-    earlier=first is not None and c.execute(
+    earlier=has_prefix and c.execute(
      'SELECT 1 FROM media_links l JOIN videos v ON v.id=l.video_id WHERE l.movie_key=? AND l.version_key=? AND l.part_no=? AND l.video_id<? LIMIT 1',
      (movie,version,part,first)).fetchone()
     if (movie,version,part) in occupied or earlier:version+=':copy:'+str(row['id'])

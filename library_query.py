@@ -160,6 +160,7 @@ class LibraryQuery:
             empty_marks={'domestic':False,'amateur':False,'conflict':False}
             empty_marks_json='{"domestic":false,"amateur":false,"conflict":false}'
             total=c.execute("SELECT COUNT(*) FROM browse_dirty q JOIN media_links l ON l.video_id=q.video_id").fetchone()[0]
+            needs_path=bool(scope_enforced or policies or excluded) or self.project is not projection_presentation
             processed=0
             self._progress={"stage":"indexing","processed":processed,"total":total}
             # Batches bound Python memory and avoid holding full metadata graphs.
@@ -172,7 +173,9 @@ class LibraryQuery:
                 records={r['video_id']:dict(r) for r in c.execute('SELECT * FROM file_reviews WHERE video_id IN ('+slots+')',ids)}
                 values=[]
                 for raw in batch:
-                    row=dict(zip(columns,raw));raw_path=Path(row['path']);present=self.project(row,raw_path)
+                    row=dict(zip(columns,raw))
+                    raw_path=Path(row['path']) if needs_path else row['path']
+                    present=self.project(row,raw_path)
                     visible=True
                     if scope_enforced or policies or excluded:
                         path=canonical(raw_path,short_prefixes);owner=self.libraries.owner(path,policies)

@@ -27,6 +27,13 @@ class IdentityPresentationTests(unittest.TestCase):
         expected=self.app.CORE.infer(row)
         with patch.object(self.app.CORE,'present',side_effect=AssertionError('Full display called for identity')):
             self.assertEqual(self.app.CORE.infer(row),expected)
+        for path in ('Film.mp4','Synthetic//VR/./Disc01.mp4','Uncensored/.preview.mp4',
+                     str(self.root/'国产'/'示例 Part 02.mkv'),str(self.root/'Archive'/'File.')):
+            with self.subTest(path=path):
+                row=dict(row,path=path)
+                optimized=self.app.CORE.infer(row)
+                with patch.object(self.app.CORE,'identity_traits',wraps=self.app.identity_presentation):
+                    self.assertEqual(optimized,self.app.CORE.infer(row))
 
     def test_identity_traits_agree_with_public_display_across_filename_and_metadata_cases(self):
         cases=[('DEMO-001 part2 VR.mp4','{}','auto'),('folder uncensored/VIDEO 第3集.mkv','{}','auto'),('censored/Disc01.mp4','{"content_type":"uncensored","vr":true}','auto'),('VRKM-123.mp4','{}','auto'),('censored uncensored/title.mp4','broken','auto'),('Film.mp4','{"content_type":"censored"}','unknown')]

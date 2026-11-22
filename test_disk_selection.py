@@ -21,8 +21,14 @@ selection.everything();selection.toggle({checked:false,dataset:{ordinal:'1',byte
 assert.strictEqual(selection.payload().selected.exclude[0],1);
 selection.plan();assert.strictEqual(navigation.route,'organization-plan');assert.strictEqual(navigation.params.selection_device,'all');
 selection.back(navigation.params);assert.strictEqual(navigation.params.source,'all');assert.strictEqual(navigation.params.search,'demo');assert.strictEqual(navigation.params.offset,50);
+selection.rememberPlan('initial-review');selection.linkPlan('initial-review','revised');
 selection.load({...first,snapshot:'fixed-two'},{search:'other'});
 assert.throws(()=>selection.payload('fixed-one'));assert.throws(()=>selection.payload());assert.strictEqual(fields.diskPhysicalPlan.disabled,true);assert.strictEqual(notices.length,1);
+selection.fromPlan('revised');
+assert.strictEqual(navigation.params.snapshot,'fixed-one');
+assert.strictEqual(navigation.params.offset,50);
+selection.load(first,navigation.params);
+assert.deepEqual(Array.from(selection.payload().selected.exclude),[1]);
 selection.everything();selection.clear();assert.throws(()=>selection.payload());
 """
         result=subprocess.run(['node','-e',program],cwd=Path(__file__).parent,capture_output=True,text=True)

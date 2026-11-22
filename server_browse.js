@@ -2,6 +2,7 @@
 const serverBrowse=(()=>{
  let timer,controller,progressController,movieRequest,viewScroll,epoch=0,movieEpoch=0,snapshot='',scope='',lastRevision='',total=0,collectionReturn=null;
  const chosen=new Map(),details=new Map();let data=null,selectionBusy=false,selectionMode=false,returnCardKey='',pending=false,queryFailed=false;
+ let detailSequence=[],detailIndex=-1,sequenceBusy=false;
  const collectionId=()=>new URL(location.href).searchParams.get('collection')||'';
  function criteria(){return {q:$('q').value.trim(),mode,length:$('length').value,censorship:$('censorFilter').value,domestic:$('domesticFilter').value,amateur:$('amateurFilter').value,vr:$('vrFilter').value==='nonvr'?'flat':$('vrFilter').value,height:$('resolution').value,tags:JSON.stringify([...activeTags,...($('tag').value?[$('tag').value]:[])]),tag_logic:$('tagLogic').value,exclude_tag:$('excludeTag').value,actor:currentActor||$('actor').value,studio:$('studio').value,source:$('scrapeState').value,quality:$('reviewFilter').value,sort:$('sort').value,collections:folderCollectionsEnabled?'on':'off',collection:collectionId(),facet_kind:activeCatalogFacet?.kind||'',facet_name:activeCatalogFacet?.name||''}}
  async function get(url,signal){const response=await fetch(url,{signal});const result=await response.json();if(!response.ok){const error=Error(result.error||'读取失败，请稍后重试');error.status=response.status;throw error}return result}
@@ -132,11 +133,10 @@ const serverBrowse=(()=>{
   const focusedKey=document.activeElement?.closest('.movieCard')?.dataset.cardKey;
   for(const interval of hoverTimers.values())clearInterval(interval);hoverTimers.clear();
   $('grid').setAttribute('aria-busy','false');$('grid').innerHTML=data.items.length?data.items.map(item=>item.kind==='collection'?collectionCard(item):videoCard(item,true)).join(''):`<div class="empty"><h2>没有符合条件的视频</h2><p class="emptyFilterDescription">${esc(emptyFilterSummary())}</p><button onclick="resetFilters()">清除筛选</button><button onclick="folderDialog.showModal()">导入目录</button></div>`;
-  observeThumbnails();
+  observeThumbnails();renderCriteria();
   const summary=data.summary;$('stats').innerHTML=[[summary.movies,'部作品'],[summary.favorites,'个收藏'],(summary.bytes/1073741824).toFixed(1)+' GB',summary.unwatched].map((item,i)=>{const value=Array.isArray(item)?item[0]:item,label=Array.isArray(item)?item[1]:i===2?'总容量':'部尚未观看';return `<div class="stat"><b>${value}</b><small>${label}</small></div>`}).join('');
   $('clearFiltersButton').hidden=!activeTags.size&&[['q',''],['length','all'],['vrFilter',''],['censorFilter',''],['domesticFilter',''],['amateurFilter',''],['resolution','0'],['tag',''],['excludeTag',''],['actor',''],['studio',''],['scrapeState',''],['reviewFilter','']].every(([id,value])=>$(id).value===value);
   syncTagSelection();
-  $('activeTags').innerHTML=[...activeTags].map(tag=>`<button data-tag="${esc(tag)}" onclick="removeTag(this.dataset.tag)">${esc(tag)} ×</button>`).join('');
   renderPagination();selectionBar();renderCollectionHeader();if(focusedKey)focusCard(focusedKey);
   if(!document.body.dataset.libraryReadyMs)requestAnimationFrame(()=>requestAnimationFrame(()=>document.body.dataset.libraryReadyMs=String(Math.round(performance.now()))));
  }
@@ -171,8 +171,9 @@ const serverBrowse=(()=>{
  function selectionBar(){
   let bar=$('pagedSelection');if(!bar){bar=document.createElement('div');bar.id='pagedSelection';bar.className='pagedSelection';$('grid').before(bar)}
   const entries=[...chosen.values()],movies=entries.reduce((n,item)=>n+(item.kind==='collection'?item.hit_count:1),0),bytes=entries.reduce((n,item)=>n+item.size,0);
+  const pageCount=data?.items.filter(item=>chosen.has(item.key)).length||0,collections=entries.filter(item=>item.kind==='collection').length;
   $('chosenCount').textContent=movies;$('batchScrapeAction').hidden=!movies;bar.hidden=!entries.length;
-  bar.innerHTML=`<strong>跨页已选 ${entries.length} 张卡片 · ${movies} 部作品 · ${diskBytes(bytes)}</strong><button onclick="serverBrowse.clearSelection();serverBrowse.redraw()">清空选择</button><details><summary>查看及移除已选条目</summary>${entries.map(item=>`<div class="row"><span>${esc(item.title)}</span><button data-key="${esc(item.key)}" onclick="serverBrowse.remove(this.dataset.key)">移除</button></div>`).join('')}</details>`;
+  bar.innerHTML=`<strong>本页已选 ${pageCount} · 跨页共选 ${entries.length} 张卡片 · ${movies} 部作品 · ${diskBytes(bytes)}</strong><button onclick="serverBrowse.clearSelection();serverBrowse.redraw()">清空选择</button>${collections?`<p class="muted">${collections} 个已选合集按当前条件包含命中的作品。</p>`:''}<details><summary>查看及移除已选条目</summary>${entries.map(item=>`<div class="row"><span>${esc(item.title)}</span><button data-key="${esc(item.key)}" onclick="serverBrowse.remove(this.dataset.key)">移除</button></div>`).join('')}</details>`;
  }
  async function members(offset=0,limit=100){if(!chosen.size)throw Error('请先选择视频');return api('/api/library/selection',{snapshot,keys:[...chosen.keys()],offset,limit})}
  async function scrape(){
@@ -220,9 +221,15 @@ const serverBrowse=(()=>{
     movie=await loadMovie(id,options);
    }
    if(!movie||!accept())return false;
-   returnCardKey='movie:'+movie.movie_key;
+   if(!detail.open){
+    const onPage=card&&data?.items.some(item=>item.id===Number(id)&&item.kind==='movie');
+    detailSequence=onPage?data.items.filter(item=>item.kind==='movie'):[];
+    returnCardKey=onPage?card.dataset.cardKey:'';
+   }
+   detailIndex=detailSequence.findIndex(item=>item.movie_key===movie.movie_key);
    show(movie.id??id,true);
    if(movie._detail)MovieDetailView.show(movie._detail);
+   renderDetailSequence();
    return true;
   }catch(error){
    if(accept()&&error.name!=='AbortError')toast(error.message);
@@ -230,6 +237,21 @@ const serverBrowse=(()=>{
   }finally{
    if(movieRequest===request){movieRequest=null;card?.removeAttribute('aria-busy')}
   }
+ }
+ function renderDetailSequence(){
+  const nav=$('detailSequence');if(!nav)return;
+  nav.hidden=detailIndex<0||detailSequence.length<2;
+  if(nav.hidden)return;
+  $('detailSequenceCount').textContent=`本页作品 ${detailIndex+1} / ${detailSequence.length}`;
+  $('previousWork').disabled=sequenceBusy||detailIndex===0;
+  $('nextWork').disabled=sequenceBusy||detailIndex+1===detailSequence.length;
+ }
+ async function stepWork(direction){
+  if(!detail.open||sequenceBusy||detailIndex<0||![-1,1].includes(direction))return;
+  const target=detailSequence[detailIndex+direction];if(!target)return;
+  sequenceBusy=true;renderDetailSequence();
+  try{await openVideo(target.id,true)}
+  finally{sequenceBusy=false;renderDetailSequence()}
  }
  async function relations(){const range=chosen.size?await members():null;if(range&&range.files>100)throw Error('关系编辑一次最多100个文件，请缩小选择范围');if(range){const works=[];for(let offset=0;offset<range.items.length;offset+=4)works.push(...await Promise.all(range.items.slice(offset,offset+4).map(item=>loadMovie(item.id,{edit:true}))));if(works.reduce((n,work)=>n+work._versions.reduce((sum,version)=>sum+version._parts.length,0),0)>100)throw Error('所选作品含其它版本，合计超过100个文件，请缩小选择范围');library.movies=works;library.videos=works.flatMap(work=>work._versions.flatMap(version=>version._parts));chosenIds.clear();for(const item of range.items)chosenIds.add(item.id)}else if(selected){const work=await loadMovie(selected.id,{exact:true});if(work._edit_file_count>100)return {ids:[selected.id],notice:'此作品包含较多索引文件，本次仅编辑当前文件，不批量修改整部作品。'};await loadMovie(selected.id,{edit:true})}}
  async function random(){try{const result=await get('/api/library/random?snapshot='+snapshot);openVideo(result.id,true)}catch(error){toast(error.message)}}
@@ -242,7 +264,10 @@ const serverBrowse=(()=>{
   page=1;saveViewState();render();
  }
  function focusCard(key){document.querySelector('.movieCard[data-card-key="'+CSS.escape(key)+'"]')?.focus({preventScroll:true})}
- detail.addEventListener('close',()=>{if(returnCardKey)focusCard(returnCardKey)});
+ detail.addEventListener('close',()=>{
+  if(returnCardKey)focusCard(returnCardKey);
+  returnCardKey='';detailSequence=[];detailIndex=-1;
+ });
  function leaveCollection(){
   const previous=collectionReturn;
   saveViewState();
@@ -272,16 +297,38 @@ const serverBrowse=(()=>{
   }catch(error){toast(error.message)}
   finally{if(button.isConnected)button.disabled=false}
  }
+ const filterDefaults={length:'all',censorFilter:'',domesticFilter:'',amateurFilter:'',vrFilter:'',
+  resolution:'0',scrapeState:'',reviewFilter:'',q:'',actor:'',studio:'',excludeTag:''};
+ function criteriaLabels(){
+  const prefixes={q:'搜索',actor:'演员',studio:'厂商',excludeTag:'排除标签'};
+  const labels=Object.entries(filterDefaults).flatMap(([id,initial])=>{
+   const input=$(id),value=input.value.trim();if(value===initial||(id==='actor'&&currentActor))return [];
+   const label=prefixes[id]?prefixes[id]+' · '+value:(input.selectedOptions[0]?.textContent||value).trim();
+   return [{id,label,value:''}];
+  });
+  if(currentActor)labels.push({id:'actorPage',label:'演员 · '+currentActor,value:''});
+  if(activeCatalogFacet)labels.push({id:'facet',label:'分类 · '+activeCatalogFacet.name,value:''});
+  const tagLogic=$('tagLogic').value==='any'?'任一标签':'全部标签';
+  for(const tag of activeTags)labels.push({id:'tag',label:tagLogic+' · '+tag,value:tag});
+  return labels;
+ }
+ function renderCriteria(){
+  const panel=$('filterSummary');if(!panel)return;
+  const labels=criteriaLabels();panel.hidden=!labels.length;
+  panel.innerHTML=labels.length?`<span class="muted" role="status">命中 ${data.movies} 部作品</span>`+
+   labels.map(({id,label,value})=>`<button type="button" data-filter="${id}" data-value="${esc(value)}" onclick="serverBrowse.clearCriterion(this)" aria-label="移除 ${esc(label)}"><span class="criteriaValue">${esc(label)}</span><span aria-hidden="true">×</span></button>`).join(''):'';
+ }
+ function clearCriterion(button){
+  const {filter,value}=button.dataset;
+  if(filter==='actorPage')return returnFromActor();
+  if(filter==='tag'){activeTags.delete(value);syncTagSelection()}
+  else if(filter==='facet'){activeCatalogFacet=null;$('actorProfile').hidden=true}
+  else if(Object.hasOwn(filterDefaults,filter))$(filter).value=filterDefaults[filter];
+  else return;
+  page=1;$('q').focus({preventScroll:true});render(true);
+ }
  function emptyFilterSummary(){
-  const filters=criteria(),chosen=[...activeTags];
-  const labels=[filters.q&&'搜索“'+filters.q+'”',chosen.length&&'标签 '+chosen.join('、'),
-    filters.actor&&'演员 '+filters.actor,filters.studio&&'厂商 '+filters.studio,
-    filters.exclude_tag&&'排除 '+filters.exclude_tag,filters.facet_name&&'分类 '+filters.facet_name];
-  for(const id of ['length','censorFilter','domesticFilter','amateurFilter','vrFilter','resolution','scrapeState','reviewFilter']){
-   const input=$(id);
-   if(input?.selectedIndex>0)labels.push(input.selectedOptions[0].textContent.trim());
-  }
-  const summary=labels.filter(Boolean).join(' · ');
+  const summary=criteriaLabels().map(item=>item.label).join(' · ');
   return summary?'当前条件 · '+summary:'当前范围内没有视频。可以清除筛选或导入目录。';
  }
  function restoreCollection(state){const url=new URL(location.href);if(state?.collection)url.searchParams.set('collection',state.collection);else url.searchParams.delete('collection');history.replaceState(history.state,'',url);collectionReturn=state?.collectionReturn||null}
@@ -344,5 +391,5 @@ const serverBrowse=(()=>{
  for(const [id,kind]of [['excludeTag','tags'],['actor','actors'],['studio','studio']]){
   const old=$(id),input=document.createElement('input');input.id=id;input.placeholder=old.options[0].textContent;input.setAttribute('list','suggest-'+id);input.onchange=old.onchange||(()=>{page=1;render()});input.onfocus=()=>suggest(id,kind);input.oninput=()=>{clearTimeout(suggestTimer);suggestTimer=setTimeout(()=>suggest(id,kind),180)};old.replaceWith(input);input.insertAdjacentHTML('afterend',`<datalist id="suggest-${id}"></datalist>`);
  }
- return {render,refresh,restoreScroll(top,focus){viewScroll={scope:JSON.stringify(criteria()),top:Number(top)||0,focus}},error:showError,relationOptions,bindRelationSuggestions,ensureRelationOptions,retryCode,resetCollection(){const url=new URL(location.href);url.searchParams.delete('collection');history.replaceState(history.state,'',url);collectionReturn=null},loadMovie,openMovie,toggle,toggleKey,toggleSelectionMode,selectPage,clearSelection,scrape,random,relations,openCollection,leaveCollection,restoreCollection,collectionCard,saveCollectionCover,get collectionId(){return collectionId()},get collectionReturn(){return collectionReturn},get total(){return total},get ready(){return !!data},cancel(){viewScroll=null;stopPreviews();clearTimeout(timer);controller?.abort();busy(false);++epoch;cancelMovieOpen()},redraw:()=>data&&draw(),remove(key){const item=chosen.get(key);chosen.delete(key);if(item)chosenIds.delete(item.id);draw()}};
+ return {render,refresh,clearCriterion,stepWork,restoreScroll(top,focus){viewScroll={scope:JSON.stringify(criteria()),top:Number(top)||0,focus}},error:showError,relationOptions,bindRelationSuggestions,ensureRelationOptions,retryCode,resetCollection(){const url=new URL(location.href);url.searchParams.delete('collection');history.replaceState(history.state,'',url);collectionReturn=null},loadMovie,openMovie,toggle,toggleKey,toggleSelectionMode,selectPage,clearSelection,scrape,random,relations,openCollection,leaveCollection,restoreCollection,collectionCard,saveCollectionCover,get collectionId(){return collectionId()},get collectionReturn(){return collectionReturn},get total(){return total},get ready(){return !!data},cancel(){viewScroll=null;stopPreviews();clearTimeout(timer);controller?.abort();busy(false);++epoch;cancelMovieOpen()},redraw:()=>data&&draw(),remove(key){const item=chosen.get(key);chosen.delete(key);if(item)chosenIds.delete(item.id);draw()}};
 })();window.serverBrowse=serverBrowse;

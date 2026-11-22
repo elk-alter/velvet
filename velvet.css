@@ -316,6 +316,16 @@ dialog::backdrop { background: #121b335e; backdrop-filter: blur(4px); }
 .filmDisclosure[open] > summary { margin: 0; border-bottom: 1px solid var(--line); }
 .filmDisclosure > :not(summary) { padding: var(--space-3); }
 .filmDisclosure .fileReviewDetail { border: 0; }
+.detailSequence { flex: none; justify-content: space-between; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--line); color: var(--muted); background: var(--surface-quiet); }
+.detailSequence button { min-height: 32px; padding: 4px 10px; }
+.detailSequence[hidden], .filterSummary[hidden] { display: none; }
+.filterSummary { gap: 6px; margin: 8px 0 12px; }
+.filterSummary button { display: inline-flex; align-items: center; gap: 8px; min-height: 32px; max-width: 100%; padding: 4px 9px; background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.criteriaValue { overflow-wrap: anywhere; }
+.privacyMode.privacyText .filterSummary button .criteriaValue,
+.privacyMode.privacyText .pagedSelection details .row span { visibility: hidden; }
+.reviewRowActions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.reviewRowActions button { min-height: 34px; }
 .lightboxToolbar, .lightboxNav { padding: 10px 13px; }
 
 .managerView { padding-top: 0; }
@@ -380,6 +390,8 @@ dialog::backdrop { background: #121b335e; backdrop-filter: blur(4px); }
   .cardTopFlags span { font-size: 9px; }
   .cardTechnical { font-size: 10px; gap: 5px; }
   #detail .dialogBody { padding: 12px; }
+  .detailSequence { padding-inline: 12px; }
+  .reviewRowActions { grid-column: 2; justify-content: flex-start; }
   .filmHero { grid-template-columns: 94px minmax(0, 1fr); gap: 10px; padding: 10px; }
   #detail .playback-actions { margin-top: 10px; }
   #detail .playback-actions button { min-height: 34px; padding-inline: 7px; }

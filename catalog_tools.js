@@ -153,8 +153,12 @@ window.SavedFilters=(()=>{
  }
  function render(){
   const selector=$('savedFilterChoice');
-  selector.innerHTML='<option value="">选择已保存的筛选</option>'+entries().map((item,index)=>
+  const selected=selector.selectedOptions[0]?.textContent;
+  const items=entries();
+  selector.innerHTML='<option value="">选择已保存的筛选</option>'+items.map((item,index)=>
    `<option value="${index}">${esc(item.name)}</option>`).join('');
+  const previous=items.findIndex(item=>item.name===selected);
+  if(previous>=0)selector.value=String(previous);
  }
  function write(items){
   try{localStorage.setItem(key,JSON.stringify(items));render();return true}
@@ -168,7 +172,7 @@ window.SavedFilters=(()=>{
   const item={name,view:{mode,filters,tags,pageSize,facet,collection,actor,page:1,scroll:0}};
   if(existing<0)items.push(item);
   else items[existing]=item;
-  if(write(items)){form.reset();toast('筛选已保存')}
+  if(write(items)){$('savedFilterChoice').value=String(existing<0?items.length-1:existing);form.reset();toast('筛选已保存')}
  }
  function apply(){
   const choice=$('savedFilterChoice').value;if(choice==='')return;

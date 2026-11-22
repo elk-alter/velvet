@@ -73,3 +73,8 @@ next是当前版本中紧邻的下一可见分段{id,missing}或null，不依赖
 - `GET /api/actor-governance` 返回别名和撤销状态。向 `/api/actor-governance/preview` 提交 `mode`（`merge` 或 `split`）、`source`、`target`，拆分另提交所选文件 `ids`（最多 100）。预览可分页，每页 25 个文件。向 `apply` 附摘要、0–5 的整数 `rating` 与布尔 `favorite`，撤销提交至 `undo`。目标偏好在变更后被编辑时返回 400。别名指向单一主身份，已有别名的主身份保留现有关系，避免链式合并。
 - `POST /api/library/collection-cover` 接受合集 `collection` 及当前可见成员的 `video_id`，传 `null` 恢复自动封面。查询中的合集卡片与 `collection_info` 带 `custom_cover`。详情文件带 `catalog_actors`、`catalog_tags`，原值继续供编辑、对账使用。
 - POST 沿用现有认证和变更令牌。持久状态与撤销保存于 `app_state`，应用变更后失效查询投影。浏览器预设和隐私选项使用同一来源的本地存储。
+
+## alpha.12 待处理与补封面
+
+- 待处理工作区通过 `GET /api/library?review=1` 获取 `scrape_failures`。键为当前可见文件的规范化编号，值包含最近失败的类型、处理建议与提示文本。编号有更新的任务时按最新任务状态判断。
+- `POST /api/cover-retry` 接受当前可见在线文件的 `id`，沿用应用变更令牌。按保存的来源引擎和图片地址补齐缺失的封面或海报。返回 `fetched` 和 `failed` 图片类型数组。已有图片保留；同步占用时返回 409。
