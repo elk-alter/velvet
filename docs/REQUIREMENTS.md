@@ -1,4 +1,4 @@
-当前开发范围见 [alpha.13 常用操作与播放](ALPHA13-REQUIREMENTS.md)，状态与证据见 [交付台账](DELIVERY-STATUS.md)。后续排期见 [路线图](ROADMAP.md)。本页旧表用于追溯原始用户需求。
+当前发布范围见 [alpha.13 常用操作与播放](ALPHA13-REQUIREMENTS.md)，状态与证据见 [交付台账](DELIVERY-STATUS.md)。后续排期见 [路线图](ROADMAP.md)。本页旧表用于追溯原始用户需求。
 
 alpha.6范围以[硬盘统一管理与大库查询需求](ALPHA6-REQUIREMENTS.md)为准；该文档区分基础发行范围与原始完整验收基线。
 

@@ -1,6 +1,6 @@
 # Velvet 开发接力
 
-alpha.13 范围见 [需求](ALPHA13-REQUIREMENTS.md)，以 [交付台账](DELIVERY-STATUS.md) 确认实现、验证、发布和部署状态。应用内目录选择器、集中筛选和播放提示由 `workflow.js` 维护。读取接口在 `local_media_access.py`，整理计划的写入继续使用既有批准与对账机制。实测须重新核对安装版本与运行数据。
+alpha.13 已发布并部署到 Windows 本机 8765，保留 2,048 条视频索引及升级前备份。应用内目录选择器、集中筛选和播放提示由 `workflow.js` 维护。读取接口在 `local_media_access.py`，整理计划的写入继续使用既有批准与对账机制。交接时重新核对安装版本与运行数据。下一版 alpha.14 进入 NAS 和跨端基础。 [需求](ALPHA13-REQUIREMENTS.md) · [交付台账](DELIVERY-STATUS.md) · [路线图](ROADMAP.md)
 
 2026-11-05。开发基线为已发布 v0.1.0-alpha.6（b36ce89）。本机服务健康接口返回 0.1.0-alpha.6，使用独立部署目录及数据副本，端口 8765。升级前的 alpha.5 程序与数据保留。接力时重新核对 Git、监听进程和实际版本。
 
