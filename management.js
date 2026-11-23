@@ -50,14 +50,32 @@ function selectManagerRetry(input){
 }
 async function submitManagerRetry(ids){
  if(managerRetryBusy||!ids.length)return;
+ return confirmScrapeRetry(ids,async result=>{
+  for(const id of result.ids)managerRetrySelection.delete(id);
+  await renderManagerTasks();
+ });
+}
+async function confirmScrapeRetry(ids,completed,manual=0){
+ if(managerRetryBusy||!ids.length)return;
  const ticket=managerRouteEpoch;
  managerRetryBusy=true;updateManagerRetryButton();
  try{
-  const result=await api('/api/amane-retry',{job_ids:ids});
+  const scope=await api('/api/amane-retry-preview',{job_ids:ids});
   if(ticket!==managerRouteEpoch)return;
-  for(const id of ids)managerRetrySelection.delete(id);
-  toast(`已提交 ${result.submitted} 条，跳过 ${result.skipped} 条，待核对 ${result.failures.length} 条`);
-  await renderManagerTasks();
+  openTool('核对本次重试范围',`<p>可重试 ${scope.ready.length} 项 · 已排队或执行中 ${scope.active} 项 · 需人工处理 ${scope.manual+manual} 项</p><p>确认后提交以上可重试的任务。</p><p id="retryScopeStatus" role="status"></p>`,
+   '<button type="button" onclick="toolDialog.close()">取消</button>'+(scope.ready.length?'<button type="button" class="accent" id="submitRetryScope">确认重试</button>':''));
+  const submit=$('submitRetryScope');if(!submit)return;
+  submit.onclick=async()=>{
+   if(submit.disabled||ticket!==managerRouteEpoch)return;
+   submit.disabled=true;
+   try{
+    const result=await api('/api/amane-retry',{job_ids:scope.ready,reviewed:true});
+    if(ticket!==managerRouteEpoch)return;
+    if(toolDialog.contains(submit))toolDialog.close();
+    toast(`已提交 ${result.submitted} 条 · 跳过 ${result.skipped} 条 · 待核对 ${result.failures.length} 条`);
+    await completed({...result,ids:scope.ready});
+   }catch(error){if(submit.isConnected)$('retryScopeStatus').textContent=error.message}
+  };
  }catch(error){if(ticket===managerRouteEpoch&&error.name!=='AbortError')toast(error.message)}
  finally{managerRetryBusy=false;updateManagerRetryButton()}
 }

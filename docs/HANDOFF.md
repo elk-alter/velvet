@@ -1,6 +1,6 @@
 # Velvet 开发接力
 
-alpha.12 已发布并部署到 Windows 本机，范围见 [alpha.12 需求](ALPHA12-REQUIREMENTS.md)，实测见 [交付台账](DELIVERY-STATUS.md)。继续修改详情时保留结果页顺序、起始卡片和编辑保护。补封面沿用来源快照与现有缓存路径，硬盘计划返回携带当前会话中的已知快照和选择。下一版 alpha.13 按 [路线图](ROADMAP.md) 完善播放和资料。
+alpha.13 范围见 [需求](ALPHA13-REQUIREMENTS.md)，以 [交付台账](DELIVERY-STATUS.md) 确认实现、验证、发布和部署状态。应用内目录选择器、集中筛选和播放提示由 `workflow.js` 维护。读取接口在 `local_media_access.py`，整理计划的写入继续使用既有批准与对账机制。实测须重新核对安装版本与运行数据。
 
 2026-11-05。开发基线为已发布 v0.1.0-alpha.6（b36ce89）。本机服务健康接口返回 0.1.0-alpha.6，使用独立部署目录及数据副本，端口 8765。升级前的 alpha.5 程序与数据保留。接力时重新核对 Git、监听进程和实际版本。
 

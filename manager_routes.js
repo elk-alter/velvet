@@ -8,15 +8,29 @@ const managerRouteInfo={
  people:{group:'settings',title:'演员身份'},general:{group:'settings',title:'常规设置'},rules:{group:'settings',title:'分类规则'},backups:{group:'settings',title:'备份与恢复'}
 };
 const managerGroupNames={storage:'硬盘管理',libraries:'媒体库',scrape:'刮削中心',settings:'设置'};
+const managerParents={'library-files':'libraries','library-edit':'libraries','library-new':'libraries',
+ 'storage-reconnect':'storage','storage-files':'storage','storage-file':'storage-files',
+ 'storage-video':'storage-files','organization-plan':'storage-files','organization-review':'organization-plan',
+ 'organization-draft':'organization-review','organization-task':'organization-tasks',
+ 'organization-cleanup':'organization-task','organization-skip':'organization-task',priorities:'sources'};
 const managerTabs={storage:[['storage','设备与目录'],['storage-files','文件快照'],['organization-tasks','整理任务']],libraries:[['libraries','媒体库'],['duplicates','重复检查'],['review','待处理与质量']],scrape:[['tasks','刮削任务'],['sources','来源与择优'],['sites','站点凭据'],['connection','执行与网络'],['network','网络检测']],settings:[['general','常规'],['rules','分类规则'],['people','演员身份'],['backups','备份恢复'],['ledger','全部后台任务']]};
 const managerQueryKeys={path:'m_lib',source:'m_source',status:'m_status',reason:'m_reason',search:'m_q',offset:'m_offset',online:'m_online',quality:'m_quality',duplicate:'m_duplicate',sort:'m_sort',directory:'m_directory',snapshot:'m_snapshot',selection_device:'m_sel_device',file:'m_file',video:'m_video',resource_offset:'m_resource',location:'m_location'};
 function managementLocation(){const url=new URL(location.href),raw=url.searchParams.get('manage');if(!raw)return null;const route=Object.hasOwn(managerRouteInfo,raw)?raw:'tasks';return {route,params:Object.fromEntries(Object.entries(managerQueryKeys).map(([key,param])=>[key,url.searchParams.get(param)||'']))}}
-function writeManagementLocation(route,params,replace=false){const url=new URL(location.href);url.searchParams.delete('manage');for(const key of Object.values(managerQueryKeys))url.searchParams.delete(key);if(route){url.searchParams.set('manage',route);for(const [key,param]of Object.entries(managerQueryKeys))if(params[key]!==undefined&&params[key]!==''&&params[key]!==null)url.searchParams.set(param,String(params[key]));}history[replace?'replaceState':'pushState']({...(replace?history.state:{}),velvetManager:route,browseReturn:managerNavigationState.browseReturn,diskFileReturn:managerNavigationState.diskFileReturn||null},'',url)}
+function writeManagementLocation(route,params,replace=false){const url=new URL(location.href);url.searchParams.delete('manage');for(const key of Object.values(managerQueryKeys))url.searchParams.delete(key);if(route){url.searchParams.set('manage',route);for(const [key,param]of Object.entries(managerQueryKeys))if(params[key]!==undefined&&params[key]!==''&&params[key]!==null)url.searchParams.set(param,String(params[key]));}history[replace?'replaceState':'pushState']({...(replace?history.state:{}),velvetManager:route,browseReturn:managerNavigationState.browseReturn,diskFileReturn:managerNavigationState.diskFileReturn||null,managerUp:managerNavigationState.up||null},'',url)}
 function sameManagerPage(route,params){return managerNavigationState.route===route&&Object.keys(managerQueryKeys).every(key=>String(managerNavigationState.params[key]||'')===String(params[key]||''))}
 let managerLeavePromise=null;
-function allowManagementLeave(dirty=managerDirty){if(!dirty)return Promise.resolve(true);if(managerLeavePromise)return managerLeavePromise;const dialog=document.createElement('dialog');dialog.className='leaveDialog';dialog.setAttribute('aria-labelledby','leaveManagerTitle');dialog.innerHTML='<form method="dialog"><h2 id="leaveManagerTitle">保留未保存的修改？</h2><p>离开此页会放弃尚未保存的修改。</p><div class="row"><button value="cancel" autofocus>继续编辑</button><button value="discard">放弃修改并离开</button></div></form>';managerLeavePromise=new Promise(resolve=>{dialog.addEventListener('close',()=>{const allowed=dialog.returnValue==='discard';dialog.remove();managerLeavePromise=null;resolve(allowed)},{once:true})});document.body.append(dialog);dialog.showModal();return managerLeavePromise}
+function allowManagementLeave(dirty=managerDirty){if(!dirty)return Promise.resolve(true);if(managerLeavePromise)return managerLeavePromise;const dialog=document.createElement('dialog');dialog.className='leaveDialog';dialog.setAttribute('aria-labelledby','leaveManagerTitle');dialog.innerHTML='<form method="dialog">'+workflowHeader('leaveManagerTitle','保留未保存的修改？')+'<div class="dialogBody"><p>离开此页会放弃尚未保存的修改。</p></div><div class="dialogFooter"><button value="cancel" autofocus>继续编辑</button><button value="discard">放弃修改并离开</button></div></form>';managerLeavePromise=new Promise(resolve=>{dialog.addEventListener('close',()=>{const allowed=dialog.returnValue==='discard';dialog.remove();managerLeavePromise=null;resolve(allowed)},{once:true})});document.body.append(dialog);dialog.showModal();return managerLeavePromise}
 
-function clearManagerTimers(){clearTimeout(diskTaskTimer);clearTimeout(reviewTimer);clearTimeout(managerTaskTimer);clearTimeout(managerNetworkTimer);clearTimeout(duplicatesTimer);managerController?.abort();}
+function managerGoUp(){
+ const route=managerNavigationState.route;
+ const origin=managerNavigationState.up;
+ const target=origin?.route||managerParents[route];
+ if(!target)return exitManager();
+ if(!origin&&['organization-draft','organization-review','organization-cleanup','organization-skip'].includes(route))return goManage('organization-tasks');
+ return goManage(target,origin?.params||{},{replace:true,up:origin?.up||null,restorePosition:origin?.position});
+}
+
+function clearManagerTimers(){clearTimeout(diskTaskTimer);clearTimeout(diskInventoryTimer);clearTimeout(reviewTimer);clearTimeout(managerTaskTimer);clearTimeout(managerNetworkTimer);clearTimeout(duplicatesTimer);managerController?.abort();}
 async function managerFetch(url){const ticket=managerRouteEpoch;const response=await fetch(url,{signal:managerController?.signal});const read=response.json.bind(response);response.json=async()=>{const data=await read();if(ticket!==managerRouteEpoch)throw new DOMException('页面已切换','AbortError');return data};return response}
 async function managerGet(url){const response=await managerFetch(url);if(!response.ok)throw Error('读取失败，请检查服务后重试');return response.json()}
 function renderManagerShell(title,body,footer=''){
@@ -25,7 +39,7 @@ function renderManagerShell(title,body,footer=''){
  document.querySelector('main').hidden=true;document.body.classList.add('manager-open');const view=$('managerView');view.hidden=false;
  const activeTab=route==='storage-reconnect'?'storage':route==='priorities'?'sources':route.startsWith('library-')?'libraries':['storage-file','storage-video'].includes(route)?'storage-files':route.startsWith('organization-')?(['organization-tasks','organization-task','organization-cleanup','organization-skip'].includes(route)?'organization-tasks':'storage-files'):route;
  const parent=info.parent;
- view.innerHTML=`<header class="managerHeader"><div><div class="managerBreadcrumb"><span>管理</span><span>/</span><button onclick="goManage('${managerTabs[info.group][0][0]}')">${managerGroupNames[info.group]}</button>${parent&&parent!==managerTabs[info.group][0][0]?`<span>/</span><button onclick="goManage('${parent}')">${esc(managerRouteInfo[parent].title)}</button>`:''}</div><h2 tabindex="-1">${esc(title)}</h2></div><div class="row">${parent?`<button onclick="goManage('${parent}')">返回${parent==='sources'?'来源目录':'媒体库'}</button>`:''}<button onclick="exitManager()">返回片库</button></div></header><nav class="managerNav" aria-label="${managerGroupNames[info.group]}分区">${managerTabs[info.group].map(([page,label])=>`<button class="${activeTab===page?'active':''}" ${activeTab===page?'aria-current="page"':''} onclick="goManage('${page}')">${label}</button>`).join('')}</nav><div class="managerBody" data-route="${route}">${body}</div>${footer?'<footer class="managerFooter">'+footer+'</footer>':''}`;
+ view.innerHTML=`<header class="managerHeader"><div><button class="managerBack" onclick="managerGoUp()">← ${managerParents[route]||managerNavigationState.up?'返回上一级':'返回片库'}</button><div class="managerBreadcrumb"><span>管理</span><span>/</span><button onclick="goManage('${managerTabs[info.group][0][0]}')">${managerGroupNames[info.group]}</button>${parent&&parent!==managerTabs[info.group][0][0]?`<span>/</span><button onclick="goManage('${parent}')">${esc(managerRouteInfo[parent].title)}</button>`:''}</div><h2 tabindex="-1">${esc(title)}</h2></div><div class="row managerHeaderActions"></div></header><nav class="managerNav" aria-label="${managerGroupNames[info.group]}分区">${managerTabs[info.group].map(([page,label])=>`<button class="${activeTab===page?'active':''}" ${activeTab===page?'aria-current="page"':''} onclick="goManage('${page}')">${label}</button>`).join('')}</nav><div class="managerBody" data-route="${route}">${body}</div>${footer?'<footer class="managerFooter">'+footer+'</footer>':''}`;
  if(typeof privacyButton==='function')view.querySelector('.managerHeader > .row').prepend(privacyButton());
  for(const button of document.querySelectorAll('aside button')){button.toggleAttribute('data-manager-active',button.dataset.manage===info.group);if(button.dataset.manage===info.group)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current')}
 }
@@ -37,6 +51,18 @@ async function goManage(route,params={},options={}){
  if(options.history)managerNavigationState.diskFileReturn=history.state?.diskFileReturn||null;
  const retainingDiskEdits=route==='organization-review'&&managerNavigationState.route===route&&params.source===managerNavigationState.params.source;
  if(!options.history&&managerDirty&&!retainingDiskEdits&&!await allowManagementLeave())return false;
+ const previous=managerNavigationState.route;
+ if(options.history)managerNavigationState.up=history.state?.managerUp||null;
+ else if(Object.hasOwn(options,'up'))managerNavigationState.up=options.up;
+ else if(previous!==route){
+  const fromParent=previous&&managerParents[route]&&(managerParents[route]===previous||
+   (route==='storage-file'&&previous==='storage-video')||(route==='organization-plan'&&previous==='storage')||
+   (route==='organization-task'&&previous==='storage')||
+   (['storage-video','organization-draft'].includes(route)&&previous==='organization-task'));
+  managerNavigationState.up=fromParent?{route:previous,params:{...managerNavigationState.params},
+   up:managerNavigationState.up||null,position:history.state?.managerPosition||null}:null;
+ }
+
  if(!managerNavigationState.route){const state=captureView();managerNavigationState.browseReturn=(options.history?(history.state?.browseReturn||managerNavigationState.browseReturn):null)||{state,scroll:window.scrollY||0};saveViewState();history.replaceState({...history.state,browseReturn:managerNavigationState.browseReturn},'',location.href)}
  window.serverBrowse?.cancel();clearManagerTimers();const ticket=++managerRouteEpoch;managerController=new AbortController();managerDirty=false;managerNavigationState.route=route;managerNavigationState.params={...params};
  if(!options.history)writeManagementLocation(route,params,same||options.replace);
@@ -78,7 +104,7 @@ function saveManagerPosition(){if(!managerNavigationState.route)return;history.r
 let managerPositionFrame;
 window.addEventListener('scroll',()=>{if(managerPositionFrame||!managerNavigationState.route||managerRendering)return;managerPositionFrame=requestAnimationFrame(()=>{managerPositionFrame=null;saveManagerPosition()})},{passive:true});
 function retryManagerPage(){goManage(managerNavigationState.route,managerNavigationState.params,{replace:true})}
-function hideManagement(){clearManagerTimers();++managerRouteEpoch;managerNavigationState.route=null;managerNavigationState.params={};managerDirty=false;$('managerView').hidden=true;document.querySelector('main').hidden=false;document.body.classList.remove('manager-open');for(const button of document.querySelectorAll('aside [data-manage]')){button.removeAttribute('data-manager-active');button.removeAttribute('aria-current')}}
+function hideManagement(){clearManagerTimers();++managerRouteEpoch;managerNavigationState.route=null;managerNavigationState.up=null;managerNavigationState.params={};managerDirty=false;$('managerView').hidden=true;document.querySelector('main').hidden=false;document.body.classList.remove('manager-open');for(const button of document.querySelectorAll('aside [data-manage]')){button.removeAttribute('data-manager-active');button.removeAttribute('aria-current')}}
 async function exitManager(options={}){
  if(!managerNavigationState.route)return true;
  if(!options.history&&managerDirty&&!await allowManagementLeave())return false;

@@ -29,11 +29,13 @@ assert.equal(nodes.pageTitle.textContent,'参演影片');assert.equal(context.cu
         script=r'''
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 const html=fs.readFileSync(SOURCE,'utf8'),start=html.indexOf('function internalPlay(){'),end=html.indexOf('let lastSave=0',start);
-let plays=0;const player={src:'',currentTime:0,duration:10,getAttribute(){return this.src},play(){plays++;return Promise.resolve()}};
-const context={$:()=>player,detail:{open:true},playbackEpoch:0,selected:{id:1,position:8,duration:10,watched:false},toast(){}};
+let plays=0;const states=[];const player={src:'',currentTime:0,duration:10,getAttribute(){return this.src},play(){plays++;return Promise.resolve()}};
+const context={$:()=>player,detail:{open:true},playbackEpoch:0,selected:{id:1,position:8,duration:10,watched:false},toast(){},
+ FilmPlayback:{begin(id){states.push(['begin',id])},failed(id){states.push(['failed',id])}}};
 vm.createContext(context);vm.runInContext(html.slice(start,end),context);
 context.internalPlay();assert.equal(plays,1,'play must request loading with preload=none');assert.equal(player.src,'/media/1');
-const oldMetadata=player.onloadedmetadata;context.selected={id:2,position:4,duration:10,watched:false};oldMetadata();assert.equal(player.currentTime,0,'stale metadata cannot seek another selected file');
+const oldMetadata=player.onloadedmetadata,oldError=player.onerror;context.selected={id:2,position:4,duration:10,watched:false};oldMetadata();assert.equal(player.currentTime,0,'stale metadata cannot seek another selected file');
+oldError();assert.deepEqual(states,[['begin',1]]);
 context.internalPlay();player.onloadedmetadata();assert.equal(player.currentTime,4);
 context.selected={id:2,position:999,duration:10,watched:false};context.internalPlay();player.onloadedmetadata();assert.equal(player.currentTime,9);
 player.ended=true;context.selected={id:2,position:9,duration:10,watched:false};context.internalPlay();player.onloadedmetadata();assert.equal(player.currentTime,0,'replay starts at zero even before cached watched state updates');

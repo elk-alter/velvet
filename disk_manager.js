@@ -1,5 +1,5 @@
 /* Physical files have their own workspace, selection scope and approval pages. */
-let diskSelection={plan:'',mode:'selected',rows:new Map(),excluded:new Map()},diskEdits=new Map(),diskPlan=null,diskDraft=null,diskJob=null,diskCleanup=null,diskSkipPlan=null,diskTaskTimer;
+let diskSelection={plan:'',mode:'selected',rows:new Map(),excluded:new Map()},diskEdits=new Map(),diskPlan=null,diskDraft=null,diskJob=null,diskCleanup=null,diskSkipPlan=null,diskTaskTimer,diskInventoryTimer;
 const diskBytes=value=>Number(value)>=1073741824?(Number(value)/1073741824).toFixed(2)+' GB':Number(value)>=1048576?(Number(value)/1048576).toFixed(1)+' MB':Number(value||0).toLocaleString()+' B';
 const diskStates={queued:'排队中',running:'执行中',waiting:'等待 / 已暂停',partial:'部分完成 · 待处理',interrupted:'重启后待核对',failed:'执行失败',cancelled:'已取消',done:'已完成',pending:'待执行',copying:'正在复制',verified:'校验通过',staging:'正在暂存',staged:'已暂存',committing:'正在提交',committed:'已提交',binding:'正在绑定',needs_binding:'等待绑定重试'};
 const diskState=value=>diskStates[value]||value;
@@ -28,24 +28,71 @@ async function renderDiskWorkspace(route,params){
  if(route==='organization-skip')return diskSkipPage(params);
 }
 async function diskDevices(){
- const data=await managerGet('/api/storage');
- renderManagerShell('硬盘管理',diskIntro('设备与目录','让散落的文件有序归位','先盘点，再审阅具体计划。文件整理仅在你确认后执行，跨盘复制会保留源文件。')+`<div class="diskDeviceGrid">${data.devices.map(device=>`<article class="diskDevice"><div class="diskDeviceHead"><h3>${esc(device.alias)}</h3><span class="diskPill">${esc(diskDeviceStatus(device))}</span></div><p class="path">${esc(device.root)}</p><div class="diskMetrics"><strong>${Number(device.files).toLocaleString()} <small>个文件</small></strong><span>${esc(device.volume.filesystem)}${device.capacity?' · '+diskBytes(device.capacity.free)+' 可用':''}</span></div><p class="muted">${device.latest_snapshot?'上次盘点 '+new Date(device.latest_snapshot.created*1000).toLocaleString():'尚未盘点'} · ${esc(device.identity_note)}</p><div class="row"><button data-id="${device.id}" onclick="diskGo('storage-files',this.dataset.id)">查看文件</button><button data-id="${device.id}" onclick="diskGo('storage-reconnect',this.dataset.id)">重连位置</button><button data-id="${device.id}" ${device.online?'':'disabled'} onclick="diskScan(this)">盘点</button><button class="accent" data-id="${device.id}" ${device.online?'':'disabled'} onclick="diskGo('organization-plan',this.dataset.id)">制定计划</button></div></article>`).join('')||'<p class="muted">添加一个目录，开始盘点硬盘中的视频。</p>'}</div><section class="settingsSection"><h3>添加盘点位置</h3><p>可以登记同一硬盘的多个目录，或多块移动硬盘。离线时仍保留上次快照。</p><div class="diskForm"><label>目录路径<input id="diskRoot" placeholder="选择或粘贴一个目录"></label><button onclick="diskPickRoot()">选择目录</button></div><label>显示名称<input id="diskAlias" maxlength="100" placeholder="例如：移动资料盘"></label><label class="diskCheck"><input type="checkbox" id="diskNewLocation"><span>作为新的独立位置登记，保留此路径的旧快照</span></label><button id="diskRegisterRun" class="accent" onclick="diskRegister()">添加位置</button></section><button onclick="showStorageComparisons()">跨盘重复与版本比较</button>`);
+ const [data,queue]=await Promise.all([managerGet('/api/storage'),managerGet('/api/organization/jobs?limit=100')]);
+ const pending=queue.items.filter(job=>['waiting','interrupted','partial','failed'].includes(job.state));
+ const recover=pending.length?`<section class="diskScope"><h3>待恢复的整理任务</h3>
+  ${pending.slice(0,3).map(job=>`<p><button id="disk-recover-${esc(job.id)}" data-id="${esc(job.id)}" onclick="diskGo('organization-task',this.dataset.id)">查看${esc(diskState(job.state))}任务</button> ${job.processed} / ${job.total} 项已完成</p>`).join('')}
+  <button onclick="diskGo('organization-tasks')">查看全部整理任务</button></section>`:'';
+ const devices=data.devices.map(device=>`<article class="diskDevice" id="disk-device-${device.id}">
+  <div class="diskDeviceHead"><h3>${esc(device.alias)}</h3><span class="diskPill">${esc(diskDeviceStatus(device))}</span></div><p class="path">${esc(device.root)}</p>
+  <div class="diskMetrics"><strong><span data-inventory-count>${Number(device.files).toLocaleString()}</span> <small>个文件</small></strong><span>${esc(device.volume.filesystem)}${device.capacity?' · '+diskBytes(device.capacity.free)+' 可用':''}</span></div>
+  <p class="muted" data-inventory-progress role="status">${esc(diskInventoryProgress(device.latest_snapshot))}</p>
+  <p class="muted">${esc(device.identity_note)}</p>
+  <div class="row"><button id="disk-open-${device.id}" data-id="${device.id}" onclick="diskGo('storage-files',this.dataset.id)">查看本盘文件</button>
+   ${device.online?`<button data-id="${device.id}" onclick="diskScan(this)" ${device.latest_snapshot?.state==='running'?'disabled':''}>盘点</button>`:`<button id="disk-reconnect-${device.id}" class="accent" data-id="${device.id}" onclick="diskGo('storage-reconnect',this.dataset.id)">重连位置</button>`}
+   <button id="disk-plan-${device.id}" data-id="${device.id}" ${device.online?'':'disabled'} onclick="diskGo('organization-plan',this.dataset.id)">制定计划</button></div></article>`).join('');
+ renderManagerShell('硬盘管理',`<div class="row diskHomeActions"><button class="accent" onclick="DirectoryPicker.open({register:true})">添加盘点目录</button><button onclick="showStorageComparisons()">跨盘重复与版本比较</button></div>`+recover+
+  `<div class="diskDeviceGrid">${devices||'<p class="muted">添加一个目录，开始盘点硬盘中的视频。</p>'}</div>`);
+ const selectedDevice=$('disk-device-'+managerNavigationState.params.source);
+ if(selectedDevice){selectedDevice.setAttribute('tabindex','-1');selectedDevice.scrollIntoView({block:'nearest'})}
+ const running=data.devices.find(device=>device.latest_snapshot?.state==='running');
+ if(running)diskWatchInventory(running.id);
 }
-async function diskPickRoot(id='diskRoot'){
+function diskInventoryProgress(snapshot){
+ if(!snapshot)return '尚未盘点';
+ const counts=`${Number(snapshot.processed).toLocaleString()} 个已处理${snapshot.failed?' · '+snapshot.failed+' 个异常':''}`;
+ if(snapshot.state==='running')return '盘点中 · '+counts;
+ return `上次盘点 ${new Date(snapshot.created*1000).toLocaleString()} · ${diskState(snapshot.state)} · ${counts}`;
+}
+function diskWatchInventory(id,remaining=2){
+ clearTimeout(diskInventoryTimer);
  const epoch=managerRouteEpoch;
- try{
-  const result=await api('/api/pick-folder',{});
+ diskInventoryTimer=setTimeout(async()=>{
+  try{
+   const {device}=await managerGet('/api/storage/device?id='+encodeURIComponent(id));
+   if(epoch!==managerRouteEpoch)return;
+   const card=$('disk-device-'+id);
+   if(!card)return;
+   const label=card.querySelector('[data-inventory-progress]');
+   const message=diskInventoryProgress(device.latest_snapshot);
+   if(label.textContent!==message)label.textContent=message;
+   card.querySelector('[data-inventory-count]').textContent=Number(device.files).toLocaleString();
+   const active=device.latest_snapshot?.state==='running';
+   const scan=card.querySelector('button[onclick="diskScan(this)"]');
+   if(scan)scan.disabled=active;
+   if(active||remaining>0)diskWatchInventory(id,active?0:remaining-1);
+  }catch(error){if(epoch===managerRouteEpoch&&error.name!=='AbortError'){const button=$('disk-device-'+id)?.querySelector('button[onclick="diskScan(this)"]');if(button)button.disabled=false}}
+ },1400);
+}
+function diskPickRoot(id='diskTarget'){
+ const epoch=managerRouteEpoch;
+ DirectoryPicker.open({title:id==='diskReconnectRoot'?'选择重连目录':'选择整理目标',select:path=>{
   const input=$(id);
-  if(epoch===managerRouteEpoch&&result.path&&input&&!input.disabled){
-   input.value=result.path;managerDirty=true;
-  }
- }catch(error){if(epoch===managerRouteEpoch&&error.name!=='AbortError')toast(error.message)}
+  if(epoch!==managerRouteEpoch||!input||input.disabled)return;
+  input.value=path;managerDirty=true;
+  if(id==='diskReconnectRoot')diskInvalidateReconnect();
+ }});
 }
-async function diskRegister(){
- const epoch=managerRouteEpoch,button=$('diskRegisterRun');if(button?.disabled)return;const values={path:$('diskRoot').value,alias:$('diskAlias').value,new_location:!!$('diskNewLocation')?.checked};if(button)button.disabled=true;
- try{await api('/api/storage/register',values);if(epoch!==managerRouteEpoch)return;if($('diskRoot').value!==values.path||$('diskAlias').value!==values.alias||!!$('diskNewLocation')?.checked!==values.new_location){managerDirty=true;toast('上一位置已登记，当前输入仍保留');return}managerDirty=false;diskGo('storage')}catch(error){toast(error.message)}finally{if(epoch===managerRouteEpoch&&button)button.disabled=false}
+async function diskScan(button){
+ const epoch=managerRouteEpoch,id=button.dataset.id;
+ button.disabled=true;
+ try{
+  await api('/api/storage/scan',{id,hashing:true});
+  if(epoch!==managerRouteEpoch)return;
+  button.closest('.diskDevice').querySelector('[data-inventory-progress]').textContent='盘点任务已提交…';
+  diskWatchInventory(id);
+ }catch(error){button.disabled=false;toast(error.message)}
 }
-async function diskScan(button){try{await api('/api/storage/scan',{id:button.dataset.id,hashing:true});toast('盘点与完整哈希已开始，可在后台任务中查看进度')}catch(error){toast(error.message)}}
 let diskFileSnapshot='';
 function diskFilePage(button){goManage('storage-files',{...managerNavigationState.params,offset:Number(button.dataset.offset),snapshot:diskFileSnapshot})}
 function diskFilePager(data){return `<div class="diskPager"><span>${data.total?data.offset+1:0}–${Math.min(data.offset+data.limit,data.total)} / ${data.total.toLocaleString()}</span><button data-offset="${Math.max(0,data.offset-data.limit)}" ${data.offset?'':'disabled'} onclick="diskFilePage(this)">上一页</button><button data-offset="${data.offset+data.limit}" ${data.offset+data.limit<data.total?'':'disabled'} onclick="diskFilePage(this)">下一页</button></div>`}
@@ -282,7 +329,7 @@ async function diskReconnect(params){
 }
 function diskInvalidateReconnect(){if(!diskReconnectState)return;diskReconnectState.preview=null;managerDirty=true;$('diskReconnectReview').innerHTML=''}
 function diskLockReconnect(locked){document.querySelectorAll('#diskReconnectForm input,#diskReconnectForm button').forEach(input=>input.disabled=locked)}
-async function diskPickReconnectRoot(){const epoch=managerRouteEpoch;try{const result=await api('/api/pick-folder',{});if(epoch===managerRouteEpoch&&result.path){$('diskReconnectRoot').value=result.path;diskInvalidateReconnect()}}catch(error){toast(error.message)}}
+function diskPickReconnectRoot(){return diskPickRoot('diskReconnectRoot')}
 async function diskPreviewReconnect(button){
  if(button.disabled)return;const epoch=managerRouteEpoch,state=diskReconnectState,path=$('diskReconnectRoot').value;diskLockReconnect(true);
  try{const preview=await api('/api/storage/remap-preview',{id:state.device.id,path});if(epoch!==managerRouteEpoch||state!==diskReconnectState)return;state.preview=preview;

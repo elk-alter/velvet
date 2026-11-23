@@ -7,11 +7,13 @@ from urllib.request import Request,urlopen
 from urllib.parse import urlparse,quote,parse_qs
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from media_naming import fallback_title, generic_name
+from local_media_access import directory_roots,directory_page,local_directory,playback_info,subtitle_files,read_subtitle
 from runtime_config import load_runtime, diagnostics
 RUNTIME=load_runtime(sys.argv[1:] if __name__=='__main__' else ())
 ROOT=Path(__file__).resolve().parent
 APP_VERSION=(ROOT/'VERSION').read_text('utf-8-sig').strip()
 UI_ASSETS={
+ '/workflow.js':('workflow.js','text/javascript'),
  '/velvet.css':('velvet.css','text/css'),
  '/':('index.html','text/html'),
  '/catalog_tools.js':('catalog_tools.js','text/javascript'),
@@ -555,13 +557,37 @@ def _submit_scrapes(ids,use_cache=False):
  codes=list(dict.fromkeys(r['code'].strip().upper() for r in rows))
  return submit_scrape_codes(codes,use_cache)
 
-def retry_scrape_jobs(job_ids):
+def validated_retry_ids(job_ids):
  if not isinstance(job_ids,list) or not 1<=len(job_ids)<=50 or any(type(ident) is not int or ident<1 for ident in job_ids):
   raise ValueError('请选择 1–50 条失败任务')
+ return list(dict.fromkeys(job_ids))
+
+def review_scrape_retry(job_ids):
+ requested=validated_retry_ids(job_ids)
+ engine=config().get('scrape_engine','external')
+ with db() as c:
+  jobs={j['id']:dict(j) for j in c.execute("""SELECT job.*, (
+   SELECT later.status FROM scrape_jobs later WHERE later.code=job.code ORDER BY later.id DESC LIMIT 1) AS latest_status, (
+   SELECT MAX(later.id) FROM scrape_jobs later WHERE later.code=job.code) AS latest_id
+   FROM scrape_jobs job WHERE job.id IN ("""+','.join('?' for _ in requested)+')',requested)}
+  codes=list({job['code'] for job in jobs.values() if job.get('code')})
+  candidates=[dict(row) for row in c.execute("SELECT id,path,size,UPPER(TRIM(code)) AS code FROM videos WHERE missing=0 AND UPPER(TRIM(code)) IN ("+','.join('?' for _ in codes)+')',codes)] if codes else []
+ available={row['code'] for row in LIBRARIES.filter_rows(candidates)}
+ ready=[];active=manual=0
+ for ident in requested:
+  job=jobs.get(ident)
+  if job and job['code'] in available and job['latest_status'] in ('queued','running','submitting','cancelling'):active+=1
+  elif job and job['code'] in available and job['status']=='failed' and job['latest_id']==ident and job['engine']==engine and job['remote_id'] and job['remote_id']>0 and scrape_failure(job)['kind']=='retryable':ready.append(ident)
+  else:manual+=1
+ return {'ready':ready,'active':active,'manual':manual}
+
+def retry_scrape_jobs(job_ids,reviewed=False):
+ requested=validated_retry_ids(job_ids)
  if not SUBMIT_LOCK.acquire(False):raise ValueError('另一批提交进行中，请稍后重试')
  try:
   engine=config().get('scrape_engine','external')
-  requested=list(dict.fromkeys(job_ids))
+  if reviewed and review_scrape_retry(requested)['ready']!=requested:
+   raise ValueError('任务状态或可重试范围已变化，请重新预览')
   with db() as c:
    jobs=c.execute("SELECT j.code FROM scrape_jobs j WHERE j.id IN ("+','.join('?' for _ in requested)+") AND j.status='failed' AND j.remote_id>0 AND j.engine=? AND j.id=(SELECT MAX(later.id) FROM scrape_jobs later WHERE later.code=j.code)",(*requested,engine)).fetchall()
    codes=[job['code'] for job in jobs]
@@ -988,6 +1014,9 @@ class Handler(BaseHTTPRequestHandler):
     if path=='/api/storage/video':return self.send(STORAGE_FILES.locations(value('id'),value('offset',0),value('limit',20)))
     return self.send(STORAGE_FILES.locate(value('id'),value('location')))
    if path=='/api/storage':return self.send({'devices':INVENTORY.devices()})
+   if path=='/api/storage/directories':
+    query=parse_qs(urlparse(self.path).query)
+    return self.send(directory_page(query.get('path',[''])[0],directory_roots(NAS),query.get('offset',['0'])[0]))
    if path=='/api/storage/device':return self.send({'device':INVENTORY.devices(parse_qs(urlparse(self.path).query).get('id',[''])[0])[0]})
    if path=='/api/storage/query':return self.send(INVENTORY_QUERY.query({key:values[0] for key,values in parse_qs(urlparse(self.path).query).items()}))
    if path=='/api/storage/files':
@@ -1018,10 +1047,11 @@ class Handler(BaseHTTPRequestHandler):
     if query.get('review')==['1']:
      codes={row['code'].strip().upper() for row in videos if row['code']}
      with db() as c:
-      failures=[dict(row) for row in c.execute("""SELECT j.* FROM scrape_jobs j
+      latest_jobs=[dict(row) for row in c.execute("""SELECT j.* FROM scrape_jobs j
        JOIN (SELECT MAX(id) AS id FROM scrape_jobs GROUP BY UPPER(TRIM(code))) latest ON latest.id=j.id
-       WHERE j.status='failed'""") if row['code'].strip().upper() in codes]
-     payload['scrape_failures']={job['code'].strip().upper():scrape_failure(job)|{'message':job['error'] or job['details']} for job in failures}
+       WHERE j.status IN ('failed','queued','running','submitting','cancelling')""") if (row['code'] or '').strip().upper() in codes]
+     payload['scrape_work']={job['code'].strip().upper():{'id':job['id'],'status':job['status']} for job in latest_jobs}
+     payload['scrape_failures']={job['code'].strip().upper():scrape_failure(job)|{'message':job['error'] or job['details']} for job in latest_jobs if job['status']=='failed'}
     if query.get('compact')==['1']:
      from library_transport import pack_library
      payload=pack_library(payload)
@@ -1035,6 +1065,16 @@ class Handler(BaseHTTPRequestHandler):
     if not file.exists():return self.send({},status=404)
     payload=file.read_bytes();kind='image/png' if payload.startswith(b'\x89PNG') else 'image/webp' if payload.startswith(b'RIFF') else 'image/jpeg'
     return self.send(payload,kind)
+   if path in ('/api/playback-info','/api/playback-subtitle'):
+    query=parse_qs(urlparse(self.path).query);ident=int(query.get('id',['0'])[0])
+    row=self.video(ident)
+    if not LIBRARIES.filter_rows([row]):return self.send({},status=404)
+    with LEASES.hold('playback',resources=video_resources(db,[ident])):
+     if path=='/api/playback-info':return self.send(playback_info(row['path'])|{'external':not NAS})
+     kind=query.get('track',[''])[0]
+     track=subtitle_files(row['path']).get(kind)
+     if not track:return self.send({},status=404)
+     return self.send(read_subtitle(track,kind),'text/vtt; charset=utf-8')
    if path.startswith('/media/'):
     with LEASES.hold('playback',resources=video_resources(db,[path.split('/')[-1]])):
      row=self.video(path.split('/')[-1]);p=Path(row['path']);size=p.stat().st_size
@@ -1165,6 +1205,9 @@ class Handler(BaseHTTPRequestHandler):
     with LEASES.hold('location-choice'):ORGANIZATION.locations.prefer(a.get('id'),a.get('location'))
     return self.send({'ok':True})
    elif path=='/api/library/selection':return self.send(BROWSE.selection(a.get('snapshot',''),a.get('keys'),a.get('offset',0),a.get('limit',100)))
+   elif path=='/api/storage/register-preview':
+    directory=local_directory(a.get('path',''),directory_roots(NAS))
+    return self.send(INVENTORY.registration_preview(str(directory)))
    elif path=='/api/storage/register':return self.send({'ok':True,'id':INVENTORY.register(a.get('path'),a.get('alias'),a.get('new_location',False))})
    elif path=='/api/storage/annotate':
     INVENTORY.annotate(a.get('id'),a.get('relative'),a.get('annotation'));return self.send({'ok':True})
@@ -1419,8 +1462,10 @@ class Handler(BaseHTTPRequestHandler):
         if link:c.execute('DELETE FROM movie_preferences WHERE movie_key=?',(link[0],))
    elif path=='/api/amane-submit':
     return self.send(submit_scrapes(a.get('ids')))
+   elif path=='/api/amane-retry-preview':
+    return self.send(review_scrape_retry(a.get('job_ids')))
    elif path=='/api/amane-retry':
-    return self.send(retry_scrape_jobs(a.get('job_ids')))
+    return self.send(retry_scrape_jobs(a.get('job_ids'),a.get('reviewed') is True))
    elif path=='/api/amane-poll':
     poll_scrapes();return self.send({'ok':True})
    elif path=='/api/unlock':

@@ -289,6 +289,50 @@ dialog::backdrop { background: #121b335e; backdrop-filter: blur(4px); }
 .dialogChrome .close:hover { background: var(--accent-soft); color: var(--accent); }
 .dialogChrome .privacyToggle { margin-left: auto; }
 .dialogFooter { background: var(--surface-raised); }
+#directoryPicker { width: 660px; }
+#filterDialog { width: 760px; }
+#directoryPicker .dialogFooter, #filterDialog .dialogFooter, .leaveDialog .dialogFooter {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.leaveDialog form { display: flex; flex-direction: column; min-height: 0; }
+.directoryTools, .directoryCrumbs { gap: 6px; margin-bottom: 8px; }
+.directoryEntries {
+  display: grid;
+  max-height: min(38vh, 300px);
+  overflow: auto;
+  gap: 4px;
+  margin-block: 8px 16px;
+}
+.directoryEntry {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+#directoryPicker form { align-items: end; }
+.directoryPathLabel { flex: 1 1 155px; min-width: 0; }
+#directoryPath, #directoryAlias { margin-bottom: 0; }
+#directoryStatus:empty { display: none; }
+.privacyMode.privacyText .directoryEntries { visibility: hidden; }
+.privacyMode.privacyText .directoryPathLabel input { color: transparent; }
+#filterDialog .toolbar { margin-block: 0 12px; }
+#filterDialog .toolbar select { max-width: 100%; }
+#filterDialog .advancedFilters { margin-bottom: 10px; }
+.searchRow #openFilters { flex: 0 0 auto; }
+.pagedSelection { position: sticky; top: 8px; z-index: 8; padding: 10px 12px; }
+.pagedSelection details { max-height: 25vh; overflow: auto; }
+.managerHeader .managerBack { margin-bottom: 8px; text-align: left; }
+.diskHomeActions { margin-bottom: var(--space-3); }
+#detail .dialogBody .dialogTools { padding: 0; border-top: 1px solid var(--line); border-bottom: 0; }
+#playbackFeedback:empty, #playbackRecovery:empty, .playbackTracks:not(:has(select)) { display: none; }
+#playbackFeedback { margin-block: 8px 4px; }
+.playbackTracks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.playbackTracks label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+#artworkLightbox .dialogBody { padding: 0; }
+.reviewReasonTabs { gap: 6px; margin-block: 8px 16px; }
 
 #detail { width: 1010px; }
 #detail .dialogBody { padding: 20px 24px; }

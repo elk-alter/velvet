@@ -4,7 +4,16 @@ const serverBrowse=(()=>{
  const chosen=new Map(),details=new Map();let data=null,selectionBusy=false,selectionMode=false,returnCardKey='',pending=false,queryFailed=false;
  let detailSequence=[],detailIndex=-1,sequenceBusy=false;
  const collectionId=()=>new URL(location.href).searchParams.get('collection')||'';
- function criteria(){return {q:$('q').value.trim(),mode,length:$('length').value,censorship:$('censorFilter').value,domestic:$('domesticFilter').value,amateur:$('amateurFilter').value,vr:$('vrFilter').value==='nonvr'?'flat':$('vrFilter').value,height:$('resolution').value,tags:JSON.stringify([...activeTags,...($('tag').value?[$('tag').value]:[])]),tag_logic:$('tagLogic').value,exclude_tag:$('excludeTag').value,actor:currentActor||$('actor').value,studio:$('studio').value,source:$('scrapeState').value,quality:$('reviewFilter').value,sort:$('sort').value,collections:folderCollectionsEnabled?'on':'off',collection:collectionId(),facet_kind:activeCatalogFacet?.kind||'',facet_name:activeCatalogFacet?.name||''}}
+ function criteria(){
+  const input=window.WorkflowFilters?.values(),read=id=>input?input.filters[id]:$(id).value;
+  const tags=input?.tags||[...activeTags];
+  return {q:read('q').trim(),mode,length:read('length'),censorship:read('censorFilter'),
+   domestic:read('domesticFilter'),amateur:read('amateurFilter'),vr:read('vrFilter')==='nonvr'?'flat':read('vrFilter'),height:read('resolution'),
+   tags:JSON.stringify([...tags,...(read('tag')?[read('tag')]:[])]),tag_logic:read('tagLogic'),
+   exclude_tag:read('excludeTag'),actor:currentActor||read('actor'),studio:read('studio'),source:read('scrapeState'),
+   quality:read('reviewFilter'),sort:read('sort'),collections:folderCollectionsEnabled?'on':'off',collection:collectionId(),
+   facet_kind:activeCatalogFacet?.kind||'',facet_name:activeCatalogFacet?.name||''}
+ }
  async function get(url,signal){const response=await fetch(url,{signal});const result=await response.json();if(!response.ok){const error=Error(result.error||'读取失败，请稍后重试');error.status=response.status;throw error}return result}
  function showLoadingProgress(value){
   const panel=$('libraryLoadProgress');
@@ -42,6 +51,7 @@ const serverBrowse=(()=>{
  function busy(value,failed=false){showLoadingProgress(value);pending=value;queryFailed=failed;$('grid').setAttribute('aria-busy',String(value));const chooser=document.querySelector('button[onclick="choosePage()"]');if(chooser)chooser.disabled=value||failed||!data?.items.length;document.querySelectorAll('#grid input[type=checkbox]').forEach(input=>input.disabled=value||failed)}
  function stopPreviews(){if(typeof stopCardPreview==='function')document.querySelectorAll('#grid .movieCard .picture').forEach(stopCardPreview)}
  function render(immediate=false){
+  if(window.WorkflowFilters?.editing)return;
   stopPreviews();cancelMovieOpen();clearTimeout(timer);
   if(actorsView||window.managerNavigationState?.route)return;
   controller?.abort();++epoch;busy(true);
@@ -302,19 +312,22 @@ const serverBrowse=(()=>{
  function criteriaLabels(){
   const prefixes={q:'搜索',actor:'演员',studio:'厂商',excludeTag:'排除标签'};
   const labels=Object.entries(filterDefaults).flatMap(([id,initial])=>{
-   const input=$(id),value=input.value.trim();if(value===initial||(id==='actor'&&currentActor))return [];
-   const label=prefixes[id]?prefixes[id]+' · '+value:(input.selectedOptions[0]?.textContent||value).trim();
+   const input=$(id),value=(window.WorkflowFilters?.values().filters[id]??input.value).trim();if(value===initial||(id==='actor'&&currentActor))return [];
+   const option=Array.from(input.options||[]).find(item=>item.value===value);
+   const label=prefixes[id]?prefixes[id]+' · '+value:(option?.textContent||value).trim();
    return [{id,label,value:''}];
   });
   if(currentActor)labels.push({id:'actorPage',label:'演员 · '+currentActor,value:''});
   if(activeCatalogFacet)labels.push({id:'facet',label:'分类 · '+activeCatalogFacet.name,value:''});
-  const tagLogic=$('tagLogic').value==='any'?'任一标签':'全部标签';
-  for(const tag of activeTags)labels.push({id:'tag',label:tagLogic+' · '+tag,value:tag});
+  const draft=window.WorkflowFilters?.values();
+  const tagLogic=(draft?.filters.tagLogic||$('tagLogic').value)==='any'?'任一标签':'全部标签';
+  for(const tag of draft?.tags||activeTags)labels.push({id:'tag',label:tagLogic+' · '+tag,value:tag});
   return labels;
  }
  function renderCriteria(){
   const panel=$('filterSummary');if(!panel)return;
   const labels=criteriaLabels();panel.hidden=!labels.length;
+  if($('openFilters'))$('openFilters').textContent=labels.length?'筛选 ('+labels.length+')':'筛选';
   panel.innerHTML=labels.length?`<span class="muted" role="status">命中 ${data.movies} 部作品</span>`+
    labels.map(({id,label,value})=>`<button type="button" data-filter="${id}" data-value="${esc(value)}" onclick="serverBrowse.clearCriterion(this)" aria-label="移除 ${esc(label)}"><span class="criteriaValue">${esc(label)}</span><span aria-hidden="true">×</span></button>`).join(''):'';
  }
@@ -382,14 +395,14 @@ const serverBrowse=(()=>{
    const input=event.target;
    if(input.type!=='checkbox')return;
    if(input.checked)activeTags.add(input.value);else activeTags.delete(input.value);
-   syncTagSelection();page=1;render();
+   syncTagSelection();if(!window.WorkflowFilters?.editing){page=1;render()}
   });
-  $('clearTagSelection').addEventListener('click',()=>{activeTags.clear();syncTagSelection();page=1;render()});
+  $('clearTagSelection').addEventListener('click',()=>{activeTags.clear();syncTagSelection();if(!window.WorkflowFilters?.editing){page=1;render()}});
  }
  let suggestTimer;
  async function suggest(id,kind){try{const result=await get('/api/library/facets?'+new URLSearchParams({kind,q:$(id).value}));$('suggest-'+id).innerHTML=result.items.map(item=>`<option value="${esc(item.name)}" label="${item.movies} 部作品">`).join('')}catch(error){}}
  for(const [id,kind]of [['excludeTag','tags'],['actor','actors'],['studio','studio']]){
   const old=$(id),input=document.createElement('input');input.id=id;input.placeholder=old.options[0].textContent;input.setAttribute('list','suggest-'+id);input.onchange=old.onchange||(()=>{page=1;render()});input.onfocus=()=>suggest(id,kind);input.oninput=()=>{clearTimeout(suggestTimer);suggestTimer=setTimeout(()=>suggest(id,kind),180)};old.replaceWith(input);input.insertAdjacentHTML('afterend',`<datalist id="suggest-${id}"></datalist>`);
  }
- return {render,refresh,clearCriterion,stepWork,restoreScroll(top,focus){viewScroll={scope:JSON.stringify(criteria()),top:Number(top)||0,focus}},error:showError,relationOptions,bindRelationSuggestions,ensureRelationOptions,retryCode,resetCollection(){const url=new URL(location.href);url.searchParams.delete('collection');history.replaceState(history.state,'',url);collectionReturn=null},loadMovie,openMovie,toggle,toggleKey,toggleSelectionMode,selectPage,clearSelection,scrape,random,relations,openCollection,leaveCollection,restoreCollection,collectionCard,saveCollectionCover,get collectionId(){return collectionId()},get collectionReturn(){return collectionReturn},get total(){return total},get ready(){return !!data},cancel(){viewScroll=null;stopPreviews();clearTimeout(timer);controller?.abort();busy(false);++epoch;cancelMovieOpen()},redraw:()=>data&&draw(),remove(key){const item=chosen.get(key);chosen.delete(key);if(item)chosenIds.delete(item.id);draw()}};
+ return {render,refresh,syncTags:syncTagSelection,refreshTagOptions:loadTagOptions,clearCriterion,stepWork,restoreScroll(top,focus){viewScroll={scope:JSON.stringify(criteria()),top:Number(top)||0,focus}},error:showError,relationOptions,bindRelationSuggestions,ensureRelationOptions,retryCode,resetCollection(){const url=new URL(location.href);url.searchParams.delete('collection');history.replaceState(history.state,'',url);collectionReturn=null},loadMovie,openMovie,toggle,toggleKey,toggleSelectionMode,selectPage,clearSelection,scrape,random,relations,openCollection,leaveCollection,restoreCollection,collectionCard,saveCollectionCover,get collectionId(){return collectionId()},get collectionReturn(){return collectionReturn},get total(){return total},get ready(){return !!data},cancel(){viewScroll=null;stopPreviews();clearTimeout(timer);controller?.abort();busy(false);++epoch;cancelMovieOpen()},redraw:()=>data&&draw(),remove(key){const item=chosen.get(key);chosen.delete(key);if(item)chosenIds.delete(item.id);draw()}};
 })();window.serverBrowse=serverBrowse;

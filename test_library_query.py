@@ -4,6 +4,7 @@ import unittest
 import threading
 from http.client import HTTPConnection
 from unittest.mock import patch
+from urllib.parse import urlencode
 from library_query import LibraryQuery,LibraryQueryChanged
 import test_features as fixtures
 
@@ -354,6 +355,62 @@ class LibraryQueryHTTPTests(unittest.TestCase):
             pending=stack.enter_context(self.app.LocalServer(('127.0.0.1',0),self.app.Handler))
             for _ in range(12):
                 stack.enter_context(create_connection(pending.server_address,timeout=2))
+
+    def test_directory_browsing_and_registration_preview(self):
+        child=self.root/'External archive';child.mkdir()
+        route='/api/storage/directories'
+        body={'path':str(child),'alias':'Archive'}
+        with patch.object(self.app,'directory_roots',return_value=[self.root]):
+            self.assertEqual(self.request(route)[1]['items'][0]['path'],str(self.root))
+            status,data=self.request(route+'?'+urlencode({'path':str(self.root)}))
+            self.assertEqual(status,200)
+            self.assertIn(child.name,[item['name'] for item in data['items']])
+            self.assertNotIn('Sample.mp4',[item['name'] for item in data['items']])
+            self.assertEqual(self.request(route+'?'+urlencode({'path':str(child/'..')}))[0],400)
+            self.assertEqual(self.request('/api/storage/register-preview',data=body,token=False)[0],403)
+            self.assertEqual(self.request('/api/storage/register-preview',data=body)[1]['state'],'new')
+            device=self.request('/api/storage/register',data=body)[1]['id']
+            status,preview=self.request('/api/storage/register-preview',data=body)
+            self.assertEqual((status,preview['state'],preview['id'],preview['alias']),(200,'registered',device,'Archive'))
+            with self.app.db() as connection:
+                connection.execute('UPDATE storage_root_proofs SET file_id=? WHERE device_id=?',('other',device))
+            self.assertEqual(self.request('/api/storage/register-preview',data=body)[1]['state'],'changed')
+
+    def test_playback_reports_missing_and_serves_only_adjacent_subtitle(self):
+        subtitle=self.root/'Sample.srt'
+        subtitle.write_text('1\n00:00:00,000 --> 00:00:01,000\nSynthetic example\n',encoding='utf-8')
+        (self.root/'Other.vtt').write_text('WEBVTT\n',encoding='utf-8')
+        args='?'+urlencode({'id':self.ident})
+        status,data=self.request('/api/playback-info'+args)
+        self.assertEqual((status,data['state'],data['tracks']),(200,'ready',[{'id':'srt','label':'Sample.srt'}]))
+        self.assertEqual(self.request('/api/playback-subtitle'+args+'&track=vtt')[0],404)
+        connection=HTTPConnection('127.0.0.1',self.server.server_port,timeout=10)
+        try:
+            connection.request('GET','/api/playback-subtitle'+args+'&track=srt',headers={'Host':'127.0.0.1:'+str(self.app.RUNTIME.port)})
+            response=connection.getresponse()
+            self.assertEqual(response.status,200)
+            self.assertIn(b'00:00:00.000 --> 00:00:01.000',response.read())
+        finally:
+            connection.close()
+        (self.root/'Sample.mp4').unlink()
+        self.assertEqual(self.request('/api/playback-info'+args)[1]['state'],'offline')
+
+    def test_retry_preview_limits_submission_to_current_reviewed_scope(self):
+        engine=self.app.config()['scrape_engine']
+        with self.app.db() as connection:
+            ready=connection.execute("INSERT INTO scrape_jobs(code,status,remote_id,engine,retry_kind,error) VALUES('DEMO-1','failed',17,?,'retryable','timeout')",(engine,)).lastrowid
+        body={'job_ids':[ready,ready+1]}
+        preview='/api/amane-retry-preview'
+        self.assertEqual(self.request(preview,data=body,token=False)[0],403)
+        self.assertEqual(self.request(preview,data=body),(200,{'ready':[ready],'manual':1,'active':0}))
+        with patch.object(self.app,'submit_scrape_codes',return_value={'submitted':1,'skipped':0,'failures':[]}) as submit:
+            self.assertEqual(self.request('/api/amane-retry',data={**body,'reviewed':True})[0],400)
+            submit.assert_not_called()
+            self.assertEqual(self.request('/api/amane-retry',data={'job_ids':[ready],'reviewed':True})[0],200)
+            submit.assert_called_once_with(['DEMO-1'])
+        with self.app.db() as connection:
+            connection.execute("INSERT INTO scrape_jobs(code,status,engine) VALUES('DEMO-1','running',?)",(engine,))
+        self.assertEqual(self.request(preview,data={'job_ids':[ready]})[1],{'ready':[],'manual':0,'active':1})
 
     def test_http_list_lazy_detail_and_snapshot_invalidations(self):
         status,data=self.request('/api/library/query?limit=1');self.assertEqual(status,200)

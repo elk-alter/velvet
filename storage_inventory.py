@@ -116,6 +116,24 @@ class StorageInventory:
             c.execute('CREATE TABLE IF NOT EXISTS inventory_annotations(device_id TEXT,relative_path TEXT,payload TEXT,PRIMARY KEY(device_id,relative_path))')
             c.execute("UPDATE inventory_snapshots SET state='interrupted' WHERE state='running'")
 
+    def registration_preview(self, raw):
+        if not isinstance(raw,str) or not raw.strip():raise ValueError('请选择目录')
+        root=no_links(raw)
+        if is_archive_path(root,archive_roots(self.db)):raise ValueError('归档目录不能作为默认盘点位置')
+        if not root.is_dir():raise ValueError('盘点目录不存在或离线')
+        identity,_=volume_identity(root)
+        file_id=root_file_id(root)
+        with self.db() as c:
+            records=c.execute("""SELECT d.id,d.alias,d.root,d.identity,p.file_id FROM storage_devices d
+              LEFT JOIN storage_root_proofs p ON p.device_id=d.id
+              WHERE d.root=? OR (d.identity=? AND p.file_id=? AND p.file_id!='')
+              ORDER BY (d.root=?) DESC,d.updated DESC""",(str(root),identity,file_id,str(root))).fetchall()
+            for record in records:
+                if record['root']==str(root) and record['identity']==identity and (not record['file_id'] or record['file_id']==file_id):
+                    return {'state':'registered','path':str(root),'alias':record['alias'],'id':record['id']}
+        return {'state':'changed' if records else 'new','path':str(root),'alias':root.name or str(root),
+                'id':records[0]['id'] if records else None}
+
     def register(self, raw, alias, new_location=False):
         if not isinstance(raw, str) or not raw.strip() or not isinstance(alias, str) or not 1 <= len(alias.strip()) <= 100:
             raise ValueError('请填写目录和1–100字设备别名')

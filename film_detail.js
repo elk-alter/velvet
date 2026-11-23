@@ -4,9 +4,12 @@ const detailBody=detail.querySelector('.dialogBody');
 const originalFigure=$('coverPreview').parentElement;
 const playbackActions=detailBody.querySelector('.playback-actions');
 const playbackHint=$('player').nextElementSibling;
+playbackHint.id='playbackFeedback';playbackHint.setAttribute('role','status');
 const hero=document.createElement('section');hero.className='filmHero';hero.innerHTML='<div class="filmPoster"></div><div class="filmSummary"><div id="filmSummary"></div></div>';
 hero.querySelector('.filmPoster').append($('coverPreview'));originalFigure.remove();hero.querySelector('.filmSummary').append(playbackActions,$('actorLinks'));
 const playbackSection=document.createElement('section');playbackSection.id='filmPlayback';playbackSection.hidden=true;playbackSection.append($('player'),playbackHint);
+playbackSection.insertAdjacentHTML('beforeend','<div id="playbackRecovery" class="row"></div><div class="row playbackTracks"><div id="playbackSubtitles"></div><div id="playbackAudio"></div></div>');
+playbackActions.after(detail.querySelector('.dialogTools'));
 const gallerySection=document.createElement('section');gallerySection.className='filmGallery';gallerySection.innerHTML='<div class="filmSectionHeader"><div><h3>剧照与预览</h3><small id="filmGalleryStatus" class="muted">正在加载图片…</small></div><button onclick="retryFilmArtwork()">获取 / 重试剧照</button></div><nav id="filmGalleryFilters" class="filmGalleryFilters"></nav>';gallerySection.append($('shots'));
 const editor=document.createElement('details');editor.id='filmEditor';editor.className='filmEditor filmDisclosure';editor.innerHTML='<summary>编辑资料与文件信息</summary><div id="filmEditorBody"></div>';
 while(detailBody.firstChild)editor.querySelector('#filmEditorBody').append(detailBody.firstChild);
@@ -39,17 +42,19 @@ async function loadIdentification(){
   identification.textContent=`当前编号：${result.code||'未识别'}${result.locked?'（已锁定）':''} · 文件名：${filename||'无'} · 父目录：${directory||'无'} · NFO：${nfo||'无'}${result.warning?' · '+result.warning:''}。修改编号并保存后会锁定。`;
  }catch(error){if(!request.signal.aborted&&generation===detailGeneration)identification.textContent='暂时无法读取编号识别依据，仍可手动填写编号。'}
 }
-const imageDialog=document.createElement('dialog');imageDialog.id='artworkLightbox';imageDialog.innerHTML='<div class="lightboxToolbar"><span id="artworkLightboxTitle"></span><button onclick="closeArtworkLightbox()" aria-label="关闭图片预览">关闭 ×</button></div><img id="artworkLightboxImage" alt=""><div class="lightboxNav"><button onclick="moveArtwork(-1)" aria-label="上一张">← 上一张</button><button onclick="moveArtwork(1)" aria-label="下一张">下一张 →</button></div>';document.body.append(imageDialog);
-let lightboxIndex=0;
+const imageDialog=document.createElement('dialog');imageDialog.id='artworkLightbox';imageDialog.setAttribute('aria-labelledby','artworkLightboxTitle');imageDialog.innerHTML=workflowHeader('artworkLightboxTitle','图片预览','closeArtworkLightbox()')+'<div class="dialogBody"><img id="artworkLightboxImage" alt=""></div><div class="lightboxNav"><button onclick="moveArtwork(-1)" aria-label="上一张">← 上一张</button><button onclick="moveArtwork(1)" aria-label="下一张">下一张 →</button></div>';document.body.append(imageDialog);
+let lightboxIndex=0,lightboxOpener;
+imageDialog.addEventListener('close',()=>{if(lightboxOpener?.isConnected)lightboxOpener.focus({preventScroll:true})});
 function closeArtworkLightbox(){imageDialog.close()}
-function openArtwork(index){lightboxIndex=index;const item=filmArtwork[index];if(!item)return;$('artworkLightboxImage').src=item.url;$('artworkLightboxImage').alt=item.label;$('artworkLightboxTitle').textContent=item.label+' · '+(index+1)+' / '+filmArtwork.length;if(!imageDialog.open)imageDialog.showModal()}
+function openArtwork(index){lightboxIndex=index;const item=filmArtwork[index];if(!item)return;$('artworkLightboxImage').src=item.url;$('artworkLightboxImage').alt=item.label;$('artworkLightboxTitle').textContent=item.label+' · '+(index+1)+' / '+filmArtwork.length;if(!imageDialog.open){lightboxOpener=document.activeElement;imageDialog.showModal()}}
 function moveArtwork(delta){if(filmArtwork.length)openArtwork((lightboxIndex+delta+filmArtwork.length)%filmArtwork.length)}
 imageDialog.addEventListener('keydown',event=>{if(event.key==='ArrowLeft'){event.preventDefault();moveArtwork(-1)}if(event.key==='ArrowRight'){event.preventDefault();moveArtwork(1)}});
 const previousOpenVideo=openVideo;
 openVideo=async function(id,exact=false){if(window.serverBrowse)return serverBrowse.openMovie(id,exact,showMovieDetail);return showMovieDetail(id,exact)};
 function showMovieDetail(id,exact=false){
- identificationRequest?.abort();identification.textContent='';previousOpenVideo(id,exact,false);clearTimeout(artworkPollTimer);artworkPollRounds=0;const generation=++detailGeneration;editor.open=false;saveButton.hidden=true;saveButton.disabled=false;playbackSection.hidden=true;artworkFilter='all';filmArtwork=[];
+ FilmPlayback.reset();identificationRequest?.abort();identification.textContent='';previousOpenVideo(id,exact,false);clearTimeout(artworkPollTimer);artworkPollRounds=0;const generation=++detailGeneration;editor.open=false;saveButton.hidden=true;saveButton.disabled=false;playbackSection.hidden=true;artworkFilter='all';filmArtwork=[];
  const v=selected;
+ const external=$("externalPlayback");if(external)external.hidden=Boolean(library.server_mode);
  $('coverPreview').style.display='block';$('coverPreview').dataset.fallback='0';$('coverPreview').src='/thumb/'+v.id+'-poster.jpg';$('coverPreview').onerror=function(){if(this.dataset.fallback==='0'){this.dataset.fallback='1';this.src='/thumb/'+v.id+'-cover.jpg'}else this.style.display='none'};
  renderSelectedFilmSummary();
  $('shots').innerHTML='<div class="galleryEmpty">正在读取剧照与本地截图…</div>';$('filmGalleryStatus').textContent='正在加载';$('filmGalleryFilters').innerHTML='';

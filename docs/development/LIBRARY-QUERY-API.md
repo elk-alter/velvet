@@ -78,3 +78,9 @@ next是当前版本中紧邻的下一可见分段{id,missing}或null，不依赖
 
 - 待处理工作区通过 `GET /api/library?review=1` 获取 `scrape_failures`。键为当前可见文件的规范化编号，值包含最近失败的类型、处理建议与提示文本。编号有更新的任务时按最新任务状态判断。
 - `POST /api/cover-retry` 接受当前可见在线文件的 `id`，沿用应用变更令牌。按保存的来源引擎和图片地址补齐缺失的封面或海报。返回 `fetched` 和 `failed` 图片类型数组。已有图片保留；同步占用时返回 409。
+
+## alpha.13 播放与待处理补充
+
+- `GET /api/playback-info?id=` 返回文件的 `state`、媒体类型、可用字幕标识和本机播放能力。浏览器判断格式可播性，媒体流继续走 `/media/` 的 Range 请求。
+- `GET /api/playback-subtitle?id=&track=srt|vtt` 仅按当前片库内文件发现同名相邻字幕。输出 UTF-8 WebVTT，单个字幕上限 2 MB。
+- `POST /api/amane-retry-preview` 接受最多 50 个任务 ID，返回 `ready`、`active`、`manual`。重试写接口传 `reviewed:true` 时重新核验整批有效范围。

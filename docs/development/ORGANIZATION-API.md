@@ -10,6 +10,8 @@ GET沿用本机Host检查及NAS Basic认证；POST另需X-Velvet-Token及JSON请
 
 ## 读接口
 
+- `GET /api/storage/directories?path=&offset=0` 返回一次目录列表及 `path`、`parent`、`crumbs`、`next`。省略 `path` 列出可浏览根。浏览 Windows 本地固定或移动卷，限制为目录并拒绝穿越链接。服务模式限制为已配置的媒体位置根 `/media`。
+
 |方法/路径|参数|返回|
 |---|---|---|
 |GET /api/organization/preview|id、offset、limit|固定盘点预览的分页items，含index、摘要、范围/空间说明|
@@ -21,6 +23,8 @@ GET沿用本机Host检查及NAS Basic认证；POST另需X-Velvet-Token及JSON请
 limit上限100，offset为非负；未提供时预览/草稿/详情50，任务列表25。完整计划仍由服务端保存，不能用浏览器当前页代替批准范围。资源分页与视频分页独立。
 
 ## 写接口
+
+- `POST /api/storage/register-preview` 用 `path` 核对位置。返回 `new`、`registered` 或 `changed`，可附既有 `id` 和别名。预览不登记目录，提交仍使用原登记接口。明确登记为新位置时，保留旧盘点快照。
 
 |方法/路径|关键请求字段|行为|
 |---|---|---|

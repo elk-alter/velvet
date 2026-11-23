@@ -20,12 +20,18 @@ nodes.button.disabled=false;context.api=async()=>{throw Error('scope changed')};
 assert.equal(context.diskReconnectState.preview,null);assert.equal(nodes.button.disabled,false);assert.match(nodes.diskReconnectReview.innerHTML,/scope changed/);
 ''')
 
-    def test_register_response_does_not_discard_newer_input(self):
+    def test_chooser_selection_stays_with_its_original_form(self):
         self.run_case(r'''
-vm.runInContext(source.slice(source.indexOf('async function diskRegister(){'),source.indexOf('async function diskScan(')),context);
-const pending=context.diskRegister();nodes.diskRoot.value='Later synthetic root';release({ok:true});await pending;
-assert.equal(navigations.length,0);assert.equal(context.managerDirty,true);assert.equal(nodes.diskRoot.value,'Later synthetic root');
-assert.equal(nodes.button.disabled,false);assert.equal(requests[0].body.path,'Original synthetic root');
+vm.runInContext(source.slice(source.indexOf('function diskPickRoot('),source.indexOf('async function diskScan(')),context);
+let pick,invalidations=0;
+context.DirectoryPicker={open(options){pick=options.select}};
+context.diskInvalidateReconnect=()=>invalidations++;
+nodes.diskReconnectRoot={value:'Original synthetic root'};
+context.diskPickRoot('diskReconnectRoot');
+context.managerRouteEpoch=2;context.managerDirty=false;pick('Stale selection');
+assert.equal(nodes.diskReconnectRoot.value,'Original synthetic root');assert.equal(context.managerDirty,false);
+context.diskPickRoot('diskReconnectRoot');pick('New synthetic root');
+assert.equal(nodes.diskReconnectRoot.value,'New synthetic root');assert.equal(context.managerDirty,true);assert.equal(invalidations,1);
 ''')
 
     def run_case(self,body):
